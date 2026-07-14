@@ -1,0 +1,199 @@
+services:
+  # --- Public edge -------------------------------------------------------
+  # Production exposes only Caddy (80/443). All application and sidecar
+  # containers stay on the private Docker network.
+  caddy:
+    image: caddy:2-alpine
+    environment:
+      SIGNALDECK_DOMAIN: ${SIGNALDECK_DOMAIN:?set SIGNALDECK_DOMAIN in .env.production}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      web:
+        condition: service_started
+    restart: unless-stopped
+
+  # --- Data store -------------------------------------------------------
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: monitor
+      POSTGRES_USER: monitor
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.production}
+    volumes:
+      - monitor-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U monitor -d monitor"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  migrate:
+    build:
+      context: .
+      target: tools
+    environment:
+      DATABASE_URL: postgres://monitor:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/monitor
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["sh", "-c", "pnpm db:migrate && pnpm db:seed"]
+    restart: "no"
+
+  # --- SignalDeck -------------------------------------------------------
+  web:
+    build:
+      context: .
+      target: runner
+    environment:
+      DATABASE_URL: postgres://monitor:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/monitor
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?set APP_ENCRYPTION_KEY in .env.production}
+      ADMIN_API_TOKEN: ${ADMIN_API_TOKEN:?set ADMIN_API_TOKEN in .env.production}
+      X_BEARER_TOKEN: ${X_BEARER_TOKEN:-}
+      BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      SERPER_API_KEY: ${SERPER_API_KEY:-}
+      WERSS_BASE_URL: http://werss:8001
+      WERSS_ACCESS_KEY: ${WERSS_ACCESS_KEY:-}
+      TRENDRADAR_MCP_URL: http://trendradar-mcp:3333/mcp
+      TRENDRADAR_CONFIG_DIR: /app/trendradar-config
+      TRENDRADAR_REFRESH_URL: http://trendradar-refresh:8090/refresh
+      TRENDRADAR_REFRESH_TOKEN: ${TRENDRADAR_REFRESH_TOKEN:?set TRENDRADAR_REFRESH_TOKEN in .env.production}
+    volumes:
+      - ./infra/trendradar/config:/app/trendradar-config
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      werss:
+        condition: service_started
+      trendradar-mcp:
+        condition: service_started
+      trendradar-refresh:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      target: tools
+    environment:
+      DATABASE_URL: postgres://monitor:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/monitor
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?set APP_ENCRYPTION_KEY in .env.production}
+      X_BEARER_TOKEN: ${X_BEARER_TOKEN:-}
+      BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      SERPER_API_KEY: ${SERPER_API_KEY:-}
+      WERSS_BASE_URL: http://werss:8001
+      WERSS_ACCESS_KEY: ${WERSS_ACCESS_KEY:-}
+      TRENDRADAR_MCP_URL: http://trendradar-mcp:3333/mcp
+      X_BRAVE_MONTHLY_BUDGET_USD: ${X_BRAVE_MONTHLY_BUDGET_USD:-}
+      WORKER_POLL_INTERVAL_SECONDS: ${WORKER_POLL_INTERVAL_SECONDS:-60}
+      WORKER_DISABLE_MONITOR_AFTER_FAILURES: ${WORKER_DISABLE_MONITOR_AFTER_FAILURES:-5}
+      WORKER_HEARTBEAT_FILE: ${WORKER_HEARTBEAT_FILE:-/tmp/signaldeck-worker-heartbeat}
+      WORKER_HEALTHCHECK_STALE_SECONDS: ${WORKER_HEALTHCHECK_STALE_SECONDS:-600}
+      SUMMARY_PROVIDER: ${SUMMARY_PROVIDER:-}
+      SUMMARY_BASE_URL: ${SUMMARY_BASE_URL:-}
+      SUMMARY_API_KEY: ${SUMMARY_API_KEY:-}
+      SUMMARY_SKIP_PLATFORMS: ${SUMMARY_SKIP_PLATFORMS:-wechat}
+      SUMMARY_MODEL: ${SUMMARY_MODEL:-}
+      SUMMARY_TIMEOUT_SECONDS: ${SUMMARY_TIMEOUT_SECONDS:-20}
+      SUMMARY_MAX_CONCURRENCY: ${SUMMARY_MAX_CONCURRENCY:-4}
+    command: ["pnpm", "worker"]
+    init: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"const fs=require('fs');const p=process.env.WORKER_HEARTBEAT_FILE||'/tmp/signaldeck-worker-heartbeat';const max=(Number(process.env.WORKER_HEALTHCHECK_STALE_SECONDS)||600)*1000;const age=Date.now()-fs.statSync(p).mtimeMs;process.exit(age<=max?0:1)\"",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  # --- Private sidecars -------------------------------------------------
+  werss:
+    image: we-mp-rss:with-chromium
+    environment:
+      - WERSS_AUTH_WEB=True
+    volumes:
+      - werss-data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8001/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  trendradar:
+    image: wantcat/trendradar:latest
+    environment:
+      TZ: Asia/Shanghai
+      WEBSERVER_PORT: 8080
+      CRON_SCHEDULE: ${TRENDRADAR_CRON_SCHEDULE:-*/30 * * * *}
+      RUN_MODE: cron
+      IMMEDIATE_RUN: "true"
+      AI_ANALYSIS_ENABLED: ${AI_ANALYSIS_ENABLED:-false}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-}
+      AI_API_BASE: ${AI_API_BASE:-}
+    volumes:
+      - ./infra/trendradar/config:/app/config:ro
+      - trendradar-output:/app/output
+    restart: unless-stopped
+
+  trendradar-mcp:
+    image: wantcat/trendradar-mcp:latest
+    environment:
+      TZ: Asia/Shanghai
+      MCP_PORT: 3333
+    volumes:
+      - ./infra/trendradar/config:/app/config:ro
+      - trendradar-output:/app/output
+    restart: unless-stopped
+
+  trendradar-refresh:
+    image: wantcat/trendradar:latest
+    environment:
+      TZ: Asia/Shanghai
+      RUN_MODE: control
+      TREND_REFRESH_TOKEN: ${TRENDRADAR_REFRESH_TOKEN:?set TRENDRADAR_REFRESH_TOKEN in .env.production}
+      AI_ANALYSIS_ENABLED: ${AI_ANALYSIS_ENABLED:-false}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-}
+      AI_API_BASE: ${AI_API_BASE:-}
+    command: ["python", "/app/refresh-server.py"]
+    volumes:
+      - ./infra/trendradar/config:/app/config:ro
+      - ./infra/trendradar/refresh-server.py:/app/refresh-server.py:ro
+      - trendradar-output:/app/output
+    restart: unless-stopped
+
+volumes:
+  monitor-postgres:
+  werss-data:
+  trendradar-output:
+  caddy-data:
+  caddy-config:
