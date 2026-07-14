@@ -1,0 +1,1 @@
+ALTER TYPE "public"."platform_type" ADD VALUE 'trendradar';
