@@ -142,7 +142,7 @@ export function serializeEditableFrequencyWordsConfig(input: Pick<TrendRadarInte
     .filter((group) => group.name && group.keywords.length > 0);
 
   return [
-    "# SignalDeck 站点榜单 / RSS 兴趣规则。",
+    "# 见微站点榜单 / RSS 兴趣规则。",
     "# 后台「平台连接 → 榜单 / RSS 兴趣规则」会写入此文件。",
     "# 每行一个关键词；高级用户也可以填写 /.../i 形式的正则。",
     "",

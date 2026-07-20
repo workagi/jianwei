@@ -34,7 +34,7 @@ services:
     command: ["sh", "-c", "pnpm db:migrate && pnpm db:seed"]
     restart: "no"
 
-  # --- SignalDeck web (Next.js standalone) -------------------------------
+  # --- 见微 web (Next.js standalone) -------------------------------------
   web:
     build:
       context: .
@@ -122,7 +122,7 @@ services:
       X_BRAVE_MONTHLY_BUDGET_USD: ${X_BRAVE_MONTHLY_BUDGET_USD:-}
       WORKER_POLL_INTERVAL_SECONDS: ${WORKER_POLL_INTERVAL_SECONDS:-60}
       WORKER_DISABLE_MONITOR_AFTER_FAILURES: ${WORKER_DISABLE_MONITOR_AFTER_FAILURES:-5}
-      WORKER_HEARTBEAT_FILE: ${WORKER_HEARTBEAT_FILE:-/tmp/signaldeck-worker-heartbeat}
+      WORKER_HEARTBEAT_FILE: ${WORKER_HEARTBEAT_FILE:-/tmp/jianwei-worker-heartbeat}
       WORKER_HEALTHCHECK_STALE_SECONDS: ${WORKER_HEALTHCHECK_STALE_SECONDS:-600}
       # AI 摘要（预留接口，默认未启用；详见 src/lib/summarizer.ts 与 .env.example）
       SUMMARY_PROVIDER: ${SUMMARY_PROVIDER:-}
@@ -152,7 +152,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "node -e \"const fs=require('fs');const p=process.env.WORKER_HEARTBEAT_FILE||'/tmp/signaldeck-worker-heartbeat';const max=(Number(process.env.WORKER_HEALTHCHECK_STALE_SECONDS)||600)*1000;const age=Date.now()-fs.statSync(p).mtimeMs;process.exit(age<=max?0:1)\"",
+          "node -e \"const fs=require('fs');const p=process.env.WORKER_HEARTBEAT_FILE||'/tmp/jianwei-worker-heartbeat';const max=(Number(process.env.WORKER_HEALTHCHECK_STALE_SECONDS)||600)*1000;const age=Date.now()-fs.statSync(p).mtimeMs;process.exit(age<=max?0:1)\"",
         ]
       interval: 30s
       timeout: 5s
@@ -162,7 +162,9 @@ services:
 
   # --- WeRSS sidecar (WeChat Official Account RSS) -----------------------
   werss:
-    image: we-mp-rss:with-chromium  # 本地镜像（基于 rachelos/we-mp-rss:latest 预装 playwright+chromium）
+    # Public installs use the official upstream image. Advanced users can
+    # override WERSS_IMAGE with a reviewed custom build.
+    image: ${WERSS_IMAGE:-ghcr.io/rachelos/we-mp-rss:latest}
     # 仅绑定本机回环；WeRSS 后台含授权操作，不应直接对外暴露。
     environment:
       # 改用 web 方式授权：前端出二维码、手机微信扫码完成授权，
@@ -171,7 +173,7 @@ services:
       # 降低噪音日志；部分版本会打印整篇 HTML / SQL / 鉴权细节，加重磁盘 IO。
       - LOG_LEVEL=${WERSS_LOG_LEVEL:-WARNING}
       - WERSS_LOG_LEVEL=${WERSS_LOG_LEVEL:-WARNING}
-      # 保留「自动补正文」能力，但压低默认节奏，避免和 SignalDeck 叠加打满宿主机。
+      # 保留「自动补正文」能力，但压低默认节奏，避免和见微叠加打满宿主机。
       # content_mode=api：优先公众平台 API，失败再回退 web（Playwright）。
       - GATHER.CONTENT_AUTO_CHECK=${GATHER_CONTENT_AUTO_CHECK:-True}
       - GATHER.CONTENT_AUTO_INTERVAL=${GATHER_CONTENT_AUTO_INTERVAL:-59}
@@ -237,7 +239,7 @@ services:
       - trendradar-output:/app/output
     restart: unless-stopped
 
-  # --- TrendRadar MCP sidecar (query tools for SignalDeck) ---------------
+  # --- TrendRadar MCP sidecar (query tools for 见微) ----------------------
   trendradar-mcp:
     image: wantcat/trendradar-mcp:latest
     environment:

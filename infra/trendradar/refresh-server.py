@@ -4,7 +4,7 @@
 The main TrendRadar container serves a static report page and runs collection
 via cron. It does not expose an HTTP "refresh now" endpoint. This tiny sidecar
 shares the same config/output volumes and runs one fixed command
-(`python -m trendradar`) when SignalDeck asks for an immediate refresh.
+(`python -m trendradar`) when 见微 asks for an immediate refresh.
 
 It deliberately does not mount the Docker socket, so the web app never gets
 host-level Docker control.

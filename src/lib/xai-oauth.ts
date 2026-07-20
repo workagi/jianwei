@@ -3,7 +3,7 @@ import { sql as postgres } from "@/db";
 import { decryptCredential, encryptCredential } from "@/lib/credential-crypto";
 
 // Device-code OAuth flow adapted from Nous Research Hermes Agent (MIT).
-// See THIRD_PARTY_NOTICES.md. Tokens stay server-side in SignalDeck's encrypted credential store.
+// See THIRD_PARTY_NOTICES.md. Tokens stay server-side in 见微's encrypted credential store.
 const ISSUER = "https://auth.x.ai";
 const DISCOVERY_URL = `${ISSUER}/.well-known/openid-configuration`;
 const DEVICE_CODE_URL = `${ISSUER}/oauth2/device/code`;

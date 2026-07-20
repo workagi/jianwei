@@ -64,7 +64,7 @@ function parseTrendRadarTime(value?: string): Date | undefined {
 /**
  * Adapter that imports TrendRadar hotlist and RSS results into the shared
  * normalized item model. TrendRadar owns collection, filtering, scheduling and
- * AI analysis; SignalDeck only normalizes the output under a single platform so
+ * AI analysis; 见微 only normalizes the output under a single platform so
  * the reader can deduplicate and display it alongside the direct connectors.
  */
 export class TrendRadarConnector {

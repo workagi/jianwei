@@ -1,7 +1,17 @@
 {
-  "name": "information-monitor",
+  "name": "jianwei",
   "version": "0.1.0",
   "private": true,
+  "description": "把 X、微信公众号、全网搜索、榜单和 RSS 整理成一条值得读的中文信息流。",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/skymao2021/jianwei.git"
+  },
+  "bugs": {
+    "url": "https://github.com/skymao2021/jianwei/issues"
+  },
+  "homepage": "https://github.com/skymao2021/jianwei#readme",
   "packageManager": "pnpm@10.28.1",
   "scripts": {
     "dev": "next dev",
@@ -14,7 +24,8 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:seed": "tsx src/db/seed.ts",
-    "content:cleanup": "tsx scripts/cleanup-content-quality.ts"
+    "content:cleanup": "tsx scripts/cleanup-content-quality.ts",
+    "audit:open-source": "node scripts/open-source-audit.mjs"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.2",

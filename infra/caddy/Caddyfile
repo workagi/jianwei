@@ -2,7 +2,7 @@
 	email {$ACME_EMAIL}
 }
 
-{$SIGNALDECK_DOMAIN} {
+{$JIANWEI_DOMAIN} {
 	encode zstd gzip
 
 	header {

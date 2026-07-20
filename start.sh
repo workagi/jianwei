@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# SignalDeck 一键启动脚本
+# 见微一键启动脚本
 #
 # 用法:
 #   ./start.sh           构建并启动全部服务（首次自动初始化 .env）
@@ -181,7 +181,7 @@ audit_creds() {
 
 print_help() {
   cat <<'EOF'
-SignalDeck 一键启动脚本
+见微一键启动脚本
 
 用法:
   ./start.sh           构建并启动全部服务（首次自动初始化 .env）
@@ -199,7 +199,7 @@ EOF
 cmd_start() {
   check_docker
   init_env
-  info "构建并启动 SignalDeck 全部服务…"
+  info "构建并启动见微全部服务…"
   $DC up -d --build
   ok "容器已创建，迁移与采集将自动就绪。"
   # 等 postgres 接受连接（仅作就绪提示，不阻塞）。
