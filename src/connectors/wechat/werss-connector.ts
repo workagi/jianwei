@@ -285,7 +285,7 @@ export class WeRssConnector implements Connector<"wechat"> {
     return this.subscribeResolved(feed);
   }
 
-  /** Cancel a subscription in WeRSS. SignalDeck only calls this after explicit user confirmation. */
+  /** Cancel a subscription in WeRSS. 见微 only calls this after explicit user confirmation. */
   async unsubscribe(mpId: string): Promise<void> {
     const response = await this.fetcher(`${this.base}/api/v1/wx/mps/${encodeURIComponent(mpId)}`, {
       method: "DELETE",

@@ -1,0 +1,49 @@
+name: 功能建议
+description: 提议一个清晰、可验证的产品改进
+title: "[Feature] "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你遇到的问题
+      description: 先描述用户场景，不要直接给技术方案
+      placeholder: 当我……时，我无法……
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: 希望得到的结果
+      description: 什么可观察结果代表问题被解决
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 已尝试的方法
+      description: 当前如何绕过，为什么仍然不够
+  - type: dropdown
+    id: area
+    attributes:
+      label: 相关区域
+      options:
+        - 信息流阅读体验
+        - X / Twitter
+        - 微信公众号
+        - 全网搜索
+        - 榜单 / RSS
+        - 模型理解
+        - 部署与运维
+        - 其他
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已搜索现有 Issue 和 ROADMAP
+          required: true
+        - label: 建议不依赖绕过平台安全或违反平台条款
+          required: true

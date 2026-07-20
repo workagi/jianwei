@@ -1,14 +1,17 @@
 # 见微
 
+[![CI](https://github.com/skymao2021/jianwei/actions/workflows/ci.yml/badge.svg)](https://github.com/skymao2021/jianwei/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-5b6475.svg)](LICENSE)
+
 **少刷几个平台，也不错过真正重要的信息。**
 
 把你想长期关注的 X 博主、微信公众号、行业关键词、榜单和 RSS 交给见微。它会持续替你跟踪更新，过滤重复和无关内容，把外文资讯整理成中文，并告诉你每条内容为什么值得看。
 
 每天只需打开一个页面，就能看到真正与你有关的新动态。
 
-[快速开始](#快速开始) · [支持的信息源](#支持的信息源) · [它怎样工作](#它怎样工作) · [完整项目手册](docs/project-handbook.md) · [生产部署](docs/production-deploy.md)
+[快速开始](#快速开始) · [支持的信息源](#支持的信息源) · [它怎样工作](#它怎样工作) · [完整项目手册](docs/project-handbook.md) · [生产部署](docs/production-deploy.md) · [参与贡献](CONTRIBUTING.md)
 
-> **当前为私有项目。** 仓库暂未提供开源许可证，不授予复制、修改或再分发权。未来开放前会先完成许可证、依赖和敏感信息审计。
+> 见微主程序采用 [Apache License 2.0](LICENSE)。当前代码处于首次公开发布候选阶段；第三方采集服务仍适用各自许可证和平台规则。
 
 ---
 
@@ -41,7 +44,7 @@
 | 会不会所有内容都先花钱调用模型？ | 不会。明显无关的内容先经过规则过滤，模型在入库链路的后段处理。 |
 | 第三方采集能永远稳定吗？ | 不能。微信、X、搜索和上游开源项目都可能受登录、额度、风控和接口变化影响。 |
 | 能部署到服务器吗？ | 可以。仓库包含 Docker Compose 和 Caddy HTTPS 生产方案。 |
-| 现在可以公开仓库吗？ | 暂时不建议。完整开源准备清单在项目手册中。 |
+| 可以自行部署和修改吗？ | 可以。见微主程序采用 Apache-2.0；独立 Sidecar 和上游镜像仍适用各自许可证。 |
 
 ## 支持的信息源
 
@@ -55,6 +58,8 @@
 > 不知道选哪个？X 默认优先 SuperGrok；全网搜索默认优先 Brave；微信公众号先只配置 WeRSS，遇到缺失全文时再启用备用采集器。
 >
 > 同一行里的接入方式是同类信息源的不同路径或增强能力，不会在信息流里被拆成多个平台。
+>
+> 请只处理你有权访问的信息，并遵守 X、微信、搜索服务和模型服务的使用条款。见微不会绕过平台安全机制，也不承诺非官方通道永久可用。
 
 ## 快速开始
 
@@ -63,7 +68,7 @@
 - Docker Desktop 或 OrbStack。
 - Git。
 
-克隆私有仓库并启动：
+克隆仓库并启动：
 
 ```bash
 git clone https://github.com/skymao2021/jianwei.git
@@ -266,10 +271,16 @@ docker compose config
 | [生产部署](docs/production-deploy.md) | 公网服务器、Caddy、HTTPS、备份与升级 |
 | [TrendRadar 集成架构](docs/architecture-trendradar.md) | 为什么复用 Sidecar，以及许可证边界 |
 | [第三方声明](THIRD_PARTY_NOTICES.md) | 第三方项目和许可证说明 |
+| [开源准备报告](docs/open-source-readiness.md) | 敏感信息、许可证、CI 和公开发布门禁 |
+| [路线图](ROADMAP.md) | 近期改进方向与不承诺事项 |
+| [贡献指南](CONTRIBUTING.md) | 开发、测试、提交与许可证要求 |
+| [安全策略](SECURITY.md) | 私下报告漏洞和安全边界 |
 | `docs/plans/` | 历史设计和实施计划，不代表所有内容仍是当前行为 |
 
-## 当前状态
+## 开源许可与当前状态
 
-当前私有版本：`v0.1.0`
+当前版本：`v0.1.0`
 
-已经具备完整的单用户自托管闭环，但仍依赖第三方平台和开源采集器。决定开源前，需要完成许可证选择、Git 历史清理、CI、安全审计、公开演示数据和平台合规说明。详细清单见项目手册的“未来开源准备”章节。
+见微主程序按照 [Apache License 2.0](LICENSE) 提供。Hermes Agent 改编代码、WeRSS、TrendRadar 和 wechat-download-api 等第三方组件的归属与边界见 [第三方声明](THIRD_PARTY_NOTICES.md)。
+
+项目已经具备完整的单用户自托管闭环，但仍依赖可能变化的第三方平台和开源采集器。当前正在完成首次公开发布前的最终验证，状态和剩余人工检查见 [开源准备报告](docs/open-source-readiness.md)。

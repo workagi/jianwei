@@ -86,7 +86,7 @@ export class TrendRadarMcpClient {
         params: {
           protocolVersion: DEFAULT_PROTOCOL_VERSION,
           capabilities: {},
-          clientInfo: { name: "signaldeck", version: "0.1.0" },
+          clientInfo: { name: "jianwei", version: "0.1.0" },
         } satisfies McpInitializeParams,
       }),
     });

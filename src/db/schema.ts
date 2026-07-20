@@ -126,7 +126,7 @@ export const itemMatches = pgTable("item_matches", {
   firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [primaryKey({ columns: [table.itemId, table.monitorId] })]);
 
-// SignalDeck is currently a single-user workspace. A dedicated join table
+// 见微 is currently a single-user workspace. A dedicated join table
 // keeps bookmark state durable across browsers and leaves room for a user_id
 // column if multi-user accounts are introduced later.
 export const bookmarks = pgTable("bookmarks", {

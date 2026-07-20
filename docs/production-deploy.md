@@ -24,8 +24,8 @@
 在服务器上：
 
 ```bash
-git clone <your-repo-url> signaldeck
-cd signaldeck
+git clone https://github.com/skymao2021/jianwei.git
+cd jianwei
 ```
 
 如果不是用 Git，也可以把整个项目目录上传到服务器。
@@ -39,7 +39,7 @@ cp .env.production.example .env.production
 至少改这些：
 
 ```dotenv
-SIGNALDECK_DOMAIN=你的域名
+JIANWEI_DOMAIN=你的域名
 ACME_EMAIL=你的邮箱
 POSTGRES_PASSWORD=强随机密码
 APP_ENCRYPTION_KEY=32字节base64随机值
@@ -62,19 +62,19 @@ openssl rand -hex 32
 ## 4. 启动生产服务
 
 ```bash
-docker compose --env-file .env.production -p signaldeck -f docker-compose.prod.yml up -d --build
+docker compose --env-file .env.production -p jianwei -f docker-compose.prod.yml up -d --build
 ```
 
 查看状态：
 
 ```bash
-docker compose --env-file .env.production -p signaldeck -f docker-compose.prod.yml ps
+docker compose --env-file .env.production -p jianwei -f docker-compose.prod.yml ps
 ```
 
 查看日志：
 
 ```bash
-docker compose --env-file .env.production -p signaldeck -f docker-compose.prod.yml logs -f web worker
+docker compose --env-file .env.production -p jianwei -f docker-compose.prod.yml logs -f web worker
 ```
 
 启动后访问：
@@ -107,7 +107,7 @@ http://localhost:8001
 如果服务器无法通过 `127.0.0.1:8001` 访问 WeRSS，是因为生产 compose 默认没有对宿主机暴露端口。可临时执行：
 
 ```bash
-docker compose --env-file .env.production -p signaldeck -f docker-compose.prod.yml port werss 8001
+docker compose --env-file .env.production -p jianwei -f docker-compose.prod.yml port werss 8001
 ```
 
 更推荐的方式是临时加一个只绑定 `127.0.0.1` 的 override 文件，用完删掉；不要把 WeRSS 裸露到公网。
@@ -140,29 +140,29 @@ docker compose --env-file .env.production -p signaldeck -f docker-compose.prod.y
 ```bash
 mkdir -p backups
 
-docker compose --env-file .env.production -p signaldeck -f docker-compose.prod.yml exec -T postgres \
+docker compose --env-file .env.production -p jianwei -f docker-compose.prod.yml exec -T postgres \
   pg_dump -U monitor -d monitor > backups/postgres-$(date +%F).sql
 
 docker run --rm \
-  -v signaldeck_werss-data:/data:ro \
+  -v jianwei_werss-data:/data:ro \
   -v "$PWD/backups:/backup" \
   alpine tar czf /backup/werss-data-$(date +%F).tgz -C /data .
 
 # 仅在启用了 wechat-fallback profile 时需要
 docker run --rm \
-  -v signaldeck_wechat-fallback-data:/data:ro \
+  -v jianwei_wechat-fallback-data:/data:ro \
   -v "$PWD/backups:/backup" \
   alpine tar czf /backup/wechat-fallback-data-$(date +%F).tgz -C /data .
 
 docker run --rm \
-  -v signaldeck_trendradar-output:/data:ro \
+  -v jianwei_trendradar-output:/data:ro \
   -v "$PWD/backups:/backup" \
   alpine tar czf /backup/trendradar-output-$(date +%F).tgz -C /data .
 
 tar czf backups/trendradar-config-$(date +%F).tgz infra/trendradar/config
 ```
 
-如果 compose 项目名不是 `signaldeck`，volume 名会不同。用下面命令确认真实名称：
+如果 compose 项目名不是 `jianwei`，volume 名会不同。用下面命令确认真实名称：
 
 ```bash
 docker volume ls | grep -E 'werss|trendradar|postgres|monitor'
@@ -172,7 +172,7 @@ docker volume ls | grep -E 'werss|trendradar|postgres|monitor'
 
 ```bash
 git pull
-docker compose --env-file .env.production -p signaldeck -f docker-compose.prod.yml up -d --build
+docker compose --env-file .env.production -p jianwei -f docker-compose.prod.yml up -d --build
 ```
 
 迁移服务 `migrate` 会在启动时自动跑数据库迁移和 seed。
@@ -192,7 +192,7 @@ docker compose --env-file .env.production -p signaldeck -f docker-compose.prod.y
 检查 web 容器是否能写配置：
 
 ```bash
-docker compose --env-file .env.production -p signaldeck -f docker-compose.prod.yml exec -T web \
+docker compose --env-file .env.production -p jianwei -f docker-compose.prod.yml exec -T web \
   sh -lc 'test -w /app/trendradar-config/config.yaml && echo writable || echo not-writable'
 ```
 

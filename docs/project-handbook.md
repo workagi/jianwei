@@ -2,7 +2,7 @@
 
 > 文档版本：0.1  
 > 更新日期：2026-07-20  
-> 当前状态：私有项目，未开放源代码许可
+> 当前状态：Apache-2.0 首次公开发布候选版
 
 ## 1. 项目概览
 
@@ -40,7 +40,7 @@
 - 官方移动端应用。
 - 对所有第三方平台的绝对稳定采集保证。
 - 自动规避平台风控或突破访问限制。
-- 开源许可证和公共贡献流程。
+- 多语言文档和成熟的社区维护机制。
 
 ### 2.3 合规边界
 
@@ -447,23 +447,27 @@ docker compose config
 
 第三方声明见根目录 `THIRD_PARTY_NOTICES.md`。
 
-## 19. 未来开源准备
+## 19. 开源发布状态
 
-当前仓库保持私有，根目录没有 `LICENSE`，因此不授予复制、修改或再分发权。决定开源前至少完成以下事项：
+见微主程序采用 Apache License 2.0。当前已完成：
 
-- [ ] 选择并添加明确的开源许可证。
-- [ ] 核对所有第三方组件、镜像、图标和示例内容的许可证兼容性。
-- [ ] 清理 Git 历史中的真实凭据、用户内容、内部域名和个人数据。
-- [ ] 将旧代号和部署专用变量统一整理。
-- [ ] 增加 `SECURITY.md`、`CONTRIBUTING.md`、行为准则和 Issue 模板。
-- [ ] 建立 GitHub Actions：lint、test、build、secret scan 和镜像构建。
-- [ ] 提供不含真实数据的演示种子、截图和最小配置。
-- [ ] 记录数据库迁移兼容策略和版本升级路径。
-- [ ] 明确微信公众号、X 和搜索采集的使用条款与责任边界。
-- [ ] 将实验性 `docs/plans/` 与正式文档分层。
-- [ ] 发布前执行一次独立安全审计和全新机器安装测试。
+- [x] 添加 `LICENSE`、`NOTICE` 和完整第三方声明。
+- [x] 核对 Hermes Agent、WeRSS、TrendRadar 与 wechat-download-api 的许可证和进程边界。
+- [x] 扫描当前文件和 Git 历史中的常见凭据格式。
+- [x] 增加 `SECURITY.md`、`CONTRIBUTING.md`、行为准则、支持说明和 Issue 模板。
+- [x] 建立 GitHub Actions：开源审计、lint、test、build 和 Compose 校验。
+- [x] 将本机私有 WeRSS 镜像替换为可公开拉取的上游镜像。
+- [x] 明确微信公众号、X、搜索和模型服务的使用责任边界。
 
-在完成许可证和历史清理之前，不应把仓库直接切换为 Public。
+切换仓库为 Public 前仍需人工确认：
+
+- [ ] 在全新目录或另一台机器执行一次 `./start.sh`。
+- [ ] 检查 README 截图和演示数据不包含真实账号、Cookie 或私人内容。
+- [ ] 仓库切换为 Public 后立即启用 GitHub 私有漏洞报告。
+- [ ] 确认 `NOTICE` 中的权利人标识。
+- [ ] 由仓库所有者明确批准切换为 Public。
+
+完整证据和命令见 [开源准备报告](open-source-readiness.md)。
 
 ## 20. 文档索引
 
@@ -471,12 +475,16 @@ docker compose config
 - [项目手册：完整产品与技术说明](project-handbook.md)
 - [生产部署](production-deploy.md)
 - [TrendRadar 集成架构](architecture-trendradar.md)
+- [开源准备报告](open-source-readiness.md)
 - [第三方声明](../THIRD_PARTY_NOTICES.md)
+- [贡献指南](../CONTRIBUTING.md)
+- [安全策略](../SECURITY.md)
+- [路线图](../ROADMAP.md)
 - `docs/plans/`：历史设计与实施计划，仅用于追踪决策，不代表所有内容仍是当前行为。
 
 ## 21. 版本定位
 
-当前私有首版按 `v0.1.0` 管理，目标是：
+当前首版按 `v0.1.0` 管理，目标是：
 
 - 单用户自托管可以持续运行。
 - 四类来源形成完整采集闭环。

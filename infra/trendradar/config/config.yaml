@@ -448,7 +448,7 @@ ai:
 # 9. AI 分析功能（模型配置见上方 ai 段）
 # ===============================================================
 ai_analysis:
-  enabled: false                    # SignalDeck 初始部署不要求 AI 密钥，后台配置后再开启
+  enabled: false                    # 见微初始部署不要求 AI 密钥，后台配置后再开启
                                     # 开启 schedule 后此项仍为总开关：false=永远不分析，true=由调度控制
 
   language: "Chinese"               # 分析报告语言（如 "English", "Korean", "法语"）
@@ -477,7 +477,7 @@ ai_analysis:
 # 对推送标题进行翻译，不包含 AI 分析的内容
 # ===============================================================
 ai_translation:
-  enabled: false                    # SignalDeck 初始部署不要求 AI 密钥，后台配置后再开启
+  enabled: false                    # 见微初始部署不要求 AI 密钥，后台配置后再开启
   language: "中文"                   # 翻译目标语言（如 "English", "Korean", "法语"）
   prompt_file: "ai_translation_prompt.txt"   # 提示词文件（相对于 config 目录）
 

@@ -21,7 +21,7 @@ export async function seedConnectors(): Promise<void> {
 }
 
 // Ensure a baseline TrendRadar monitor exists so the reader shows hotlist/RSS
-// content out of the box. TrendRadar owns collection; SignalDeck only consumes
+// content out of the box. TrendRadar owns collection; 见微 only consumes
 // its MCP output. This row is what drives the worker's trendradar branch.
 const DEFAULT_TRENDRADAR_MONITOR_ID = "00000000-0000-0000-0000-0000000000a1";
 

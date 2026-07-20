@@ -1,0 +1,72 @@
+name: 缺陷报告
+description: 报告可以稳定复现的见微问题
+title: "[Bug] "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请先搜索已有 Issue。安全漏洞不要在这里公开，请阅读 SECURITY.md。
+        提交前删除所有 API Key、Cookie、二维码、真实账号和私人内容。
+  - type: input
+    id: version
+    attributes:
+      label: 版本或提交
+      description: GitHub Release 版本或 `git rev-parse --short HEAD`
+      placeholder: v0.1.0 / abc1234
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: 部署方式
+      options:
+        - OrbStack / Docker Desktop
+        - Linux 服务器 Docker Compose
+        - 本地 pnpm 开发环境
+        - 其他
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: 环境
+      description: 操作系统、CPU 架构、Docker 和浏览器版本
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 从干净状态开始，逐步描述如何稳定复现
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期结果
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际结果
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 脱敏日志
+      description: 仅粘贴必要片段；请再次确认没有密钥、Cookie、二维码、域名和私人内容
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已在最新版本上复现
+          required: true
+        - label: 我已删除所有敏感信息
+          required: true
+        - label: 这不是需要私下报告的安全漏洞
+          required: true

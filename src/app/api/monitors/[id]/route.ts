@@ -22,7 +22,7 @@ import { archiveMonitorConfig, parseMonitorRemovalOptions } from "@/lib/monitor-
 export const dynamic = "force-dynamic";
 
 // Only the three direct-connector platforms are editable through this API.
-// TrendRadar is a system-managed sidecar source: SignalDeck stores a seed row
+// TrendRadar is a system-managed sidecar source: 见微 stores a seed row
 // so the worker can import its feed, but users must not edit/delete it here.
 const SCHEMA_MAP = {
   x: xMonitorSchema,
