@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Security
+
+- 将间接依赖中的 `postcss` 和 `esbuild` 固定到已修复版本，消除公开前的中等级别安全告警。
+
 ### Added
 
 - Apache-2.0 开源许可和第三方声明。
