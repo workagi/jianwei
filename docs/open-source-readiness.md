@@ -15,10 +15,11 @@
 | 当前文件凭据扫描 | 通过 | 未发现常见真实凭据格式 |
 | Git 历史凭据扫描 | 通过 | 当前全部提交的文本补丁未发现常见真实凭据格式 |
 | 本地文件追踪 | 通过 | `.env`、数据库、私钥、构建目录和本地数据未被追踪 |
-| Node.js 依赖许可证 | 通过 | 436 个已安装包未发现未知许可证 |
+| Node.js 依赖许可证 | 通过 | 433 个已安装包未发现未知许可证 |
 | 公开安装镜像 | 已修复 | 默认 WeRSS 从本机镜像改为上游公开镜像 |
 | 社区治理 | 通过 | 已添加贡献、安全、支持、行为准则和 Issue/PR 模板 |
 | 自动化门禁 | 已添加 | CI 执行开源审计、lint、test、build 与 Compose 校验 |
+| 依赖自动更新 | 已添加 | 同生态小版本合并更新，跨大版本保留人工评估 |
 | 依赖漏洞提醒 | 已启用 | GitHub vulnerability alerts 已在私有阶段开启 |
 | 全新机器安装 | 待人工确认 | 发布前仍需在干净环境运行一次 `./start.sh` |
 | GitHub 可见性 | 未修改 | 仓库仍为 Private；私有漏洞报告需在公开后启用 |
@@ -56,7 +57,7 @@ pnpm audit:open-source -- --history
 | TrendRadar | GPL-3.0 | 独立 Docker/MCP Sidecar | 不复制源码，不链接进主程序 |
 | wechat-download-api | AGPL-3.0 | 可选 Docker profile | 不复制源码，只调用兼容 HTTP 接口 |
 
-`pnpm-lock.yaml` 固定 Node.js 依赖版本。当前安装树共检查 436 个包，许可证包括 MIT、Apache-2.0、BSD、ISC、MPL-2.0、LGPL-3.0-or-later、CC、Python-2.0 和 Unlicense，未发现 `UNKNOWN` 或 `UNLICENSED`。
+`pnpm-lock.yaml` 固定 Node.js 依赖版本。当前安装树共检查 433 个包，许可证包括 MIT、Apache-2.0、BSD、ISC、MPL-2.0、LGPL-3.0-or-later、CC、Python-2.0 和 Unlicense，未发现 `UNKNOWN` 或 `UNLICENSED`。
 
 ## 4. 已处理的公开安装阻塞
 
