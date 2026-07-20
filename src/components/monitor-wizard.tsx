@@ -4,6 +4,11 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { AtSign, MessageCircle, Search } from "lucide-react";
 import { buildSearchQuery } from "@/connectors/web/query-builder";
+import {
+  formatPollInterval,
+  POLL_INTERVAL_GROUPS,
+  POLL_INTERVAL_OPTIONS,
+} from "@/lib/monitor-schedule";
 
 type Platform = "x" | "wechat" | "web_search";
 type UiPlatform = Platform | "wechat_keyword";
@@ -26,9 +31,11 @@ const platforms = [
 
 interface FormState {
   name: string;
+  xProvider: "x_grok" | "x_official";
   username: string;
   includeReplies: boolean;
   includeReposts: boolean;
+  includeQuotes: boolean;
   articleUrl: string;
   searchProvider: "brave" | "tavily" | "serper";
   query: string;
@@ -45,9 +52,11 @@ interface FormState {
 
 const EMPTY: FormState = {
   name: "",
+  xProvider: "x_grok",
   username: "",
   includeReplies: false,
   includeReposts: false,
+  includeQuotes: false,
   articleUrl: "",
   searchProvider: "brave",
   query: "",
@@ -92,22 +101,24 @@ function uiPlatformForEditing(editing: EditTarget | null | undefined): UiPlatfor
   return editing?.platform ?? "x";
 }
 
-function configToForm(platform: UiPlatform, config: Record<string, unknown>, pollIntervalMinutes: number): FormState {
+function configToForm(platform: UiPlatform, config: Record<string, unknown>, pollIntervalMinutes: number, name = ""): FormState {
   const c = config as Record<string, unknown>;
   if (platform === "x") {
     return {
       ...EMPTY,
-      name: "",
+      name,
+      xProvider: (c.provider === "x_grok" ? "x_grok" : "x_official"),
       username: (c.username as string) ?? "",
       includeReplies: !!c.includeReplies,
       includeReposts: !!c.includeReposts,
+      includeQuotes: !!c.includeQuotes,
       pollIntervalMinutes,
     };
   }
   if (platform === "wechat_keyword") {
     return {
       ...EMPTY,
-      name: "",
+      name,
       query: (c.query as string) ?? "",
       exactPhrases: joinList(c.requiredTerms),
       excludedTerms: joinList(c.excludedTerms),
@@ -116,11 +127,11 @@ function configToForm(platform: UiPlatform, config: Record<string, unknown>, pol
     };
   }
   if (platform === "wechat") {
-    return { ...EMPTY, name: "", articleUrl: (c.articleUrl as string) ?? "", pollIntervalMinutes };
+    return { ...EMPTY, name, articleUrl: (c.articleUrl as string) ?? "", pollIntervalMinutes };
   }
   return {
     ...EMPTY,
-    name: "",
+    name,
     searchProvider: ((c.provider as string) ?? "brave") as FormState["searchProvider"],
     query: (c.query as string) ?? "",
     resultType: (c.resultType as string) ?? "both",
@@ -144,15 +155,44 @@ export function MonitorWizard({
   const router = useRouter();
   const [platform, setPlatform] = useState<UiPlatform>(uiPlatformForEditing(editing));
   const [form, setForm] = useState<FormState>(
-    editing ? configToForm(uiPlatformForEditing(editing), editing.config, editing.pollIntervalMinutes) : EMPTY,
+    editing ? configToForm(uiPlatformForEditing(editing), editing.config, editing.pollIntervalMinutes, editing.name) : EMPTY,
   );
   const [busy, setBusy] = useState(false);
-  const [preview, setPreview] = useState<{ count: number; displayName?: string; warning?: string } | null>(null);
+  const [preview, setPreview] = useState<{
+    count: number;
+    displayName?: string;
+    warning?: string;
+    articleUrl?: string;
+    configPatch?: Record<string, unknown>;
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
 
-  const requiresPreview = !editing;
-  const canSave = !busy && (!requiresPreview || Boolean(preview));
+  const canSave = !busy;
+  const hasPresetPollInterval = POLL_INTERVAL_OPTIONS.some((option) => option.value === form.pollIntervalMinutes);
+  const optionForValue = (value: number) => POLL_INTERVAL_OPTIONS.find((option) => option.value === value);
+  const pollIntervalRecommendation: Record<UiPlatform, string> = {
+    x: form.xProvider === "x_grok"
+      ? "推荐 2–3 小时"
+      : "推荐 30–60 分钟",
+    wechat: "推荐 2–3 小时",
+    wechat_keyword: "推荐 15–30 分钟",
+    web_search: "推荐 1–2 小时",
+  };
+  const pollIntervalHint: Record<UiPlatform, string> = {
+    x: form.xProvider === "x_grok"
+      ? "SuperGrok 使用订阅额度；账号越多，越不适合高频轮询。系统会自动错开同频率账号。"
+      : "官方 X API 有调用额度；账号多时可放宽到 1–2 小时。系统会自动错开请求。",
+    wechat: "公众号通常不是分钟级更新；2–3 小时兼顾及时性和 WeRSS 稳定性，多个公众号会自动错峰。",
+    wechat_keyword: "这是在已入库公众号文章中做本地筛选，不会重复抓微信；提高频率的额外成本较低。",
+    web_search: "每次都会消耗搜索 API 额度；品牌舆情可用 1 小时，普通行业追踪用 2–4 小时。",
+  };
+  const previewButtonText: Record<UiPlatform, string> = {
+    x: "预览账号",
+    wechat: "预览公众号",
+    wechat_keyword: "预览匹配",
+    web_search: "预览结果",
+  };
 
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) => {
     setForm((f) => ({ ...f, [key]: value }));
@@ -162,12 +202,23 @@ export function MonitorWizard({
     }
   };
 
-  function buildConfig(): Record<string, unknown> {
+  function buildConfig(options: { includePreviewPatch?: boolean } = {}): Record<string, unknown> {
+    const includePreviewPatch = options.includePreviewPatch ?? true;
     if (platform === "x") {
-      return { username: form.username, includeReplies: form.includeReplies, includeReposts: form.includeReposts };
+      return {
+        provider: form.xProvider,
+        username: form.username,
+        includeReplies: form.includeReplies,
+        includeReposts: form.includeReposts,
+        includeQuotes: form.includeQuotes,
+      };
     }
     if (platform === "wechat") {
-      return { kind: "account", articleUrl: form.articleUrl, provider: "werss" };
+      const patch =
+        includePreviewPatch && preview?.articleUrl === form.articleUrl
+          ? preview.configPatch
+          : undefined;
+      return { kind: "account", articleUrl: form.articleUrl, provider: "werss", ...(patch ?? {}) };
     }
     if (platform === "wechat_keyword") {
       const terms = splitList(form.exactPhrases);
@@ -219,7 +270,7 @@ export function MonitorWizard({
       const res = await fetch("/api/monitors/validate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ platform: apiPlatform, config: buildConfig() }),
+        body: JSON.stringify({ platform: apiPlatform, config: buildConfig({ includePreviewPatch: false }) }),
       });
       const data = await res.json();
       if (!data.ok) {
@@ -230,6 +281,8 @@ export function MonitorWizard({
         count: data.preview?.items?.length ?? 0,
         displayName: data.preview?.displayName,
         warning: data.preview?.warning,
+        articleUrl: platform === "wechat" ? form.articleUrl : undefined,
+        configPatch: data.preview?.configPatch,
       });
     } catch {
       setError("网络错误，无法连接校验接口");
@@ -239,19 +292,20 @@ export function MonitorWizard({
   }
 
   async function save() {
-    if (requiresPreview && !preview) {
-      setError("请先验证并预览，确认来源可用后再保存。");
-      return;
-    }
     setBusy(true);
     setError(null);
     setSaved(false);
     try {
+      const typedName = form.name.trim();
+      const currentXAutoName = platform === "x" && (typedName === `@${form.username.replace(/^@/, "")}` || typedName === form.username.replace(/^@/, ""));
+      const resolvedName = platform === "x" && preview?.displayName && (!typedName || currentXAutoName)
+        ? preview.displayName.trim()
+        : typedName;
       const payload = {
         platform: platform === "wechat_keyword" ? "wechat" : platform,
         config: buildConfig(),
         pollIntervalMinutes: form.pollIntervalMinutes,
-        ...(form.name.trim() ? { name: form.name.trim() } : {}),
+        ...(resolvedName ? { name: resolvedName } : {}),
       };
       const res = await fetch(editing ? `/api/monitors/${editing.id}` : "/api/monitors", {
         method: editing ? "PATCH" : "POST",
@@ -318,31 +372,59 @@ export function MonitorWizard({
       {platform === "x" && (
         <>
           <label className="field">
+            <span>采集方式</span>
+            <select value={form.xProvider} onChange={(e) => set("xProvider", e.target.value as FormState["xProvider"])}>
+              <option value="x_grok">SuperGrok / X Search · 推荐</option>
+              <option value="x_official">X 官方 API · 后备</option>
+            </select>
+            <small className="field-hint">
+              {form.xProvider === "x_grok"
+                ? "使用「平台连接」中已授权的 SuperGrok；只保存带真实推文引用的结果。"
+                : "使用「平台连接」中填写的 X_BEARER_TOKEN，适合需要严格时间线和稳定字段的场景。"}
+            </small>
+          </label>
+          <label className="field">
             <span>公开账号用户名</span>
             <input
               placeholder="例如 @OpenAI"
               value={form.username}
               onChange={(e) => set("username", e.target.value)}
             />
-            <small className="field-hint">通过官方 X API 识别账号并采集最新公开帖子。</small>
+            <small className="field-hint">
+              {form.xProvider === "x_grok" ? "通过 xAI X Search 查找这个账号最新的公开帖子。" : "通过官方 X API 识别账号并采集最新公开帖子。"}
+            </small>
           </label>
-          <div className="field-row">
-            <label className="checkbox">
-              <input
-                type="checkbox"
-                checked={form.includeReplies}
-                onChange={(e) => set("includeReplies", e.target.checked)}
-              />
-              包含回复
-            </label>
-            <label className="checkbox">
-              <input
-                type="checkbox"
-                checked={form.includeReposts}
-                onChange={(e) => set("includeReposts", e.target.checked)}
-              />
-              包含转推
-            </label>
+          <div className="x-option-field">
+            <span>内容范围</span>
+            <div className="field-row x-content-options">
+              <label className="checkbox">
+                <input
+                  type="checkbox"
+                  checked={form.includeReplies}
+                  onChange={(e) => set("includeReplies", e.target.checked)}
+                />
+                <span>包含回复</span>
+              </label>
+              <label className="checkbox">
+                <input
+                  type="checkbox"
+                  checked={form.includeReposts}
+                  onChange={(e) => set("includeReposts", e.target.checked)}
+                />
+                <span>包含转推</span>
+              </label>
+              <label className="checkbox">
+                <input
+                  type="checkbox"
+                  checked={form.includeQuotes}
+                  onChange={(e) => set("includeQuotes", e.target.checked)}
+                />
+                <span>包含引用</span>
+              </label>
+            </div>
+            <small className="field-hint">
+              默认只采集账号原创内容。引用帖（带评论转发别人推文）需单独勾选「包含引用」；勾选后会展示被引用的原文。
+            </small>
           </div>
         </>
       )}
@@ -355,7 +437,9 @@ export function MonitorWizard({
             value={form.articleUrl}
             onChange={(e) => set("articleUrl", e.target.value)}
           />
-          <small className="field-hint">通过任意一篇公开文章识别公众号；首次使用需要在 WeRSS 扫码授权。</small>
+          <small className="field-hint">
+            通过任意一篇公开文章识别公众号；直接添加后会在后台识别，想先确认公众号可点「预览公众号」。
+          </small>
         </label>
       )}
 
@@ -369,7 +453,7 @@ export function MonitorWizard({
               onChange={(e) => set("query", e.target.value)}
             />
             <small className="field-hint">
-              只在已订阅公众号文章库中筛选，不调用全微信搜索 API；保存后会随公众号新文章自动匹配。
+              只在已订阅公众号文章库中筛选，不调用全微信搜索 API；可先预览匹配数量，也可以直接添加。
             </small>
           </label>
           <label className="field">
@@ -417,7 +501,7 @@ export function MonitorWizard({
               <option value="serper">Serper / Google · Google 结果面</option>
             </select>
             <small className="field-hint">
-              在「平台连接」里配置对应 API Key；这条任务保存后会固定使用当前选择的服务商，不会自动切换。
+              在「平台连接」里配置对应 API Key；可先预览结果，也可以直接添加，让后台首次采集。
             </small>
             <div className="provider-advice">
               <strong>{providerTips[form.searchProvider].label}</strong>
@@ -482,7 +566,7 @@ export function MonitorWizard({
             <div className="query-preview">
               <span>实际提交给搜索服务商的查询</span>
               <code>{webSearchQueryPreview}</code>
-              <small>服务商先按这条查询召回；SignalDeck 再按必含短语、排除词和域名规则过滤后入库。</small>
+              <small>服务商先按这条查询召回；见微再按必含短语、排除词和域名规则过滤后入库。</small>
             </div>
           )}
         </>
@@ -494,11 +578,28 @@ export function MonitorWizard({
           value={form.pollIntervalMinutes}
           onChange={(e) => set("pollIntervalMinutes", Number(e.target.value))}
         >
-          <option value={15}>每 15 分钟</option>
-          <option value={30}>每 30 分钟</option>
-          <option value={60}>每 1 小时</option>
-          <option value={360}>每 6 小时</option>
+          {!hasPresetPollInterval && (
+            <option value={form.pollIntervalMinutes}>
+              当前设置 · {formatPollInterval(form.pollIntervalMinutes)}
+            </option>
+          )}
+          {POLL_INTERVAL_GROUPS.map((group) => (
+            <optgroup key={group.label} label={group.label}>
+              {group.values.map((value) => {
+                const option = optionForValue(value);
+                return option ? (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ) : null;
+              })}
+            </optgroup>
+          ))}
         </select>
+        <small className="field-hint frequency-hint">
+          <strong>{pollIntervalRecommendation[platform]}</strong>
+          <span>{pollIntervalHint[platform]}</span>
+        </small>
       </label>
 
       {preview && (
@@ -519,19 +620,18 @@ export function MonitorWizard({
         )}
         <button
           type="button"
-          className={preview && !editing ? "secondary-button" : "primary-button"}
+          className="secondary-button"
           onClick={() => void validatePreview()}
           disabled={busy}
         >
-          {busy ? "验证中…" : preview && !editing ? "重新验证" : "验证并预览"}
+          {busy ? "预览中…" : preview ? "重新预览" : previewButtonText[platform]}
         </button>
         <button
           type="submit"
           className={canSave ? "primary-button" : "secondary-button"}
           disabled={!canSave}
-          title={!canSave && requiresPreview ? "请先验证并预览" : undefined}
         >
-          {busy ? "处理中…" : editing ? "保存修改" : "保存监控"}
+          {busy ? "处理中…" : editing ? "保存修改" : "添加监控"}
         </button>
       </div>
     </form>

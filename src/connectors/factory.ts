@@ -1,10 +1,12 @@
 import { XConnector } from "./x/x-connector";
+import { XaiSearchConnector } from "./x/xai-search-connector";
 import { BraveConnector } from "./web/brave-connector";
 import { SerperConnector } from "./web/serper-connector";
 import { TavilyConnector } from "./web/tavily-connector";
 import { WeRssConnector } from "./wechat/werss-connector";
 import type { WebSearchMonitorConfig } from "./types";
 import { loadApiCredentials } from "@/db/queries";
+import { resolveXaiAccessToken } from "@/lib/xai-oauth";
 
 /**
  * Single place that maps environment variables to direct-connector instances.
@@ -15,6 +17,10 @@ const WERSS_DEFAULT = process.env.WERSS_BASE_URL ?? "http://werss:8001";
 
 export function createXConnector(): XConnector {
   return new XConnector(process.env.X_BEARER_TOKEN ?? "");
+}
+
+export function createXaiSearchConnector(): XaiSearchConnector {
+  return new XaiSearchConnector(() => resolveXaiAccessToken());
 }
 
 export function createBraveConnector(): BraveConnector {
@@ -28,7 +34,10 @@ export function createWebSearchConnector(provider: WebSearchMonitorConfig["provi
 }
 
 export function createWeRssConnector(): WeRssConnector {
-  return new WeRssConnector(WERSS_DEFAULT, process.env.WERSS_ACCESS_KEY);
+  return new WeRssConnector(WERSS_DEFAULT, process.env.WERSS_ACCESS_KEY, fetch, {
+    directFallbackEnabled: process.env.WECHAT_DIRECT_FALLBACK_ENABLED !== "false",
+    fallbackBaseUrl: process.env.WECHAT_FALLBACK_BASE_URL,
+  });
 }
 
 async function runtimeCredential(key: string): Promise<string | undefined> {
@@ -50,6 +59,10 @@ export async function createRuntimeXConnector(): Promise<XConnector> {
   return new XConnector((await runtimeCredential("X_BEARER_TOKEN")) ?? "");
 }
 
+export async function createRuntimeXaiSearchConnector(): Promise<XaiSearchConnector> {
+  return new XaiSearchConnector(() => resolveXaiAccessToken());
+}
+
 export async function createRuntimeBraveConnector(): Promise<BraveConnector> {
   return new BraveConnector((await runtimeCredential("BRAVE_SEARCH_API_KEY")) ?? "");
 }
@@ -61,5 +74,13 @@ export async function createRuntimeWebSearchConnector(provider: WebSearchMonitor
 }
 
 export async function createRuntimeWeRssConnector(): Promise<WeRssConnector> {
-  return new WeRssConnector(WERSS_DEFAULT, await runtimeCredential("WERSS_ACCESS_KEY"));
+  const [accessKey, directFallback, fallbackBaseUrl] = await Promise.all([
+    runtimeCredential("WERSS_ACCESS_KEY"),
+    runtimeCredential("WECHAT_DIRECT_FALLBACK_ENABLED"),
+    runtimeCredential("WECHAT_FALLBACK_BASE_URL"),
+  ]);
+  return new WeRssConnector(WERSS_DEFAULT, accessKey, fetch, {
+    directFallbackEnabled: directFallback !== "false",
+    fallbackBaseUrl,
+  });
 }

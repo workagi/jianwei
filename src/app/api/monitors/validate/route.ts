@@ -3,18 +3,10 @@ import {
   xMonitorSchema,
   wechatMonitorSchema,
   webSearchMonitorSchema,
-  isWechatKeywordRuleConfig,
-  type XMonitorConfig,
-  type WechatMonitorConfig,
-  type WebSearchMonitorConfig,
 } from "@/connectors/types";
-import {
-  createRuntimeWebSearchConnector,
-  createRuntimeWeRssConnector,
-  createRuntimeXConnector,
-} from "@/connectors/factory";
 import { requireWriteAuth } from "@/lib/auth";
-import { previewWechatKeywordRule } from "@/connectors/wechat/keyword-rule";
+import { createRuntimeSourceProvider } from "@/sources/registry";
+import { validateWithProvider } from "@/sources/types";
 
 export const dynamic = "force-dynamic";
 
@@ -32,7 +24,7 @@ type SupportedPlatform = keyof typeof SCHEMA_MAP;
  * without them the connector surfaces an auth error that we forward to the UI.
  */
 export async function POST(req: Request) {
-  const denied = requireWriteAuth(req);
+  const denied = await requireWriteAuth(req);
   if (denied) return denied;
 
   let body: { platform?: string; config?: unknown };
@@ -54,20 +46,9 @@ export async function POST(req: Request) {
   }
 
   try {
-    if (platform === "x") {
-      const preview = await (await createRuntimeXConnector()).validate(parsed.data as XMonitorConfig);
-      return NextResponse.json({ ok: true, preview });
-    }
-    if (platform === "web_search") {
-      const config = parsed.data as WebSearchMonitorConfig;
-      const preview = await (await createRuntimeWebSearchConnector(config.provider ?? "brave")).validate(config);
-      return NextResponse.json({ ok: true, preview });
-    }
-    if (isWechatKeywordRuleConfig(parsed.data)) {
-      const preview = await previewWechatKeywordRule(parsed.data);
-      return NextResponse.json({ ok: true, preview });
-    }
-    const preview = await (await createRuntimeWeRssConnector()).validate(parsed.data as Extract<WechatMonitorConfig, { kind: "account" }>);
+    const normalizedConfig = parsed.data as Record<string, unknown>;
+    const provider = await createRuntimeSourceProvider(platform as SupportedPlatform, normalizedConfig);
+    const preview = await validateWithProvider(provider, normalizedConfig);
     return NextResponse.json({ ok: true, preview });
   } catch (err) {
     const message = err instanceof Error ? err.message : "VALIDATE_FAILED";

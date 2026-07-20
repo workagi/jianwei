@@ -2,6 +2,19 @@ import { readFile, writeFile } from "node:fs/promises";
 import { readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import type { NormalizedItem } from "@/connectors/types";
+import { trendRadarRssSourceEnabled } from "@/lib/trendradar-config";
+
+/**
+ * Wide sources often mention AI/开发者 only in the body. Reader and ingest both
+ * require the interest hit to appear in the headline for these names, so the
+ * database never accumulates "hidden" rows that still burn summary tokens.
+ */
+export const BROAD_TRENDRADAR_SOURCES = new Set([
+  "IT之家",
+  "Hacker News",
+  "Product Hunt",
+  "雅虎财经",
+]);
 
 interface InterestRules {
   include: RegExp[];
@@ -129,8 +142,8 @@ export function serializeEditableFrequencyWordsConfig(input: Pick<TrendRadarInte
     .filter((group) => group.name && group.keywords.length > 0);
 
   return [
-    "# SignalDeck 热榜 / RSS 兴趣规则。",
-    "# 后台「平台连接 → 热榜兴趣规则」会写入此文件。",
+    "# SignalDeck 站点榜单 / RSS 兴趣规则。",
+    "# 后台「平台连接 → 榜单 / RSS 兴趣规则」会写入此文件。",
     "# 每行一个关键词；高级用户也可以填写 /.../i 形式的正则。",
     "",
     "[GLOBAL_FILTER]",
@@ -187,8 +200,36 @@ export function isTrendRadarInteresting(item: Pick<NormalizedItem, "title" | "te
   return rules.include.some((pattern) => pattern.test(text));
 }
 
-export function filterTrendRadarItems<T extends Pick<NormalizedItem, "title" | "text">>(items: T[]): T[] {
-  return items.filter(isTrendRadarInteresting);
+/**
+ * Single gate shared by ingest, reader, and model backfill.
+ * Must stay identical: what can enter the DB is what can appear on the feed,
+ * and only those rows may spend model tokens.
+ */
+export function passesTrendRadarReaderGate(item: {
+  title?: string | null;
+  text?: string | null;
+  bodyText?: string | null;
+  authorName?: string | null;
+}): boolean {
+  if (item.authorName && trendRadarRssSourceEnabled(item.authorName) === false) return false;
+  const body = item.text ?? item.bodyText ?? "";
+  const titleOnly = Boolean(item.authorName && BROAD_TRENDRADAR_SOURCES.has(item.authorName));
+  return isTrendRadarInteresting({
+    title: item.title ?? undefined,
+    text: titleOnly ? "" : body,
+  });
+}
+
+export function filterTrendRadarItems<
+  T extends Pick<NormalizedItem, "title" | "text"> & { authorName?: string | null },
+>(items: T[]): T[] {
+  return items.filter((item) =>
+    passesTrendRadarReaderGate({
+      title: item.title,
+      text: item.text,
+      authorName: item.authorName,
+    }),
+  );
 }
 
 export function resetTrendRadarInterestRulesForTests() {

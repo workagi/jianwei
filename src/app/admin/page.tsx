@@ -2,14 +2,14 @@ import { cookies } from "next/headers";
 import { Plus } from "lucide-react";
 import { loadAdminMonitors } from "@/lib/reader-data";
 import { AdminMonitorsManager } from "@/components/admin-monitors-manager";
-import { AdminLogin, LogoutButton } from "@/components/admin-auth";
+import { AdminAccountActions, AdminLogin } from "@/components/admin-auth";
 import { ADMIN_COOKIE, pageCookieOk } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
 export default async function AdminPage() {
   const token = (await cookies()).get(ADMIN_COOKIE)?.value;
-  if (!pageCookieOk(token)) {
+  if (!(await pageCookieOk(token))) {
     return (
       <main className="admin-page">
         <AdminLogin />
@@ -27,10 +27,10 @@ export default async function AdminPage() {
           <p>添加具体账号、公众号文章链接或关键词；平台密钥和摘要模型请到「平台连接」配置。</p>
         </div>
         <div className="heading-actions">
-          <LogoutButton />
-          <button className="primary-button">
+          <AdminAccountActions />
+          <a href="#add-monitor" className="primary-button">
             <Plus size={16} /> 添加监控
-          </button>
+          </a>
         </div>
       </header>
 

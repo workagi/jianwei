@@ -1,6 +1,6 @@
-# SignalDeck 线上部署说明
+# 见微线上部署说明
 
-这份文档用于把本地 SignalDeck 迁到一台公网服务器。核心原则：公网只暴露 HTTPS 入口，其他数据库、WeRSS、TrendRadar、MCP、refresh 服务全部留在 Docker 内网。
+这份文档用于把本地见微迁到一台公网服务器。核心原则：公网只暴露 HTTPS 入口，其他数据库、WeRSS、TrendRadar、MCP、refresh 服务全部留在 Docker 内网。
 
 ## 1. 服务器准备
 
@@ -43,6 +43,8 @@ SIGNALDECK_DOMAIN=你的域名
 ACME_EMAIL=你的邮箱
 POSTGRES_PASSWORD=强随机密码
 APP_ENCRYPTION_KEY=32字节base64随机值
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=强登录密码
 ADMIN_API_TOKEN=强随机令牌
 TRENDRADAR_REFRESH_TOKEN=强随机令牌
 ```
@@ -54,7 +56,8 @@ openssl rand -base64 32
 openssl rand -hex 32
 ```
 
-注意：`APP_ENCRYPTION_KEY` 后续不要随便换。未来如果数据库里保存了加密凭据，换掉它会导致旧凭据无法解密。
+注意：后台保存的模型、搜索、X 与 WeRSS API 密钥会用 `APP_ENCRYPTION_KEY`
+进行 AES-256-GCM 加密。后续不要直接更换该值，否则已有凭据无法解密；迁移服务器时必须连同它安全迁移。
 
 ## 4. 启动生产服务
 
@@ -82,7 +85,8 @@ https://你的域名/admin
 https://你的域名/admin/connectors
 ```
 
-后台登录使用 `.env.production` 里的 `ADMIN_API_TOKEN`。
+后台登录使用 `.env.production` 里的 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD`。
+`ADMIN_API_TOKEN` 只用于脚本或 CI 调用受保护的写接口。
 
 ## 5. WeRSS 授权方式
 
@@ -123,12 +127,13 @@ docker compose --env-file .env.production -p signaldeck -f docker-compose.prod.y
 
 ## 7. 备份
 
-必须备份四类数据：
+必须备份五类数据：
 
-1. Postgres：监控任务、文章、收藏、后台配置
+1. Postgres：监控任务、文章、收藏、运行状态、后台配置
 2. WeRSS volume：公众号授权、订阅信息
-3. TrendRadar output volume：热榜/RSS 历史
-4. `infra/trendradar/config`：热榜/RSS 来源配置
+3. 增强公众号采集器 volume（启用时）：扫码登录与会话信息
+4. TrendRadar output volume：热榜/RSS 历史
+5. `infra/trendradar/config`：热榜/RSS 来源配置
 
 推荐每晚执行一次：
 
@@ -142,6 +147,12 @@ docker run --rm \
   -v signaldeck_werss-data:/data:ro \
   -v "$PWD/backups:/backup" \
   alpine tar czf /backup/werss-data-$(date +%F).tgz -C /data .
+
+# 仅在启用了 wechat-fallback profile 时需要
+docker run --rm \
+  -v signaldeck_wechat-fallback-data:/data:ro \
+  -v "$PWD/backups:/backup" \
+  alpine tar czf /backup/wechat-fallback-data-$(date +%F).tgz -C /data .
 
 docker run --rm \
   -v signaldeck_trendradar-output:/data:ro \
@@ -187,7 +198,7 @@ docker compose --env-file .env.production -p signaldeck -f docker-compose.prod.y
 
 ### 信息流没有立刻更新
 
-`保存并立即刷新` 会触发 TrendRadar 采集；SignalDeck 的 `worker` 还会按自己的轮询周期把 TrendRadar 输出导入 Postgres。默认最多等几十秒到一分钟。
+`保存并立即刷新` 会触发 TrendRadar 采集；见微的 `worker` 还会按自己的轮询周期把 TrendRadar 输出导入 Postgres。默认最多等几十秒到一分钟。
 
 ### WeRSS 需要重新扫码
 

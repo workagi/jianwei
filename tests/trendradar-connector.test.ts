@@ -9,7 +9,7 @@ describe("TrendRadarConnector", () => {
         data: [{ title: "AI 新模型发布", platform: "zhihu", platform_name: "知乎", rank: 1, timestamp: "2026-07-08 10:00:00", url: "https://example.com/news" }],
       } : {
         success: true,
-        data: [{ title: "RSS 文章", feed_id: "hn", feed_name: "Hacker News", url: "https://example.com/rss", published_at: "2026-07-08T09:00:00Z", author: "Alice", date: "2026-07-08", fetch_time: "2026-07-08 10:00:00", summary: "AI 摘要" }],
+        data: [{ title: "AI RSS 文章", feed_id: "hn", feed_name: "Hacker News", url: "https://example.com/rss", published_at: "2026-07-08T09:00:00Z", author: "Alice", date: "2026-07-08", fetch_time: "2026-07-08 10:00:00", summary: "AI 摘要" }],
       },
     };
     const connector = new TrendRadarConnector(client as never);

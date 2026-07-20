@@ -4,6 +4,7 @@ import {
   isTrendRadarInteresting,
   parseEditableFrequencyWordsConfig,
   parseFrequencyWordsConfig,
+  passesTrendRadarReaderGate,
 } from "@/lib/trendradar-interest-filter";
 
 describe("TrendRadar interest filter", () => {
@@ -88,5 +89,43 @@ AI
     ];
 
     expect(filterTrendRadarItems(rows)).toEqual([rows[0]]);
+  });
+
+  it("uses the same broad-source headline gate for ingest as the reader", () => {
+    // Body-only AI mention must NOT enter DB (would be hidden on the feed anyway).
+    expect(passesTrendRadarReaderGate({
+      title: "某品牌蓝牙耳机正式发布",
+      text: "文章正文顺带提到 AI 与开发者功能。",
+      authorName: "Hacker News",
+    })).toBe(false);
+
+    expect(passesTrendRadarReaderGate({
+      title: "阿里发布新款 AI 智能体耳机",
+      text: "产品详情。",
+      authorName: "Hacker News",
+    })).toBe(true);
+
+    // Focused AI feeds may still match on excerpt.
+    expect(passesTrendRadarReaderGate({
+      title: "A practical new release",
+      text: "A detailed guide to using an open source LLM Agent.",
+      authorName: "Simon Willison",
+    })).toBe(true);
+  });
+
+  it("filters ingest batches with the reader gate, not body-only interest hits", () => {
+    const rows = [
+      {
+        title: "某品牌蓝牙耳机正式发布",
+        text: "文章正文顺带提到 AI 与开发者功能。",
+        authorName: "Hacker News",
+      },
+      {
+        title: "OpenAI 发布新模型",
+        text: "大模型能力更新",
+        authorName: "知乎",
+      },
+    ];
+    expect(filterTrendRadarItems(rows)).toEqual([rows[1]]);
   });
 });

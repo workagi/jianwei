@@ -67,19 +67,40 @@ export const monitors = pgTable("monitors", {
 export const items = pgTable("items", {
   id: uuid("id").primaryKey().defaultRandom(),
   platform: platformType("platform").notNull(),
+  sourceProvider: text("source_provider"),
   upstreamId: text("upstream_id").notNull(),
   canonicalUrl: text("canonical_url").notNull(),
   authorId: text("author_id"),
   authorName: text("author_name"),
   authorHandle: text("author_handle"),
+  avatarUrl: text("avatar_url"),
   title: text("title"),
+  // 模型生成的中文显示文本：文章为中文标题，X 为忠实中文推文；原始内容始终保留。
+  translatedTitle: text("translated_title"),
   bodyText: text("body_text").notNull(),
   // AI 读完全文后生成的内容摘要（离线回填），前端优先展示，缺失时回退 bodyText。
   aiSummary: text("ai_summary"),
   // 内容类型用于顶部筛选（单选、相对稳定）；主题标签用于卡片展示（多选、可扩展）。
   contentType: text("content_type"),
   topicTags: jsonb("topic_tags").$type<string[]>().notNull().default([]),
+  retentionReason: text("retention_reason"),
+  relevanceScore: integer("relevance_score"),
+  retentionSource: text("retention_source"),
+  // Durable per-item state for the unified LLM content route. Rule-derived
+  // classification may exist while this status is still pending/failed.
+  analysisStatus: text("analysis_status").notNull().default("pending"),
+  analysisProvider: text("analysis_provider"),
+  analysisModel: text("analysis_model"),
+  analysisVersion: text("analysis_version"),
+  analysisAttempts: integer("analysis_attempts").notNull().default(0),
+  analysisErrorCode: text("analysis_error_code"),
+  analysisErrorMessage: text("analysis_error_message"),
+  analyzedAt: timestamp("analyzed_at", { withTimezone: true }),
   contentHtml: text("content_html"),
+  contentProvider: text("content_provider"),
+  contentFetchStatus: text("content_fetch_status"),
+  contentFetchError: text("content_fetch_error"),
+  contentFetchedAt: timestamp("content_fetched_at", { withTimezone: true }),
   imageUrls: jsonb("image_urls").$type<string[]>().notNull().default([]),
   publishedAt: timestamp("published_at", { withTimezone: true }).notNull(),
   fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull().defaultNow(),
@@ -90,7 +111,10 @@ export const items = pgTable("items", {
   uniqueIndex("items_platform_upstream_uidx").on(table.platform, table.upstreamId),
   uniqueIndex("items_canonical_url_uidx").on(table.canonicalUrl),
   index("items_published_idx").on(table.publishedAt),
+  index("items_source_provider_idx").on(table.sourceProvider),
   index("items_content_type_idx").on(table.contentType),
+  index("items_relevance_score_idx").on(table.relevanceScore),
+  index("items_analysis_status_idx").on(table.analysisStatus),
   index("items_content_hash_idx").on(table.contentHash),
 ]);
 
@@ -101,6 +125,14 @@ export const itemMatches = pgTable("item_matches", {
   rawPayload: jsonb("raw_payload").$type<Record<string, unknown>>().notNull().default({}),
   firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [primaryKey({ columns: [table.itemId, table.monitorId] })]);
+
+// SignalDeck is currently a single-user workspace. A dedicated join table
+// keeps bookmark state durable across browsers and leaves room for a user_id
+// column if multi-user accounts are introduced later.
+export const bookmarks = pgTable("bookmarks", {
+  itemId: uuid("item_id").primaryKey().references(() => items.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
 
 export const collectionRuns = pgTable("collection_runs", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -132,12 +164,19 @@ export const usageLedger = pgTable("usage_ledger", {
   occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const runtimeHealth = pgTable("runtime_health", {
+  service: text("service").primaryKey(),
+  status: text("status").notNull().default("ok"),
+  lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }).notNull().defaultNow(),
+  detail: jsonb("detail").$type<Record<string, unknown>>().notNull().default({}),
+});
+
 /**
  * 平台 API 凭据（X / Brave / WeRSS）。存库而非只放 .env 的原因：允许在
  * 后台界面直接配置、保存后立即生效（worker 每轮采集前刷新到 process.env），
  * 无需重启、无需手动改文件。
- * 注意：value 以明文存储（与 .env 同级），建议仅在本机 / 内网部署使用；
- * 公网部署前应启用加密或外部密钥管理。
+ * value 使用 APP_ENCRYPTION_KEY 通过 AES-256-GCM 加密；服务端读取时解密，
+ * 浏览器端只会拿到“是否已配置”，不会拿到密钥内容。
  */
 export const apiCredentials = pgTable("api_credentials", {
   key: text("key").primaryKey(),

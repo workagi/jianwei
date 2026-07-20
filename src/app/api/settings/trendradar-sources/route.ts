@@ -30,7 +30,7 @@ const saveSchema = z.object({
 });
 
 export async function GET(req: Request) {
-  const denied = requireWriteAuth(req);
+  const denied = await requireWriteAuth(req);
   if (denied) return denied;
 
   try {
@@ -46,7 +46,7 @@ export async function GET(req: Request) {
 }
 
 export async function PUT(req: Request) {
-  const denied = requireWriteAuth(req);
+  const denied = await requireWriteAuth(req);
   if (denied) return denied;
 
   let body: unknown;

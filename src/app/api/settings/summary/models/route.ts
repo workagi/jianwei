@@ -60,7 +60,7 @@ async function resolveApiKey(provider: SummaryProviderName, apiKeyFromRequest: s
 }
 
 export async function POST(req: Request) {
-  const denied = requireWriteAuth(req);
+  const denied = await requireWriteAuth(req);
   if (denied) return denied;
 
   let body: { provider?: string; baseUrl?: string; apiKey?: string };

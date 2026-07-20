@@ -33,7 +33,7 @@ export function AdminMonitorsManager({
 
   return (
     <>
-      <section className="panel">
+      <section className="panel" id="add-monitor">
         <header className="panel-head">
           <h2>全部任务</h2>
           <span>
@@ -50,7 +50,7 @@ export function AdminMonitorsManager({
       <section className="panel">
         <header className="panel-head">
           <h2>{editing ? "编辑监控" : "添加监控"}</h2>
-          <span>{editing ? "修改后保存" : "先预览，再保存"}</span>
+          <span>{editing ? "修改后保存" : "可直接添加，预览可选"}</span>
         </header>
         <MonitorWizard
           key={editing ? `edit-${editing.id}` : "new"}

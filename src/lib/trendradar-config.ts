@@ -1,4 +1,5 @@
 import { readFile, writeFile } from "node:fs/promises";
+import { readFileSync, statSync } from "node:fs";
 import path from "node:path";
 
 export interface TrendRadarPlatformSource {
@@ -27,6 +28,7 @@ export interface TrendRadarSourcesConfig {
 
 const DEFAULT_CONFIG_DIR = path.join(process.cwd(), "infra", "trendradar", "config");
 const CONFIG_PATH = path.join(process.env.TRENDRADAR_CONFIG_DIR ?? DEFAULT_CONFIG_DIR, "config.yaml");
+let cachedRssVisibility: { mtimeMs: number; byName: Map<string, boolean> } | undefined;
 
 /**
  * TrendRadar hot-list IDs are not arbitrary: they must be supported by its
@@ -156,6 +158,30 @@ function normalizeRssRows(rows: Record<string, string>[]): TrendRadarRssFeed[] {
       enabled: row.enabled !== "false",
       maxAgeDays: row.max_age_days === undefined ? undefined : Number(row.max_age_days),
     }));
+}
+
+/**
+ * Reader-side visibility follows the same RSS switch shown in the admin UI.
+ * Disabling a feed should stop both future collection and its existing rows
+ * from appearing, without destructively deleting history from the database.
+ */
+export function trendRadarRssSourceEnabled(sourceName: string): boolean | undefined {
+  try {
+    const mtimeMs = statSync(CONFIG_PATH).mtimeMs;
+    if (!cachedRssVisibility || cachedRssVisibility.mtimeMs !== mtimeMs) {
+      const raw = readFileSync(CONFIG_PATH, "utf8");
+      const lines = raw.split(/\r?\n/);
+      const block = findListBlock(lines, "rss", "feeds");
+      const feeds = normalizeRssRows(parseObjectList(lines.slice(block.start, block.end)));
+      cachedRssVisibility = {
+        mtimeMs,
+        byName: new Map(feeds.map((feed) => [feed.name, feed.enabled])),
+      };
+    }
+    return cachedRssVisibility.byName.get(sourceName);
+  } catch {
+    return undefined;
+  }
 }
 
 export async function loadTrendRadarSourcesConfig(): Promise<TrendRadarSourcesConfig> {

@@ -13,7 +13,8 @@
     "worker": "tsx src/worker/index.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
-    "db:seed": "tsx src/db/seed.ts"
+    "db:seed": "tsx src/db/seed.ts",
+    "content:cleanup": "tsx scripts/cleanup-content-quality.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.2",

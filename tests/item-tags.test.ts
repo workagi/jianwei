@@ -42,6 +42,19 @@ describe("item tag derivation", () => {
     expect(normalizeTopicTags(["#Agent", " Agent ", "", "多模态"])).toEqual(["Agent", "多模态"]);
   });
 
+  it("drops model filler and malformed topic tags before display", () => {
+    expect(normalizeTopicTags([
+      "#1",
+      "#for",
+      "#企业AI这些",
+      "#API",
+      "#GPT-5.6",
+      "#Vint Cerf",
+      "#人工智能",
+      "x".repeat(40),
+    ])).toEqual(["企业AI", "GPT-5.6", "Vint Cerf", "人工智能"]);
+  });
+
   it("matches topic tags by content-derived labels", () => {
     const item = {
       ...base,

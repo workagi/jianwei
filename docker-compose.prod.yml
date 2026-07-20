@@ -55,6 +55,9 @@ services:
     environment:
       DATABASE_URL: postgres://monitor:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/monitor
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?set APP_ENCRYPTION_KEY in .env.production}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD in .env.production}
+      ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET:-}
       ADMIN_API_TOKEN: ${ADMIN_API_TOKEN:?set ADMIN_API_TOKEN in .env.production}
       X_BEARER_TOKEN: ${X_BEARER_TOKEN:-}
       BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
@@ -62,6 +65,8 @@ services:
       SERPER_API_KEY: ${SERPER_API_KEY:-}
       WERSS_BASE_URL: http://werss:8001
       WERSS_ACCESS_KEY: ${WERSS_ACCESS_KEY:-}
+      WECHAT_DIRECT_FALLBACK_ENABLED: ${WECHAT_DIRECT_FALLBACK_ENABLED:-true}
+      WECHAT_FALLBACK_BASE_URL: ${WECHAT_FALLBACK_BASE_URL:-}
       TRENDRADAR_MCP_URL: http://trendradar-mcp:3333/mcp
       TRENDRADAR_CONFIG_DIR: /app/trendradar-config
       TRENDRADAR_REFRESH_URL: http://trendradar-refresh:8090/refresh
@@ -100,6 +105,8 @@ services:
       SERPER_API_KEY: ${SERPER_API_KEY:-}
       WERSS_BASE_URL: http://werss:8001
       WERSS_ACCESS_KEY: ${WERSS_ACCESS_KEY:-}
+      WECHAT_DIRECT_FALLBACK_ENABLED: ${WECHAT_DIRECT_FALLBACK_ENABLED:-true}
+      WECHAT_FALLBACK_BASE_URL: ${WECHAT_FALLBACK_BASE_URL:-}
       TRENDRADAR_MCP_URL: http://trendradar-mcp:3333/mcp
       X_BRAVE_MONTHLY_BUDGET_USD: ${X_BRAVE_MONTHLY_BUDGET_USD:-}
       WORKER_POLL_INTERVAL_SECONDS: ${WORKER_POLL_INTERVAL_SECONDS:-60}
@@ -111,8 +118,15 @@ services:
       SUMMARY_API_KEY: ${SUMMARY_API_KEY:-}
       SUMMARY_SKIP_PLATFORMS: ${SUMMARY_SKIP_PLATFORMS:-wechat}
       SUMMARY_MODEL: ${SUMMARY_MODEL:-}
-      SUMMARY_TIMEOUT_SECONDS: ${SUMMARY_TIMEOUT_SECONDS:-20}
+      SUMMARY_TIMEOUT_SECONDS: ${SUMMARY_TIMEOUT_SECONDS:-45}
       SUMMARY_MAX_CONCURRENCY: ${SUMMARY_MAX_CONCURRENCY:-4}
+      SUMMARY_REQUESTS_PER_MINUTE: ${SUMMARY_REQUESTS_PER_MINUTE:-}
+      SUMMARY_MAX_INPUT_CHARS: ${SUMMARY_MAX_INPUT_CHARS:-3000}
+      SUMMARY_INPUT_COST_PER_1M_USD: ${SUMMARY_INPUT_COST_PER_1M_USD:-}
+      SUMMARY_OUTPUT_COST_PER_1M_USD: ${SUMMARY_OUTPUT_COST_PER_1M_USD:-}
+      CONTENT_RETRY_INTERVAL_MINUTES: ${CONTENT_RETRY_INTERVAL_MINUTES:-15}
+      CONTENT_RETRY_BATCH_SIZE: ${CONTENT_RETRY_BATCH_SIZE:-5}
+      CONTENT_RETRY_MAX_ATTEMPTS: ${CONTENT_RETRY_MAX_ATTEMPTS:-5}
     command: ["pnpm", "worker"]
     init: true
     depends_on:
@@ -145,6 +159,26 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+    restart: unless-stopped
+
+  # Optional. Its login UI is bound to server loopback only; use an SSH tunnel
+  # for the one-time scan instead of exposing this unauthenticated API publicly.
+  wechat-fallback:
+    profiles: ["wechat-fallback"]
+    image: tmwgsicp/wechat-download-api:latest
+    environment:
+      TZ: Asia/Shanghai
+      SITE_URL: ${WECHAT_FALLBACK_PUBLIC_URL:-http://localhost:5000}
+    ports:
+      - "127.0.0.1:${WECHAT_FALLBACK_PORT:-5000}:5000"
+    volumes:
+      - wechat-fallback-data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
 
   trendradar:
@@ -194,6 +228,7 @@ services:
 volumes:
   monitor-postgres:
   werss-data:
+  wechat-fallback-data:
   trendradar-output:
   caddy-data:
   caddy-config:

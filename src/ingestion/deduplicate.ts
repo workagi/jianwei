@@ -15,6 +15,26 @@ export function canonicalizeUrl(input: string): string {
   return url.toString();
 }
 
+/**
+ * Prefer a stable, content-addressed id for WeChat articles.
+ * Historical rows used the `/s/<slug>` segment; WeRSS list ids like
+ * `mpId-aid_1` change shape across versions and otherwise collide with the
+ * unique `canonical_url` index when the same article is re-ingested.
+ */
+export function wechatStableUpstreamId(articleUrl: string | undefined, fallbackId?: string): string | undefined {
+  if (articleUrl) {
+    try {
+      const path = new URL(articleUrl).pathname;
+      const match = /\/s\/([A-Za-z0-9_-]+)/.exec(path);
+      if (match?.[1]) return match[1];
+    } catch {
+      // fall through
+    }
+  }
+  if (fallbackId?.trim()) return fallbackId.trim();
+  return undefined;
+}
+
 export function contentFingerprint(item: NormalizedItem): string {
   const day = item.publishedAt.toISOString().slice(0, 10);
   const value = [item.title ?? "", item.text, item.authorHandle ?? item.authorName ?? "", day]

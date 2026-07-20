@@ -6,9 +6,8 @@ import type {
   WechatAccountMonitorConfig,
 } from "@/connectors/types";
 import { wechatAccountMonitorSchema } from "@/connectors/types";
-// 仅在「微信摘要真正启用」时才值得为每篇文章花 ~22s 抓全文：
-// 该守卫按 process.env 实时读取后台保存的开关，避免无谓地拖慢采集。
-import { isSummaryActiveFor } from "@/lib/summarizer";
+import { resolveWechatFullText, type WechatFullTextResult } from "@/connectors/wechat/full-text-resolver";
+import { wechatStableUpstreamId } from "@/ingestion/deduplicate";
 
 /**
  * Real WeRSS (rachelos/we-mp-rss) API contract, verified against main branch:
@@ -62,7 +61,7 @@ interface ResolvedArticle {
   article?: WeRssArticle;
 }
 
-interface ResolvedFeed {
+export interface ResolvedFeed {
   mpId: string;
   mpName: string;
   mpBiz?: string;
@@ -70,11 +69,17 @@ interface ResolvedFeed {
   mpIntro?: string;
 }
 
+export interface WeRssFullTextOptions {
+  directFallbackEnabled?: boolean;
+  fallbackBaseUrl?: string;
+}
+
 export class WeRssConnector implements Connector<"wechat"> {
   constructor(
     private readonly baseUrl: string,
     private readonly accessKey?: string,
     private readonly fetcher: typeof fetch = fetch,
+    private readonly fullTextOptions: WeRssFullTextOptions = {},
   ) {}
 
   private get base(): string {
@@ -237,8 +242,7 @@ export class WeRssConnector implements Connector<"wechat"> {
   }
 
   /** Ensure the MP is subscribed in WeRSS (idempotent, best-effort). */
-  async subscribe(articleUrl: string): Promise<ResolvedFeed> {
-    const feed = await this.resolveFeed(articleUrl);
+  async subscribeResolved(feed: ResolvedFeed): Promise<ResolvedFeed> {
     if (!feed.mpBiz) {
       throw new Error("WERSS_SUBSCRIBE_FAILED:missing_mp_biz");
     }
@@ -275,6 +279,22 @@ export class WeRssConnector implements Connector<"wechat"> {
     };
   }
 
+  /** Ensure the MP is subscribed in WeRSS (idempotent, best-effort). */
+  async subscribe(articleUrl: string): Promise<ResolvedFeed> {
+    const feed = await this.resolveFeed(articleUrl);
+    return this.subscribeResolved(feed);
+  }
+
+  /** Cancel a subscription in WeRSS. SignalDeck only calls this after explicit user confirmation. */
+  async unsubscribe(mpId: string): Promise<void> {
+    const response = await this.fetcher(`${this.base}/api/v1/wx/mps/${encodeURIComponent(mpId)}`, {
+      method: "DELETE",
+      headers: this.headers(),
+      signal: AbortSignal.timeout(10_000),
+    });
+    await this.readWeRssEnvelope<unknown>(response, "WERSS_UNSUBSCRIBE_FAILED");
+  }
+
   async validate(config: WechatAccountMonitorConfig): Promise<ConnectorPreview> {
     const parsed = wechatAccountMonitorSchema.parse(config);
     const healthy = await this.health();
@@ -289,6 +309,13 @@ export class WeRssConnector implements Connector<"wechat"> {
       return {
         displayName: items[0]?.authorName ?? resolved.mpName,
         items,
+        configPatch: {
+          mpId: resolved.mpId,
+          mpName: resolved.mpName,
+          ...(resolved.mpBiz ? { mpBiz: resolved.mpBiz } : {}),
+          ...(resolved.mpCover ? { mpCover: resolved.mpCover } : {}),
+          ...(resolved.mpIntro ? { mpIntro: resolved.mpIntro } : {}),
+        },
         warning: articles.length
           ? undefined
           : "WeRSS 还没有同步该公众号的历史列表，已先用当前文章作为预览；保存后会继续采集。",
@@ -305,11 +332,20 @@ export class WeRssConnector implements Connector<"wechat"> {
 
   async collect(config: WechatAccountMonitorConfig, cursor: Record<string, unknown> = {}): Promise<CollectionResult> {
     const parsed = wechatAccountMonitorSchema.parse(config);
-    let mpId = typeof cursor.mpId === "string" ? cursor.mpId : undefined;
+    let mpId = typeof cursor.mpId === "string" ? cursor.mpId : parsed.mpId;
     let fallbackArticle: WeRssArticle | undefined;
+    let resolvedFeed: ResolvedFeed | undefined;
     if (!mpId) {
       const resolved = await this.resolveArticle(parsed.articleUrl);
-      mpId = resolved.mpId;
+      const feed = await this.subscribeResolved({
+        mpId: resolved.mpId,
+        mpName: resolved.mpName,
+        mpBiz: resolved.mpBiz,
+        mpCover: resolved.mpCover,
+        mpIntro: resolved.mpIntro,
+      });
+      mpId = feed.mpId;
+      resolvedFeed = feed;
       fallbackArticle = resolved.article;
     }
     // WeRSS returns articles newest-first; always fetch the latest page from
@@ -320,66 +356,63 @@ export class WeRssConnector implements Connector<"wechat"> {
     const sourceArticles = articles.length ? articles : fallbackArticle ? [fallbackArticle] : [];
     const items = sourceArticles.map((a) => this.toNormalized(a, mpId));
 
-    // 仅当微信摘要真正启用（后台已配置 provider 且未跳过 wechat）时，
-    // 为最近若干篇（最新优先，默认最多 6 篇）抓全文，供 summarizer 生成
-    // 「读完全文」的真摘要。列表接口本身不返回正文，只有 by_article 才返回。
-    // 抓不到全文的文章 contentHtml 保持空，summarizer 会跳过它（不会生成引子式伪摘要）。
-    if (isSummaryActiveFor("wechat")) {
-      const targets = items
-        .filter((it) => it.canonicalUrl && !(it.contentHtml && it.contentHtml.trim()))
-        .slice(0, 6);
-      await this.fetchFullTexts(targets);
-    }
+    // 采集轮次只拉列表，不在这里开 WeRSS 无头浏览器补正文。
+    // 每轮对「最新 N 篇」by_article 会在 WeRSS 内泄漏 Playwright 进程（见 2026-07-17 诊断）。
+    // 缺正文由 summary-backfill / wechat-content-backfill 按 DB 状态补抓：
+    // 直连 → 增强采集器 → WeRSS 浏览器（全局并发 1 + 失败冷却）。
+    // 列表若已带 content_html，toNormalized 会直接写入 contentHtml。
 
-    return { items, cursor: { mpId } };
-  }
-
-  /**
-   * 并发（最多 3）抓取若干微信文章的全文 HTML。单篇失败/超时静默跳过，
-   * 不抛错、不影响其它文章的采集。上限 6 篇 × 30s / 并发 3 ≈ 60s，
-   * 远在 worker 给微信的 180s 采集预算内。
-   */
-  private async fetchFullTexts(targets: NormalizedItem[]): Promise<void> {
-    if (!targets.length) return;
-    const CONCURRENCY = 3;
-    let cursor = 0;
-    const worker = async (): Promise<void> => {
-      while (cursor < targets.length) {
-        const item = targets[cursor++];
-        const html = await this.fetchFullText(item.canonicalUrl);
-        if (html) item.contentHtml = html;
-      }
+    return {
+      items,
+      cursor: {
+        mpId,
+        ...(resolvedFeed?.mpName ? { mpName: resolvedFeed.mpName } : {}),
+        ...(resolvedFeed?.mpBiz ? { mpBiz: resolvedFeed.mpBiz } : {}),
+        ...(resolvedFeed?.mpCover ? { mpCover: resolvedFeed.mpCover } : {}),
+        ...(resolvedFeed?.mpIntro ? { mpIntro: resolvedFeed.mpIntro } : {}),
+      },
     };
-    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, targets.length) }, worker));
   }
 
   /**
    * 抓单篇微信文章全文 HTML（by_article 端点，与 resolveFeed 同端点）。
    * 该端点内部用无头浏览器抓微信文章页，约 15–30s，故超时放宽到 30s。
    * 返回去标签前的原始 HTML；失败/超时返回 null（调用方降级）。
+   * 调用方必须经 resolveWechatFullText → withWerssBrowserLock，保证全局串行。
    */
+  private async fetchFullTextFromWeRss(articleUrl: string): Promise<string | null> {
+    const url = new URL(`${this.base}/api/v1/wx/mps/by_article`);
+    url.searchParams.set("url", articleUrl);
+    const response = await this.fetcher(url, {
+      method: "POST",
+      headers: { ...this.headers(), "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!response.ok) throw new Error(`WERSS_FULL_TEXT_FAILED:${response.status}`);
+    const body = await this.readWeRssEnvelope<Record<string, unknown>>(response, "WERSS_FULL_TEXT_FAILED");
+    const data = body.data ?? {};
+    const article = (data.article ?? {}) as Record<string, unknown>;
+    const html =
+      (data.content as string) ||
+      (data.content_html as string) ||
+      (article.content as string) ||
+      (article.content_html as string);
+    return typeof html === "string" && html.trim() ? html : null;
+  }
+
+  async fetchFullTextResult(articleUrl: string): Promise<WechatFullTextResult> {
+    return resolveWechatFullText({
+      articleUrl,
+      primary: () => this.fetchFullTextFromWeRss(articleUrl),
+      directFallbackEnabled: this.fullTextOptions.directFallbackEnabled,
+      fallbackBaseUrl: this.fullTextOptions.fallbackBaseUrl,
+      fetcher: this.fetcher,
+    });
+  }
+
+  /** Backward-compatible convenience method used by existing callers. */
   async fetchFullText(articleUrl: string): Promise<string | null> {
-    try {
-      const url = new URL(`${this.base}/api/v1/wx/mps/by_article`);
-      url.searchParams.set("url", articleUrl);
-      const response = await this.fetcher(url, {
-        method: "POST",
-        headers: { ...this.headers(), "Content-Type": "application/json" },
-        signal: AbortSignal.timeout(30_000),
-      });
-      if (!response.ok) return null;
-      const body = await this.readWeRssEnvelope<Record<string, unknown>>(response, "WERSS_FULL_TEXT_FAILED");
-      const data = body.data ?? {};
-      const article = (data.article ?? {}) as Record<string, unknown>;
-      const html =
-        (data.content as string) ||
-        (data.content_html as string) ||
-        (article.content as string) ||
-        (article.content_html as string);
-      return typeof html === "string" && html.trim() ? html : null;
-    } catch {
-      return null;
-    }
+    return (await this.fetchFullTextResult(articleUrl)).html;
   }
 
   private async fetchArticles(mpId: string, offset: number, limit: number): Promise<WeRssArticle[]> {
@@ -396,15 +429,27 @@ export class WeRssConnector implements Connector<"wechat"> {
     const publishedAt =
       typeof a.publish_time === "number" ? new Date(a.publish_time * 1000) : new Date();
     const text = a.description && a.description.trim() ? a.description : (a.title ?? "");
+    const contentHtml = a.content_html ?? a.content ?? undefined;
+    const canonicalUrl = a.url ?? "";
+    const upstreamId =
+      wechatStableUpstreamId(canonicalUrl, typeof a.id === "string" ? a.id : undefined) ??
+      `${mpId}:${canonicalUrl || "unknown"}`;
     return {
       platform: "wechat",
-      upstreamId: a.id ?? `${mpId}:${a.url ?? ""}`,
-      canonicalUrl: a.url ?? "",
+      upstreamId,
+      canonicalUrl,
       authorId: a.mp_id,
       authorName: a.mp_name ?? a.mp_info?.mp_name,
       title: a.title ?? undefined,
       text,
-      contentHtml: a.content_html ?? a.content ?? undefined,
+      contentHtml,
+      ...(contentHtml?.trim()
+        ? {
+            contentProvider: "werss" as const,
+            contentFetchStatus: "success" as const,
+            contentFetchedAt: new Date(),
+          }
+        : {}),
       imageUrls: a.pic_url || a.topic_image ? [a.pic_url ?? a.topic_image ?? ""] : [],
       publishedAt,
       raw: a,

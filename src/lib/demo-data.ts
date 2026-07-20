@@ -15,6 +15,6 @@ export const demoItems: DemoItem[] = [
 
 export const demoMonitors = [
   { platform:"x" as const,title:"@emollick",detail:"每 15 分钟 · 排除回复和转推",health:"正常",warning:false },
-  { platform:"wechat" as const,title:"数字生命卡兹克",detail:"每 60 分钟 · WeRSS",health:"需要扫码",warning:true },
+  { platform:"wechat" as const,title:"数字生命卡兹克",detail:"每 60 分钟 · WeRSS",health:"待识别",warning:true },
   { platform:"web_search" as const,title:"AI 信息聚合",detail:"每 30 分钟 · 全网与新闻",health:"正常",warning:false },
 ];
