@@ -1,8 +1,12 @@
-# SignalDeck 信息监控台
+# 见微 · 智能信息台
 
 统一订阅公开 X/Twitter 账号、微信公众号与全网关键词，并在一个时间线中阅读、搜索和管理采集状态。
 
-架构采用"复用优先"：TrendRadar 负责成熟的平台热榜、RSS、关键词过滤、调度、AI 分析和推送；SignalDeck 只补任意账号采集、全网搜索、动态后台和统一阅读界面。详见 [TrendRadar 集成决策](docs/architecture-trendradar.md)。
+架构采用"复用优先"：TrendRadar 负责成熟的平台热榜、RSS、关键词过滤、调度、AI 分析和推送；见微负责任意账号采集、全网搜索、动态后台和统一阅读界面。详见 [TrendRadar 集成决策](docs/architecture-trendradar.md)。
+
+> **仓库状态：私有。** 当前未提供开源许可证，不授予复制、修改或再分发权。未来开放前会先完成许可证、依赖和敏感信息审计。
+
+完整的产品定位、用户流程、系统架构、数据链路、安全边界、运维和开源准备，请阅读 [《见微项目手册》](docs/project-handbook.md)。
 
 ## 快速上手
 
@@ -42,14 +46,14 @@
 
 ### 访问控制（建议开启）
 
-默认 `start.sh` 会在首次启动时自动生成一个随机 `ADMIN_API_TOKEN` 并写入 `.env`。一旦 `.env` 中存在该变量，**所有写操作**（创建 / 编辑 / 删除监控、校验配置）与**监控后台 `/admin`** 都需携带它：
+网页后台与程序调用使用两套凭据，避免用户记忆技术令牌：
 
-- 写操作 API：请求头加 `Authorization: Bearer <ADMIN_API_TOKEN>`（缺失或错误返回 `401`）。
-- 监控后台 `/admin`：打开后要求输入令牌；输入正确后写入 httpOnly Cookie，之后免重复输入（右上角"退出登录"可清除）。
+- 监控后台 `/admin`：使用管理员账号密码登录；登录后可在右上角「修改密码」，新密码以不可逆哈希保存并立即生效。
+- 写操作 API：脚本或 CI 可继续使用 `Authorization: Bearer <ADMIN_API_TOKEN>`，该令牌不会出现在网页登录界面。
+- 阅读信息流（首页与公开 GET 接口）无需登录。
 
-阅读信息流（首页与 `GET /api/monitors`）始终公开，无需令牌。
-
-> 若 `.env` 中删掉或留空 `ADMIN_API_TOKEN`，则关闭鉴权（适合仅本机 / 内网使用）。**任何暴露到公网的部署都应保留该令牌。**
+`start.sh` 会为首次部署自动补齐后台密码和 API token。完全留空 `ADMIN_PASSWORD` 与
+`ADMIN_API_TOKEN` 才会进入无鉴权的本机开发模式；任何暴露到公网的部署都应配置独立密码并启用 HTTPS。
 
 ## Docker 运行（推荐部署方式）
 
@@ -82,7 +86,7 @@
 
 4. 打开：
 
-   - SignalDeck 信息流: <http://localhost:3000>
+   - 见微信息流: <http://localhost:3000>
    - 监控后台: <http://localhost:3000/admin>
    - WeRSS 授权后台: <http://localhost:8001>
    - TrendRadar 报告页: <http://localhost:8088>（仅本机）
@@ -107,7 +111,7 @@ PostgreSQL、WeRSS 与 TrendRadar 的输出均保存在具名 volumes 中（`doc
 | `worker` | 本仓库 `tools` 阶段 | **常驻采集**：拉到期监控 → 调适配器 → 入库 | — |
 | `werss` | `ghcr.io/rachelos/we-mp-rss` | 微信公众号 RSS 侧车，扫码授权后台 | `8001` |
 | `trendradar` | `wantcat/trendradar` | 平台热榜 / RSS / 关键词过滤 / 调度 / AI（复用，不重造） | `8088` |
-| `trendradar-mcp` | `wantcat/trendradar-mcp` | TrendRadar 的 MCP 查询服务，供 SignalDeck 拉热榜/RSS | `3333` |
+| `trendradar-mcp` | `wantcat/trendradar-mcp` | TrendRadar 的 MCP 查询服务，供见微拉取榜单/RSS | `3333` |
 | `trendradar-refresh` | `wantcat/trendradar` | 内网刷新侧车：后台“保存并立即刷新”时触发一次 TrendRadar 采集 | — |
 
 生产模式额外包含 `caddy` 作为唯一公网入口（80/443），详见 [线上部署说明](docs/production-deploy.md)。
@@ -169,8 +173,8 @@ werss / trendradar / trendradar-mcp 以 service_started 并行拉起
 ### 备份与升级
 
 - **备份**：直接备份三个具名 volume（`docker volume inspect` 找到宿主路径后 `tar` 即可）；PostgreSQL 也可用 `pg_dump`。
-- **升级 SignalDeck**：`git pull` 后 `docker compose up -d --build`；若 `drizzle` 模式有变更，`migrate` 会在启动时自动补齐。
-- **升级 TrendRadar**：仅改 `wantcat/trendradar[:tag]` 与 `wantcat/trendradar-mcp[:tag]` 镜像标签后 `docker compose up -d trendradar trendradar-mcp`，**无需改动 SignalDeck 代码**，其 GPL 源码也不进入本仓库。
+- **升级见微**：`git pull` 后 `docker compose up -d --build`；若 `drizzle` 模式有变更，`migrate` 会在启动时自动补齐。
+- **升级 TrendRadar**：仅改 `wantcat/trendradar[:tag]` 与 `wantcat/trendradar-mcp[:tag]` 镜像标签后 `docker compose up -d trendradar trendradar-mcp`，**无需改动见微代码**，其 GPL 源码也不进入本仓库。
 
 ## 本地开发
 

@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Plus, RotateCcw, Trash2 } from "lucide-react";
+import { Check, Plus, RotateCcw, Trash2 } from "lucide-react";
+import { CURATED_RSS_SOURCES, type CuratedRssSource } from "@/lib/trendradar-source-library";
 
 interface PlatformSource {
   id: string;
@@ -98,6 +99,20 @@ export function TrendRadarSourcesManager() {
     () => state?.rssFeeds.filter((feed) => feed.enabled).length ?? 0,
     [state?.rssFeeds],
   );
+  const configuredFeedKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const feed of state?.rssFeeds ?? []) {
+      keys.add(feed.id);
+      keys.add(feed.url.replace(/\/$/, ""));
+    }
+    return keys;
+  }, [state?.rssFeeds]);
+  const missingRecommendedFeeds = useMemo(
+    () => CURATED_RSS_SOURCES.filter((feed) => (
+      !configuredFeedKeys.has(feed.id) && !configuredFeedKeys.has(feed.url.replace(/\/$/, ""))
+    )),
+    [configuredFeedKeys],
+  );
 
   function patchState(patch: Partial<TrendRadarSourcesState>) {
     setState((current) => (current ? { ...current, ...patch } : current));
@@ -166,6 +181,32 @@ export function TrendRadarSourcesManager() {
     setMessage("已加入列表，记得点击保存来源。");
   }
 
+  function addRecommendedFeed(feed: CuratedRssSource) {
+    if (!state || configuredFeedKeys.has(feed.id) || configuredFeedKeys.has(feed.url.replace(/\/$/, ""))) return;
+    patchState({
+      rssFeeds: [...state.rssFeeds, { id: feed.id, name: feed.name, url: feed.url, enabled: true }],
+      rssEnabled: true,
+    });
+    setMessage(`已加入“${feed.name}”，记得保存来源。`);
+  }
+
+  function addAllRecommendedFeeds() {
+    if (!state || missingRecommendedFeeds.length === 0) return;
+    patchState({
+      rssFeeds: [
+        ...state.rssFeeds,
+        ...missingRecommendedFeeds.map((feed) => ({
+          id: feed.id,
+          name: feed.name,
+          url: feed.url,
+          enabled: true,
+        })),
+      ],
+      rssEnabled: true,
+    });
+    setMessage(`已补充 ${missingRecommendedFeeds.length} 个推荐来源，记得保存来源。`);
+  }
+
   async function save(): Promise<boolean> {
     if (!state) return false;
     setSaving(true);
@@ -200,7 +241,7 @@ export function TrendRadarSourcesManager() {
       const res = await fetch("/api/settings/trendradar-sources/refresh", { method: "POST" });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(errorText(data, "刷新失败"));
-      setMessage("已保存并完成一次 TrendRadar 立即采集，信息流会在下一轮 SignalDeck worker 导入后更新。");
+      setMessage("已保存并完成一次 TrendRadar 立即采集，信息流会在下一轮见微采集任务导入后更新。");
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "刷新失败");
     } finally {
@@ -212,8 +253,8 @@ export function TrendRadarSourcesManager() {
     <section className="credentials-card trendradar-sources-card">
       <div className="settings-card-head">
         <div>
-          <h2>热榜 / RSS 来源</h2>
-          <p>在这里管理 TrendRadar 会采集哪些热榜平台和 RSS，不用再手动改 YAML。</p>
+          <h2>站点榜单 / RSS 来源</h2>
+          <p>管理外部网站公开榜单和 RSS 来源；“站点榜单”不代表见微自己的推荐排序。</p>
         </div>
         <button type="button" className="secondary-button" onClick={load} disabled={loading || saving || refreshing}>
           <RotateCcw size={14} /> 重新读取
@@ -233,7 +274,7 @@ export function TrendRadarSourcesManager() {
                     checked={state.platformsEnabled}
                     onChange={(e) => patchState({ platformsEnabled: e.target.checked })}
                   />
-                  <span>启用热榜平台</span>
+                  <span>启用站点榜单</span>
                 </label>
                 <small>{enabledPlatformCount} / {state.platformSources.length} 个来源</small>
               </div>
@@ -266,6 +307,44 @@ export function TrendRadarSourcesManager() {
                   <span>启用 RSS</span>
                 </label>
                 <small>{enabledRssCount} / {state.rssFeeds.length} 个订阅源</small>
+              </div>
+
+              <div className="rss-source-library">
+                <div className="rss-library-head">
+                  <div>
+                    <strong>推荐来源库</strong>
+                    <small>官方动态、专业媒体和技术作者；已避开泛娱乐热榜。</small>
+                  </div>
+                  <button
+                    type="button"
+                    className="secondary-button compact"
+                    onClick={addAllRecommendedFeeds}
+                    disabled={missingRecommendedFeeds.length === 0}
+                  >
+                    {missingRecommendedFeeds.length === 0 ? <><Check size={13} /> 已补齐</> : `补齐 ${missingRecommendedFeeds.length} 个`}
+                  </button>
+                </div>
+                <div className="rss-library-list">
+                  {CURATED_RSS_SOURCES.map((feed) => {
+                    const added = configuredFeedKeys.has(feed.id) || configuredFeedKeys.has(feed.url.replace(/\/$/, ""));
+                    return (
+                      <button
+                        type="button"
+                        className={`rss-library-item${added ? " added" : ""}`}
+                        key={feed.id}
+                        onClick={() => addRecommendedFeed(feed)}
+                        disabled={added}
+                        title={feed.description}
+                      >
+                        <span>
+                          <small>{feed.category}</small>
+                          <strong>{feed.name}</strong>
+                        </span>
+                        {added ? <Check size={13} /> : <Plus size={13} />}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
 
               <div className="rss-add-row">
@@ -327,7 +406,7 @@ export function TrendRadarSourcesManager() {
 
           <div className="settings-note">
             保存会写入 TrendRadar 配置文件；点“保存并立即刷新”会让 TrendRadar 立刻跑一次采集。
-            采集完成后，SignalDeck 信息流会在 worker 下一轮导入后更新。
+            采集完成后，见微信息流会在下一轮采集任务导入后更新。
           </div>
 
           <div className="settings-actions">

@@ -99,9 +99,6 @@ platforms:
     - id: "zhihu"
       name: "知乎"
       expected_domain: "zhihu.com"
-
-
-
 # ===============================================================
 # 3. 数据源 - RSS 订阅
 #
@@ -130,25 +127,65 @@ rss:
     - id: "hacker-news"
       name: "Hacker News"
       url: "https://hnrss.org/frontpage"
-
     - id: "ruanyifeng"
       name: "阮一峰的网络日志"
       url: "http://www.ruanyifeng.com/blog/atom.xml"
-      enabled: false                  # 禁用
-      # max_age_days: 3               # 示例：推送 3 天内的文章（更新较慢的博客）
-
+      enabled: false
     - id: "yahoo-finance"
       name: "雅虎财经"
       url: "https://finance.yahoo.com/news/rssindex"
-
-    # 自定义源示例
-    # - id: "custom-feed"
-    #   name: "自定义源"
-    #   url: "https://example.com/feed.xml"
-    #   enabled: false
-    #   max_age_days: 0               # 示例：禁用过滤，推送所有文章
-
-
+    - id: "openai-news"
+      name: "OpenAI News"
+      url: "https://openai.com/news/rss.xml"
+    - id: "hugging-face-blog"
+      name: "Hugging Face Blog"
+      url: "https://huggingface.co/blog/feed.xml"
+    - id: "google-deepmind-blog"
+      name: "Google DeepMind Blog"
+      url: "https://deepmind.google/blog/rss.xml"
+    - id: "techcrunch-ai"
+      name: "TechCrunch AI"
+      url: "https://techcrunch.com/category/artificial-intelligence/feed/"
+    - id: "product-hunt"
+      name: "Product Hunt"
+      url: "https://www.producthunt.com/feed"
+    - id: "one-useful-thing"
+      name: "One Useful Thing"
+      url: "https://www.oneusefulthing.org/feed"
+    - id: "import-ai"
+      name: "Import AI"
+      url: "https://importai.substack.com/feed"
+    - id: "venturebeat-ai"
+      name: "VentureBeat AI"
+      url: "https://venturebeat.com/category/ai/feed/"
+    - id: "google-developers-blog"
+      name: "Google Developers Blog"
+      url: "https://developers.googleblog.com/feeds/posts/default/"
+    - id: "nvidia-ai-blog"
+      name: "NVIDIA AI Blog"
+      url: "https://blogs.nvidia.com/feed/"
+    - id: "mit-tech-review-ai"
+      name: "MIT Technology Review · AI"
+      url: "https://www.technologyreview.com/topic/artificial-intelligence/feed"
+    - id: "the-decoder-ai"
+      name: "The Decoder · AI News"
+      url: "https://the-decoder.com/feed/"
+    - id: "ithome"
+      name: "IT之家"
+      url: "https://www.ithome.com/rss/"
+      enabled: false
+    - id: "simon-willison"
+      name: "Simon Willison"
+      url: "https://simonwillison.net/atom/everything/"
+    - id: "latent-space"
+      name: "Latent Space"
+      url: "https://www.latent.space/feed"
+    - id: "interconnects"
+      name: "Interconnects"
+      url: "https://www.interconnects.ai/feed"
+    - id: "last-week-in-ai"
+      name: "Last Week in AI"
+      url: "https://lastweekin.ai/feed"
 # ===============================================================
 # 4. 报告模式
 # ===============================================================

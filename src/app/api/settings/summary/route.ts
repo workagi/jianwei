@@ -51,11 +51,27 @@ const PROVIDER_OPTIONS: Record<SummaryProviderName, {
   },
 };
 
+function readPositiveInteger(value: string, fallback = ""): string {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? String(Math.floor(parsed)) : fallback;
+}
+
+function readClampedInteger(value: string, fallback: number, min: number, max: number): string {
+  const parsed = Number(value);
+  const normalized = Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+  return String(Math.min(max, Math.max(min, normalized)));
+}
+
+function readNonNegativeNumber(value: string, fallback = ""): string {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? String(parsed) : fallback;
+}
+
 /**
  * GET：返回模型 API 配置的当前状态。只回布尔/字符串，绝不返回明文密钥。
  */
 export async function GET(req: Request) {
-  const denied = requireWriteAuth(req);
+  const denied = await requireWriteAuth(req);
   if (denied) return denied;
 
   const rows = await loadApiCredentials();
@@ -70,6 +86,8 @@ export async function GET(req: Request) {
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
   const option = provider ? PROVIDER_OPTIONS[provider] : undefined;
+  const baseUrl = getValue("SUMMARY_BASE_URL") || option?.defaultBaseUrl || "";
+  const inferredRequestsPerMinute = baseUrl.toLowerCase().includes("api.stepfun.com") ? "10" : "";
   const hasApiKey = provider
     ? ["SUMMARY_API_KEY", ...(option?.apiKeyFallbacks ?? [])].some((key) => Boolean(getValue(key).trim()))
     : false;
@@ -78,10 +96,16 @@ export async function GET(req: Request) {
     available: SUMMARY_PROVIDERS,
     providers: SUMMARY_PROVIDERS.map((id) => ({ id, ...PROVIDER_OPTIONS[id] })),
     provider,
-    baseUrl: getValue("SUMMARY_BASE_URL") || option?.defaultBaseUrl || "",
+    baseUrl,
     model: getValue("SUMMARY_MODEL") || option?.defaultModel || "",
     hasApiKey,
     includeWechat: !skip.includes("wechat"),
+    maxInputChars: readPositiveInteger(getValue("SUMMARY_MAX_INPUT_CHARS"), "3000"),
+    maxConcurrency: readPositiveInteger(getValue("SUMMARY_MAX_CONCURRENCY"), "4"),
+    requestsPerMinute: readPositiveInteger(getValue("SUMMARY_REQUESTS_PER_MINUTE"), inferredRequestsPerMinute),
+    timeoutSeconds: readClampedInteger(getValue("SUMMARY_TIMEOUT_SECONDS"), 45, 10, 180),
+    inputCostPerMillion: readNonNegativeNumber(getValue("SUMMARY_INPUT_COST_PER_1M_USD")),
+    outputCostPerMillion: readNonNegativeNumber(getValue("SUMMARY_OUTPUT_COST_PER_1M_USD")),
   });
 }
 
@@ -90,7 +114,7 @@ export async function GET(req: Request) {
  * provider 选「关闭」时存 "off"，worker 刷新后 summarizer 自动禁用。
  */
 export async function PUT(req: Request) {
-  const denied = requireWriteAuth(req);
+  const denied = await requireWriteAuth(req);
   if (denied) return denied;
 
   let body: Record<string, unknown>;
@@ -108,6 +132,21 @@ export async function PUT(req: Request) {
   const baseUrl = typeof body.baseUrl === "string" ? body.baseUrl.trim() : "";
   const model = typeof body.model === "string" ? body.model.trim() : "";
   const includeWechat = body.includeWechat === true;
+  const maxInputChars = readPositiveInteger(typeof body.maxInputChars === "string" ? body.maxInputChars.trim() : "", "3000");
+  const maxConcurrency = readPositiveInteger(typeof body.maxConcurrency === "string" ? body.maxConcurrency.trim() : "");
+  const requestsPerMinute = readPositiveInteger(typeof body.requestsPerMinute === "string" ? body.requestsPerMinute.trim() : "");
+  const timeoutSeconds = readClampedInteger(
+    typeof body.timeoutSeconds === "string" ? body.timeoutSeconds.trim() : "",
+    45,
+    10,
+    180,
+  );
+  const inputCostPerMillion = readNonNegativeNumber(
+    typeof body.inputCostPerMillion === "string" ? body.inputCostPerMillion.trim() : "",
+  );
+  const outputCostPerMillion = readNonNegativeNumber(
+    typeof body.outputCostPerMillion === "string" ? body.outputCostPerMillion.trim() : "",
+  );
 
   const rows: { key: string; value: string }[] = [];
 
@@ -125,6 +164,12 @@ export async function PUT(req: Request) {
 
   // 跳过平台：包含微信=true 时置空（不过滤），否则跳过微信（默认）。
   rows.push({ key: "SUMMARY_SKIP_PLATFORMS", value: includeWechat ? "" : "wechat" });
+  rows.push({ key: "SUMMARY_MAX_INPUT_CHARS", value: maxInputChars });
+  rows.push({ key: "SUMMARY_MAX_CONCURRENCY", value: maxConcurrency });
+  rows.push({ key: "SUMMARY_REQUESTS_PER_MINUTE", value: requestsPerMinute });
+  rows.push({ key: "SUMMARY_TIMEOUT_SECONDS", value: timeoutSeconds });
+  rows.push({ key: "SUMMARY_INPUT_COST_PER_1M_USD", value: inputCostPerMillion });
+  rows.push({ key: "SUMMARY_OUTPUT_COST_PER_1M_USD", value: outputCostPerMillion });
 
   await saveApiCredentials(rows);
   return NextResponse.json({ ok: true, provider: provider || "off", updated: rows.map((r) => r.key) });

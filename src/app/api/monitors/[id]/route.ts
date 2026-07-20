@@ -7,9 +7,17 @@ import {
   wechatMonitorSchema,
   webSearchMonitorSchema,
   isWechatKeywordRuleConfig,
+  type WechatAccountMonitorConfig,
 } from "@/connectors/types";
 import { createRuntimeWeRssConnector } from "@/connectors/factory";
+import type { ResolvedFeed } from "@/connectors/wechat/werss-connector";
 import { requireWriteAuth } from "@/lib/auth";
+import {
+  initialStaggeredRunAt,
+  monitorStaggerKey,
+  normalizePollIntervalMinutes,
+} from "@/lib/monitor-schedule";
+import { archiveMonitorConfig, parseMonitorRemovalOptions } from "@/lib/monitor-removal";
 
 export const dynamic = "force-dynamic";
 
@@ -30,25 +38,47 @@ function usefulWechatName(name: string | undefined): string | undefined {
 }
 
 function isAutoWechatName(name: string): boolean {
-  return name === "微信公众号" || name === "mp.weixin.qq.com";
+  return name === "微信公众号" || name === "微信公众号识别中" || name === "mp.weixin.qq.com";
+}
+
+function resolvedFeedFromWechatConfig(config: WechatAccountMonitorConfig): ResolvedFeed | null {
+  if (!config.mpId || !config.mpBiz) return null;
+  return {
+    mpId: config.mpId,
+    mpName: usefulWechatName(config.mpName) ?? "微信公众号",
+    mpBiz: config.mpBiz,
+    mpCover: config.mpCover,
+    mpIntro: config.mpIntro,
+  };
+}
+
+function monitorWechatMpId(row: { config: Record<string, unknown> | null; cursor: Record<string, unknown> | null }): string | undefined {
+  const config = row.config ?? {};
+  if (isWechatKeywordRuleConfig(config)) return undefined;
+  const cursorMpId = typeof row.cursor?.mpId === "string" ? row.cursor.mpId.trim() : "";
+  if (cursorMpId) return cursorMpId;
+  const configMpId = typeof config.mpId === "string" ? config.mpId.trim() : "";
+  return configMpId || undefined;
 }
 
 /**
- * Delete a single monitor. Cascade rules on `item_matches.monitor_id` and
- * `collection_runs.monitor_id` clean up its links/runs automatically. After
- * that, remove orphan items for the same platform so deleting a monitor also
- * removes content that no remaining monitor owns.
+ * Remove a monitor from the active task list.
+ *
+ * Safe default: archive it (disable + hide) while retaining item matches, so
+ * historical content stays visible. Only `deleteItems=1` performs a hard
+ * delete and removes content no other monitor owns.
  */
 export async function DELETE(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   if (!process.env.DATABASE_URL) {
     return NextResponse.json({ ok: false, error: "DATABASE_URL 未配置" }, { status: 503 });
   }
 
-  const denied = requireWriteAuth(_req);
+  const denied = await requireWriteAuth(req);
   if (denied) return denied;
+  const { cancelWerss, deleteItems } = parseMonitorRemovalOptions(req.url);
 
   const { id } = await params;
   if (!id) {
@@ -56,7 +86,7 @@ export async function DELETE(
   }
 
   const [existing] = await db
-    .select({ id: monitors.id, platform: monitors.platform })
+    .select({ id: monitors.id, platform: monitors.platform, config: monitors.config, cursor: monitors.cursor })
     .from(monitors)
     .where(eq(monitors.id, id))
     .limit(1);
@@ -70,6 +100,54 @@ export async function DELETE(
       { ok: false, error: "系统内置监控不能在这里删除；请到对应侧车配置中管理。" },
       { status: 400 },
     );
+  }
+
+  if (cancelWerss) {
+    if (existing.platform !== "wechat") {
+      return NextResponse.json({ ok: false, error: "只有微信公众号监控支持同时取消 WeRSS 订阅。" }, { status: 400 });
+    }
+    const mpId = monitorWechatMpId(existing);
+    if (!mpId) {
+      return NextResponse.json(
+        { ok: false, error: "该监控还没有识别出公众号 ID，无法取消 WeRSS 订阅；可先只删除本地监控。" },
+        { status: 422 },
+      );
+    }
+    const wechatRows = await db
+      .select({ id: monitors.id, config: monitors.config, cursor: monitors.cursor })
+      .from(monitors)
+      .where(eq(monitors.platform, "wechat"));
+    const stillUsed = wechatRows.some((row) => row.id !== existing.id && monitorWechatMpId(row) === mpId);
+    if (stillUsed) {
+      return NextResponse.json(
+        { ok: false, error: "还有其他监控任务使用同一个公众号，不能同时取消 WeRSS 订阅。" },
+        { status: 409 },
+      );
+    }
+    try {
+      await (await createRuntimeWeRssConnector()).unsubscribe(mpId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[monitors] WeRSS 取消订阅失败: ${message}`);
+      return NextResponse.json(
+        { ok: false, error: "WeRSS 取消订阅失败；本地监控尚未删除。", detail: message },
+        { status: 502 },
+      );
+    }
+  }
+
+  if (!deleteItems) {
+    const archivedAt = new Date();
+    const [archived] = await db
+      .update(monitors)
+      .set({
+        enabled: false,
+        config: archiveMonitorConfig(existing.config, archivedAt),
+        updatedAt: archivedAt,
+      })
+      .where(eq(monitors.id, id))
+      .returning({ id: monitors.id });
+    return NextResponse.json({ ok: true, id: archived.id, mode: "archived", historyKept: true });
   }
 
   const [deleted] = await db
@@ -87,7 +165,7 @@ export async function DELETE(
       )
   `);
 
-  return NextResponse.json({ ok: true, id: deleted.id });
+  return NextResponse.json({ ok: true, id: deleted.id, mode: "deleted", historyKept: false });
 }
 
 /**
@@ -95,8 +173,8 @@ export async function DELETE(
  * `platform` cannot be changed (the connector + collected history are tied to
  * it). Config is re-validated against the monitor's existing platform schema.
  * For WeChat, changing the article URL re-subscribes the new MP in WeRSS and
- * rewrites the cursor. After any change we reset `nextRunAt` so the new config
- * is picked up on the next worker poll rather than waiting out the old schedule.
+ * rewrites the cursor. After any change we reset `nextRunAt` into the smart
+ * stagger window so fresh edits are picked up soon without stampeding WeRSS.
  */
 export async function PATCH(
   req: Request,
@@ -106,7 +184,7 @@ export async function PATCH(
     return NextResponse.json({ ok: false, error: "DATABASE_URL 未配置" }, { status: 503 });
   }
 
-  const denied = requireWriteAuth(req);
+  const denied = await requireWriteAuth(req);
   if (denied) return denied;
 
   const { id } = await params;
@@ -137,14 +215,13 @@ export async function PATCH(
 
   const update: Record<string, unknown> = {
     updatedAt: new Date(),
-    nextRunAt: new Date(),
   };
 
   if (typeof body.pollIntervalMinutes === "number") {
     if (!Number.isFinite(body.pollIntervalMinutes) || body.pollIntervalMinutes < 1) {
       return NextResponse.json({ ok: false, error: "采集频率必须为大于 0 的整数（分钟）" }, { status: 422 });
     }
-    update.pollIntervalMinutes = Math.floor(body.pollIntervalMinutes);
+    update.pollIntervalMinutes = normalizePollIntervalMinutes(body.pollIntervalMinutes, existing.pollIntervalMinutes);
   }
 
   if (typeof body.name === "string" && body.name.trim()) {
@@ -165,34 +242,48 @@ export async function PATCH(
       update.cursor = {};
     } else if (platform === "wechat") {
       const prevUrl = (existing.config as { articleUrl?: string } | null)?.articleUrl;
-      const nextUrl = (parsed.data as { articleUrl?: string }).articleUrl;
+      const nextConfig = parsed.data as WechatAccountMonitorConfig;
+      const nextUrl = nextConfig.articleUrl;
       if (nextUrl && nextUrl !== prevUrl) {
-        try {
-          const feed = await (await createRuntimeWeRssConnector()).subscribe(nextUrl);
-          const mpName = usefulWechatName(feed.mpName);
-          update.cursor = { mpId: feed.mpId };
-          update.config = {
-            ...(parsed.data as Record<string, unknown>),
-            mpId: feed.mpId,
-            ...(feed.mpBiz ? { mpBiz: feed.mpBiz } : {}),
-            ...(feed.mpCover ? { mpCover: feed.mpCover } : {}),
-            ...(feed.mpIntro ? { mpIntro: feed.mpIntro } : {}),
-            ...(mpName ? { mpName } : {}),
-          };
-          if (!body.name?.trim() && isAutoWechatName(existing.name) && mpName) {
-            update.name = mpName;
+        const resolvedFeed = resolvedFeedFromWechatConfig(nextConfig);
+        if (resolvedFeed === null) {
+          // Keep editing consistent with creation: changing to a fresh article URL
+          // should not block the form on the slow WeRSS by_article resolver.
+          // The worker will resolve+subscribe in the background on the next run.
+          update.cursor = {};
+          update.config = parsed.data;
+          if (!body.name?.trim() && isAutoWechatName(existing.name)) {
+            update.name = "微信公众号识别中";
           }
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          console.warn(`[monitors] WeRSS 重新订阅失败: ${message}`);
-          return NextResponse.json(
-            {
-              ok: false,
-              error: "WeRSS 重新订阅失败，请检查 Access Key / 扫码授权后重试。",
-              detail: message,
-            },
-            { status: 502 },
-          );
+        } else {
+          try {
+            const connector = await createRuntimeWeRssConnector();
+            const feed = await connector.subscribeResolved(resolvedFeed);
+            const mpName = usefulWechatName(feed.mpName);
+            update.cursor = { mpId: feed.mpId };
+            update.config = {
+              ...(parsed.data as Record<string, unknown>),
+              mpId: feed.mpId,
+              ...(feed.mpBiz ? { mpBiz: feed.mpBiz } : {}),
+              ...(feed.mpCover ? { mpCover: feed.mpCover } : {}),
+              ...(feed.mpIntro ? { mpIntro: feed.mpIntro } : {}),
+              ...(mpName ? { mpName } : {}),
+            };
+            if (!body.name?.trim() && isAutoWechatName(existing.name) && mpName) {
+              update.name = mpName;
+            }
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            console.warn(`[monitors] WeRSS 重新订阅失败: ${message}`);
+            return NextResponse.json(
+              {
+                ok: false,
+                error: "WeRSS 重新订阅失败，请检查 Access Key / 扫码授权后重试。",
+                detail: message,
+              },
+              { status: 502 },
+            );
+          }
         }
       } else {
         update.config = {
@@ -204,6 +295,20 @@ export async function PATCH(
 
     if (update.config === undefined) update.config = parsed.data;
   }
+
+  const nextName = typeof update.name === "string" ? update.name : existing.name;
+  const nextConfig = update.config === undefined ? existing.config : update.config;
+  const nextPollIntervalMinutes =
+    typeof update.pollIntervalMinutes === "number" ? update.pollIntervalMinutes : existing.pollIntervalMinutes;
+  update.nextRunAt = initialStaggeredRunAt({
+    intervalMinutes: nextPollIntervalMinutes,
+    staggerKey: monitorStaggerKey({
+      id: existing.id,
+      platform,
+      name: nextName,
+      config: nextConfig,
+    }),
+  });
 
   const [row] = await db
     .update(monitors)

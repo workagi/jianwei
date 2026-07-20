@@ -4,7 +4,7 @@ import { Sidebar } from "@/components/sidebar";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "SignalDeck · 信息监控台",
+  title: "见微 · 智能信息台",
   description: "统一监控 X、微信公众号和全网关键词",
 };
 

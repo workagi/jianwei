@@ -1,27 +1,19 @@
 import { db } from "@/db";
-import { monitors, collectionRuns, usageLedger } from "@/db/schema";
+import { monitors, collectionRuns, runtimeHealth, usageLedger } from "@/db/schema";
 import { loadApiCredentials } from "@/db/queries";
 import { and, eq, lte, gte, sql } from "drizzle-orm";
 import { writeFile } from "node:fs/promises";
 import { ingest, createDrizzleIngestRepository } from "@/ingestion/ingest-items";
-import { TrendRadarConnector } from "@/connectors/trendradar/trendradar-connector";
-import { TrendRadarMcpClient } from "@/connectors/trendradar/mcp-client";
-import {
-  createXConnector,
-  createWebSearchConnector,
-  createWeRssConnector,
-} from "@/connectors/factory";
 import type {
   NormalizedItem,
   PlatformType,
-  XMonitorConfig,
   WebSearchMonitorConfig,
-  WechatAccountMonitorConfig,
 } from "@/connectors/types";
 import { isWechatKeywordRuleConfig } from "@/connectors/types";
-import { collectWechatKeywordRule } from "@/connectors/wechat/keyword-rule";
-
-const TRENDRADAR_ENDPOINT = process.env.TRENDRADAR_MCP_URL ?? "http://127.0.0.1:3333/mcp";
+import { createWorkerSourceProvider } from "@/sources/registry";
+import { collectFromProvider } from "@/sources/types";
+import { monitorStaggerKey, nextStaggeredRunAt } from "@/lib/monitor-schedule";
+import { backfillMissingSummaries } from "@/lib/summary-backfill";
 
 // Cost per 1000 billable units. Brave's published rate is $3 / 1k queries; X has
 // no stable public rate, so it defaults to 0 and can be overridden.
@@ -44,34 +36,10 @@ export interface GatherOutput {
   billableUnits?: number;
 }
 
-/**
- * Collect normalized items for one monitor. TrendRadar is wired via its MCP
- * sidecar. X / WebSearch / WeChat are wired directly (Task 3 + P2).
- */
+/** Collect one monitor through the unified source-provider registry. */
 export async function gather(input: GatherInput): Promise<GatherOutput> {
-  if (input.platform === "trendradar") {
-    const connector = new TrendRadarConnector(new TrendRadarMcpClient(TRENDRADAR_ENDPOINT));
-    const items = [...(await connector.latestNews(50)), ...(await connector.latestRss(50, 2))];
-    return { items, cursor: {} };
-  }
-  if (input.platform === "x") {
-    const result = await createXConnector().collect(input.config as XMonitorConfig, input.cursor);
-    return { items: result.items, cursor: result.cursor, billableUnits: result.billableUnits };
-  }
-  if (input.platform === "web_search") {
-    const config = input.config as WebSearchMonitorConfig;
-    const result = await createWebSearchConnector(config.provider ?? "brave").collect(config);
-    return { items: result.items, cursor: result.cursor, billableUnits: result.billableUnits };
-  }
-  if (input.platform === "wechat") {
-    if (isWechatKeywordRuleConfig(input.config)) {
-      const items = await collectWechatKeywordRule(input.config);
-      return { items, cursor: { matchedAt: new Date().toISOString() } };
-    }
-    const result = await createWeRssConnector().collect(input.config as WechatAccountMonitorConfig, input.cursor);
-    return { items: result.items, cursor: result.cursor };
-  }
-  throw new Error(`UNKNOWN_PLATFORM:${input.platform}`);
+  const provider = createWorkerSourceProvider(input.platform, input.config);
+  return collectFromProvider(provider, input.config, input.cursor);
 }
 
 type MonitorRow = typeof monitors.$inferSelect;
@@ -95,6 +63,23 @@ async function checkBudget(connectorId: string): Promise<void> {
   if (spent >= MONTHLY_BUDGET_USD) throw new Error("BUDGET_EXHAUSTED");
 }
 
+/**
+ * SuperGrok X Search burns subscription quota (not the USD Brave/X budget).
+ * Soft daily cap stops a misconfigured fleet of 60-minute monitors from
+ * emptying the quota before noon. 0 / unset = disabled.
+ */
+async function checkXGrokDailyBudget(): Promise<void> {
+  const max = Number(process.env.XAI_X_SEARCH_DAILY_BUDGET);
+  if (!Number.isFinite(max) || max <= 0) return;
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  const [row] = await db
+    .select({ sum: sql<number>`coalesce(sum(${usageLedger.quantity}), 0)` })
+    .from(usageLedger)
+    .where(and(eq(usageLedger.metric, "x_grok_searches"), gte(usageLedger.occurredAt, start)));
+  if (Number(row?.sum ?? 0) >= max) throw new Error("XAI_X_SEARCH_DAILY_BUDGET_EXHAUSTED");
+}
+
 async function recordUsage(
   connectorId: string,
   monitorId: string,
@@ -111,24 +96,74 @@ async function recordUsage(
   });
 }
 
+function summaryEstimatedCostUsd(inputTokens = 0, outputTokens = 0): number {
+  const inputPrice = Number(process.env.SUMMARY_INPUT_COST_PER_1M_USD);
+  const outputPrice = Number(process.env.SUMMARY_OUTPUT_COST_PER_1M_USD);
+  const safeInputPrice = Number.isFinite(inputPrice) && inputPrice >= 0 ? inputPrice : 0;
+  const safeOutputPrice = Number.isFinite(outputPrice) && outputPrice >= 0 ? outputPrice : 0;
+  return (inputTokens / 1_000_000) * safeInputPrice + (outputTokens / 1_000_000) * safeOutputPrice;
+}
+
+function usefulWechatName(name: unknown): string | undefined {
+  const trimmed = typeof name === "string" ? name.trim() : "";
+  return trimmed && trimmed !== "未知公众号" ? trimmed : undefined;
+}
+
+function isAutoWechatName(name: string): boolean {
+  return name === "微信公众号" || name === "微信公众号识别中" || name === "mp.weixin.qq.com";
+}
+
+function isAutoXName(name: string, config: Record<string, unknown>): boolean {
+  const username = typeof config.username === "string" ? config.username.replace(/^@/, "") : "";
+  return Boolean(username) && (name === `@${username}` || name === username || name === "X / Twitter");
+}
+
+function resolvedWechatConfigPatch(cursor: Record<string, unknown>): Record<string, unknown> | null {
+  const mpId = typeof cursor.mpId === "string" && cursor.mpId.trim() ? cursor.mpId.trim() : "";
+  if (!mpId) return null;
+  return {
+    mpId,
+    ...(typeof cursor.mpName === "string" && cursor.mpName.trim() ? { mpName: cursor.mpName.trim() } : {}),
+    ...(typeof cursor.mpBiz === "string" && cursor.mpBiz.trim() ? { mpBiz: cursor.mpBiz.trim() } : {}),
+    ...(typeof cursor.mpCover === "string" && cursor.mpCover.trim() ? { mpCover: cursor.mpCover.trim() } : {}),
+    ...(typeof cursor.mpIntro === "string" && cursor.mpIntro.trim() ? { mpIntro: cursor.mpIntro.trim() } : {}),
+  };
+}
+
 async function runMonitor(monitor: MonitorRow): Promise<void> {
   const [run] = await db
     .insert(collectionRuns)
     .values({ monitorId: monitor.id, status: "running" })
     .returning({ id: collectionRuns.id });
   const runId = run.id;
-  const nextRunAt = new Date(Date.now() + monitor.pollIntervalMinutes * 60_000);
+  const staggerKey = monitorStaggerKey({
+    id: monitor.id,
+    platform: monitor.platform,
+    name: monitor.name,
+    config: monitor.config,
+  });
+  let nextRunAt = nextStaggeredRunAt({
+    intervalMinutes: monitor.pollIntervalMinutes,
+    staggerKey,
+  });
 
   try {
     // Billable platforms are gated by the monthly budget before any call.
-    if (monitor.platform === "x" || monitor.platform === "web_search") {
+    if ((monitor.platform === "x" && monitor.config.provider !== "x_grok") || monitor.platform === "web_search") {
       await checkBudget(monitor.connectorId);
+    }
+    // SuperGrok X Search has its own soft daily quota (subscription units).
+    if (monitor.platform === "x" && monitor.config.provider === "x_grok") {
+      await checkXGrokDailyBudget();
     }
 
     // 微信在「包含全文摘要」模式下会逐篇抓正文（by_article 约 15–30s/篇），
     // 用更宽松的超时预算，避免被通用 60s 一刀切中断。
-    const gatherTimeout =
-      monitor.platform === "wechat" ? WECHAT_GATHER_TIMEOUT_MS : GATHER_TIMEOUT_MS;
+    const gatherTimeout = monitor.platform === "wechat"
+      ? WECHAT_GATHER_TIMEOUT_MS
+      : monitor.platform === "x" && monitor.config.provider === "x_grok"
+        ? X_GATHER_TIMEOUT_MS
+        : GATHER_TIMEOUT_MS;
     const { items, cursor, billableUnits } = await withTimeout(
       gather({
         platform: monitor.platform,
@@ -142,11 +177,21 @@ async function runMonitor(monitor: MonitorRow): Promise<void> {
       items,
       monitorId: monitor.id,
     });
+    const summaryInputTokens = result.summary.inputTokens ?? 0;
+    const summaryOutputTokens = result.summary.outputTokens ?? 0;
+    const summaryCost = summaryEstimatedCostUsd(summaryInputTokens, summaryOutputTokens);
 
     // Record cost/usage for billable platforms (WeChat cost is 0).
     if (monitor.platform === "x") {
       const units = billableUnits ?? 1;
-      await recordUsage(monitor.connectorId, monitor.id, "x_billable_units", units, (units / 1000) * X_COST_PER_1K_UNITS);
+      const grokSubscription = monitor.config.provider === "x_grok";
+      await recordUsage(
+        monitor.connectorId,
+        monitor.id,
+        grokSubscription ? "x_grok_searches" : "x_billable_units",
+        units,
+        grokSubscription ? 0 : (units / 1000) * X_COST_PER_1K_UNITS,
+      );
     } else if (monitor.platform === "web_search") {
       const provider = ((monitor.config as WebSearchMonitorConfig).provider ?? "brave");
       await recordUsage(
@@ -157,10 +202,53 @@ async function runMonitor(monitor: MonitorRow): Promise<void> {
         provider === "brave" ? BRAVE_COST_PER_1K / 1000 : 0,
       );
     }
+    if (result.summary.attempted > 0) {
+      const summaryUsage = [
+        recordUsage(
+          monitor.connectorId,
+          monitor.id,
+          "model_requests",
+          result.summary.attempted,
+          summaryCost,
+        ),
+      ];
+      if (summaryInputTokens > 0) {
+        summaryUsage.push(recordUsage(monitor.connectorId, monitor.id, "model_input_tokens", summaryInputTokens, 0));
+      }
+      if (summaryOutputTokens > 0) {
+        summaryUsage.push(recordUsage(monitor.connectorId, monitor.id, "model_output_tokens", summaryOutputTokens, 0));
+      }
+      await Promise.all(summaryUsage);
+    }
+
+    const monitorUpdate: Partial<typeof monitors.$inferInsert> = {
+      lastSuccessAt: new Date(),
+      nextRunAt,
+      failureCount: 0,
+      lastError: null,
+      cursor,
+    };
+    if (monitor.platform === "wechat" && !isWechatKeywordRuleConfig(monitor.config)) {
+      const patch = resolvedWechatConfigPatch(cursor);
+      const mpName = usefulWechatName(patch?.mpName);
+      if (patch) {
+        monitorUpdate.config = {
+          ...(monitor.config ?? {}),
+          ...patch,
+        };
+      }
+      if (mpName && isAutoWechatName(monitor.name)) {
+        monitorUpdate.name = mpName;
+      }
+    }
+    if (monitor.platform === "x") {
+      const profileName = typeof cursor.profileName === "string" ? cursor.profileName.trim() : "";
+      if (profileName && isAutoXName(monitor.name, monitor.config)) monitorUpdate.name = profileName;
+    }
 
     await db
       .update(monitors)
-      .set({ lastSuccessAt: new Date(), nextRunAt, failureCount: 0, lastError: null, cursor })
+      .set(monitorUpdate)
       .where(eq(monitors.id, monitor.id));
 
     await db
@@ -177,6 +265,7 @@ async function runMonitor(monitor: MonitorRow): Promise<void> {
         summaryFailedCount: result.summary.failed,
         summaryErrorCode: result.summary.errorCode ?? null,
         summaryErrorMessage: result.summary.errorMessage ?? null,
+        providerCost: String(summaryCost),
       })
       .where(eq(collectionRuns.id, runId));
 
@@ -188,7 +277,10 @@ async function runMonitor(monitor: MonitorRow): Promise<void> {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const failureCount = monitor.failureCount + 1;
-    const shouldDisable = shouldDisableMonitorAfterFailure(failureCount);
+    if (isTransientMonitorFailure(message)) {
+      nextRunAt = nextStaggeredRunAt({ intervalMinutes: 10, staggerKey });
+    }
+    const shouldDisable = shouldDisableMonitorAfterFailure(failureCount, MONITOR_DISABLE_AFTER_FAILURES, message);
     await db
       .update(monitors)
       .set({
@@ -223,24 +315,32 @@ async function runMonitor(monitor: MonitorRow): Promise<void> {
 export function shouldDisableMonitorAfterFailure(
   failureCount: number,
   threshold = MONITOR_DISABLE_AFTER_FAILURES,
+  message = "",
 ): boolean {
+  // Rate limits and upstream 5xx responses are recoverable service states, not
+  // evidence that the user's monitor configuration is broken.
+  if (isTransientMonitorFailure(message)) return false;
   return threshold > 0 && failureCount >= threshold;
 }
 
-// API 凭据键名（与 .env / factory.ts 保持一致）。worker 每轮采集前把它们从
-// 数据库刷新进 process.env，使 factory.ts 通过 process.env 读取时拿到最新值，
-// 无需重启。DB 中未配置的键保留容器启动时的 env 值（可能来自 .env）。
-// API 凭据键名（与 .env / factory.ts 保持一致）。worker 每轮采集前把它们从
-// 数据库刷新进 process.env，使 factory.ts 通过 process.env 读取时拿到最新值，
-// 无需重启。仅同步已知键，避免误覆盖其他环境变量。
-// 模型 API 相关键（沿用 SUMMARY_* 环境变量）由后台「模型 API」写入 DB，这里同步进 process.env，
-// 使 summarizer.ts（按 process.env 读取）在保存后立即生效，无需重启。
+export function isTransientMonitorFailure(message: string): boolean {
+  return /^XAI_X_SEARCH_(?:429|5\d\d|TIMEOUT|NETWORK(?::[A-Z0-9_]+)?)$/.test(message)
+    || message === "XAI_X_SEARCH_DAILY_BUDGET_EXHAUSTED"
+    || message === "GATHER_TIMEOUT:x"
+    || message === "fetch failed";
+}
+
+// API 凭据键名（与 .env / factory.ts / summarizer.ts 保持一致）。
+// worker 每轮采集前把它们从数据库刷新进 process.env，使后台保存后立即生效；
+// DB 中未配置的键保留容器启动时的 env 值，且只同步已知键，避免误覆盖其他环境变量。
 const CREDENTIAL_KEYS = [
   "X_BEARER_TOKEN",
   "BRAVE_SEARCH_API_KEY",
   "TAVILY_API_KEY",
   "SERPER_API_KEY",
   "WERSS_ACCESS_KEY",
+  "WECHAT_DIRECT_FALLBACK_ENABLED",
+  "WECHAT_FALLBACK_BASE_URL",
   "SUMMARY_PROVIDER",
   "SUMMARY_BASE_URL",
   "SUMMARY_API_KEY",
@@ -251,6 +351,13 @@ const CREDENTIAL_KEYS = [
   "VOLCENGINE_API_KEY",
   "SUMMARY_MODEL",
   "SUMMARY_SKIP_PLATFORMS",
+  "SUMMARY_MAX_INPUT_CHARS",
+  "SUMMARY_MAX_CONCURRENCY",
+  "SUMMARY_REQUESTS_PER_MINUTE",
+  "SUMMARY_REQUEST_INTERVAL_MS",
+  "SUMMARY_TIMEOUT_SECONDS",
+  "SUMMARY_INPUT_COST_PER_1M_USD",
+  "SUMMARY_OUTPUT_COST_PER_1M_USD",
 ];
 
 async function refreshCredentials(): Promise<void> {
@@ -276,11 +383,23 @@ export async function runOnce(): Promise<number> {
     .where(and(eq(monitors.enabled, true), lte(monitors.nextRunAt, new Date())));
 
   for (const monitor of due) await runMonitor(monitor);
+  await maybeRetryFailedContentAnalysis();
   return due.length;
 }
 
 export async function markWorkerHeartbeat(now = new Date()): Promise<void> {
-  await writeFile(WORKER_HEARTBEAT_FILE, now.toISOString(), "utf8");
+  await Promise.all([
+    writeFile(WORKER_HEARTBEAT_FILE, now.toISOString(), "utf8"),
+    db.insert(runtimeHealth).values({
+      service: "worker",
+      status: "ok",
+      lastHeartbeatAt: now,
+      detail: { pid: process.pid },
+    }).onConflictDoUpdate({
+      target: runtimeHealth.service,
+      set: { status: "ok", lastHeartbeatAt: now, detail: { pid: process.pid } },
+    }),
+  ]);
 }
 
 // Poll interval: clamp to a sane minimum so a misconfigured 0 / negative
@@ -292,9 +411,38 @@ const POLL_INTERVAL_MS = (Number.isFinite(rawPoll) && rawPoll > 0 ? rawPoll : 60
 // WeRSS/TrendRadar MCP) must not block the whole poll cycle and starve the
 // other due monitors.
 const GATHER_TIMEOUT_MS = (Number(process.env.WORKER_GATHER_TIMEOUT_SECONDS) || 60) * 1000;
+// SuperGrok / X Search 自身允许接近 55 秒；给连接重试和响应解析留出余量，
+// 避免外层通用 60 秒比连接器先结束而吞掉可理解的错误状态。
+const X_GATHER_TIMEOUT_MS = (Number(process.env.WORKER_X_GATHER_TIMEOUT_SECONDS) || 70) * 1000;
 // 微信公众号在「包含全文摘要」模式下会逐篇抓取文章正文（by_article 约 15–30s/篇），
 // 需要比通用采集更长的超时预算，否则会被通用 60s 一刀切中断。
 const WECHAT_GATHER_TIMEOUT_MS = (Number(process.env.WORKER_WECHAT_GATHER_TIMEOUT_SECONDS) || 180) * 1000;
+const CONTENT_RETRY_INTERVAL_MS = (Number(process.env.CONTENT_RETRY_INTERVAL_MINUTES) || 15) * 60_000;
+const CONTENT_RETRY_BATCH_SIZE = Math.max(1, Number(process.env.CONTENT_RETRY_BATCH_SIZE) || 5);
+const CONTENT_RETRY_MAX_ATTEMPTS = Math.max(1, Number(process.env.CONTENT_RETRY_MAX_ATTEMPTS) || 5);
+let lastContentRetryAt = 0;
+
+async function maybeRetryFailedContentAnalysis(now = Date.now()): Promise<void> {
+  if (now - lastContentRetryAt < CONTENT_RETRY_INTERVAL_MS) return;
+  lastContentRetryAt = now;
+  try {
+    // Only retry hard failures. Do NOT auto-backfill historical empty summaries —
+    // new rows are analyzed at ingest, and TrendRadar now uses the same gate as
+    // the reader so hidden hotlist noise never enters the model path.
+    const result = await backfillMissingSummaries(CONTENT_RETRY_BATCH_SIZE, {
+      scope: "failures",
+      retryAfterMinutes: CONTENT_RETRY_INTERVAL_MS / 60_000,
+      maxAttempts: CONTENT_RETRY_MAX_ATTEMPTS,
+    });
+    if (result.processed > 0) {
+      console.log(
+        `[worker] 模型理解失败重试 ${result.processed} 条，成功 ${result.stats.succeeded}/${result.stats.attempted}`,
+      );
+    }
+  } catch (error) {
+    console.warn("[worker] 模型理解自动重试失败:", error);
+  }
+}
 
 export async function cleanupStaleRunningRuns(): Promise<number> {
   const staleAfterMs = Math.max(GATHER_TIMEOUT_MS, WECHAT_GATHER_TIMEOUT_MS) + 60_000;

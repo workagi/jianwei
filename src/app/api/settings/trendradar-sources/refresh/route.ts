@@ -8,7 +8,7 @@ const REFRESH_URL = process.env.TRENDRADAR_REFRESH_URL ?? "http://trendradar-ref
 const REFRESH_TOKEN = process.env.TRENDRADAR_REFRESH_TOKEN ?? "";
 
 export async function POST(req: Request) {
-  const denied = requireWriteAuth(req);
+  const denied = await requireWriteAuth(req);
   if (denied) return denied;
 
   try {

@@ -233,7 +233,7 @@ export function TrendRadarInterestsManager() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(errorText(data, "保存失败"));
       setState(data as InterestState);
-      setMessage("已保存。新的热榜 / RSS 会按这组兴趣规则筛选。");
+      setMessage("已保存。新的站点榜单 / RSS 会按这组兴趣规则筛选。");
       return true;
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "保存失败");
@@ -265,8 +265,8 @@ export function TrendRadarInterestsManager() {
     <section className="credentials-card trendradar-interests-card">
       <div className="settings-card-head">
         <div>
-          <h2>热榜兴趣规则</h2>
-          <p>决定哪些热榜 / RSS 内容能进入信息流。适合后续切换到汽车、投资、教育等其他领域。</p>
+          <h2>榜单 / RSS 兴趣规则</h2>
+          <p>决定哪些站点榜单 / RSS 内容能进入信息流。这里筛选的是外部来源内容，不是见微自己的推荐榜。</p>
         </div>
         <button type="button" className="secondary-button" onClick={load} disabled={loading || saving || refreshing}>
           <RotateCcw size={14} /> 重新读取

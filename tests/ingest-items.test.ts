@@ -50,6 +50,23 @@ describe("toItemRows", () => {
     expect(rows).toHaveLength(2);
   });
 
+  it("collapses different upstream ids that share one canonical URL", () => {
+    const rows = toItemRows([
+      makeItem({
+        platform: "wechat",
+        upstreamId: "2392024520-2651097629_1",
+        canonicalUrl: "https://mp.weixin.qq.com/s/znF4CNSMGPNxJ9CZuH04JQ",
+      }),
+      makeItem({
+        platform: "wechat",
+        upstreamId: "znF4CNSMGPNxJ9CZuH04JQ",
+        canonicalUrl: "https://mp.weixin.qq.com/s/znF4CNSMGPNxJ9CZuH04JQ?utm_source=x",
+      }),
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].canonicalUrl).toBe("https://mp.weixin.qq.com/s/znF4CNSMGPNxJ9CZuH04JQ");
+  });
+
   it("passes trendradar platform through unchanged", () => {
     const rows = toItemRows([makeItem({ platform: "trendradar", upstreamId: "tr1" })]);
     expect(rows[0].platform).toBe("trendradar");
@@ -77,6 +94,47 @@ describe("toItemRows", () => {
 
     expect(rows[0].contentType).toBe("tutorial");
     expect(rows[0].topicTags).toEqual(expect.arrayContaining(["Agent", "MCP", "Prompt"]));
+    expect(rows[0].retentionReason).toBeNull();
+    expect(rows[0].retentionSource).toBe("rules");
+  });
+
+  it("persists WeChat full-text provenance separately from the article body", () => {
+    const fetchedAt = new Date("2026-07-15T08:00:00Z");
+    const rows = toItemRows([
+      makeItem({
+        platform: "wechat",
+        contentHtml: "<p>公众号完整正文内容，已经由备用通道成功补回。</p>",
+        contentProvider: "direct",
+        contentFetchStatus: "success",
+        contentFetchedAt: fetchedAt,
+      }),
+    ]);
+
+    expect(rows[0]).toMatchObject({
+      contentProvider: "direct",
+      contentFetchStatus: "success",
+      contentFetchError: null,
+      contentFetchedAt: fetchedAt,
+    });
+  });
+
+  it("persists the source provider independently from the broad platform", () => {
+    const rows = toItemRows([
+      makeItem({
+        platform: "web_search",
+        sourceProvider: "web_tavily",
+        upstreamId: "tavily-1",
+        canonicalUrl: "https://example.com/tavily",
+      }),
+    ]);
+
+    expect(rows[0].platform).toBe("web_search");
+    expect(rows[0].sourceProvider).toBe("web_tavily");
+  });
+
+  it("persists an X profile avatar independently from post media", () => {
+    const rows = toItemRows([makeItem({ avatarUrl: "https://pbs.twimg.com/profile_images/example.jpg" })]);
+    expect(rows[0].avatarUrl).toBe("https://pbs.twimg.com/profile_images/example.jpg");
   });
 });
 
@@ -90,6 +148,7 @@ describe("ingest", () => {
     expect(result.itemsUpserted).toBe(2);
     expect(result.matchesInserted).toBe(2);
     expect(result.summary.status).toBe("disabled");
+    expect(repo.itemRows.every((row) => row.analysisStatus === "disabled")).toBe(true);
     expect(repo.matchLinks.every((m) => m.monitorId === "m1")).toBe(true);
   });
 

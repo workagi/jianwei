@@ -69,6 +69,16 @@ describe("TrendRadar config editor", () => {
     );
   });
 
+  it("exposes RSS visibility without deleting stored history", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "trendradar-config-"));
+    await writeFile(path.join(dir, "config.yaml"), sampleConfig, "utf8");
+    const { trendRadarRssSourceEnabled } = await importWithConfigDir(dir);
+
+    expect(trendRadarRssSourceEnabled("Hacker News")).toBe(true);
+    expect(trendRadarRssSourceEnabled("阮一峰的网络日志")).toBe(false);
+    expect(trendRadarRssSourceEnabled("不存在的来源")).toBeUndefined();
+  });
+
   it("saves only the source blocks while keeping the rest of config.yaml", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "trendradar-config-"));
     const file = path.join(dir, "config.yaml");

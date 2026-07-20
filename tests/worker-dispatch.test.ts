@@ -49,6 +49,7 @@ describe("worker gather() dispatch — Task 3 P1 + P2 (direct connectors)", () =
 
     expect(out.items).toHaveLength(1);
     expect(out.items[0].platform).toBe("x");
+    expect(out.items[0].sourceProvider).toBe("x_official");
     expect(out.items[0].upstreamId).toBe("t1");
     expect(out.cursor.sinceId).toBe("t1");
   });
@@ -72,6 +73,7 @@ describe("worker gather() dispatch — Task 3 P1 + P2 (direct connectors)", () =
 
     expect(out.items.length).toBeGreaterThan(0);
     expect(out.items.every((i) => i.platform === "web_search")).toBe(true);
+    expect(out.items.every((i) => i.sourceProvider === "web_brave")).toBe(true);
     expect(out.items[0].authorName).toBe("Site A");
     expect(out.cursor).toHaveProperty("collectedAt");
   });
@@ -119,6 +121,7 @@ describe("worker gather() dispatch — Task 3 P1 + P2 (direct connectors)", () =
     expect(out.items).toHaveLength(1);
     expect(out.items[0].title).toBe("AI agent Tavily A");
     expect(out.items[0].authorName).toBe("example.com");
+    expect(out.items[0].sourceProvider).toBe("web_tavily");
     expect(out.cursor.provider).toBe("tavily");
   });
 
@@ -141,6 +144,7 @@ describe("worker gather() dispatch — Task 3 P1 + P2 (direct connectors)", () =
     expect(out.items).toHaveLength(1);
     expect(out.items[0].title).toBe("Serper A");
     expect(out.items[0].authorName).toBe("Example");
+    expect(out.items[0].sourceProvider).toBe("web_serper");
     expect(out.cursor.provider).toBe("serper");
   });
 
@@ -151,7 +155,10 @@ describe("worker gather() dispatch — Task 3 P1 + P2 (direct connectors)", () =
     ];
     mockFetch((url) => {
       if (url.pathname === "/api/v1/wx/mps/by_article") {
-        return new Response(JSON.stringify({ code: 0, message: "ok", data: { mp_id: "mpX", mp_name: "账号X" } }), { status: 200 });
+        return new Response(JSON.stringify({ code: 0, message: "ok", data: { mp_id: "mpX", mp_name: "账号X", mp_info: { biz: "bizX" } } }), { status: 200 });
+      }
+      if (url.pathname === "/api/v1/wx/mps") {
+        return new Response(JSON.stringify({ code: 0, message: "ok", data: { id: "mpX", mp_name: "账号X", faker_id: "bizX" } }), { status: 200 });
       }
       if (url.pathname === "/api/v1/wx/articles") {
         return new Response(JSON.stringify({ code: 0, message: "ok", data: { list: articles, total: 2 } }), { status: 200 });
@@ -168,11 +175,12 @@ describe("worker gather() dispatch — Task 3 P1 + P2 (direct connectors)", () =
 
     expect(out.items).toHaveLength(2);
     expect(out.items[0].platform).toBe("wechat");
+    expect(out.items[0].sourceProvider).toBe("wechat_werss");
     expect(out.items[0].upstreamId).toBe("a1");
     expect(out.items[0].authorName).toBe("账号X");
     expect(out.items[0].canonicalUrl).toBe("https://mp.weixin.qq.com/s/a1");
     expect(out.items[0].imageUrls).toEqual(["https://img/1.jpg"]);
-    expect(out.cursor).toEqual({ mpId: "mpX" });
+    expect(out.cursor).toMatchObject({ mpId: "mpX", mpName: "账号X", mpBiz: "bizX" });
   });
 });
 
@@ -183,5 +191,11 @@ describe("worker monitor circuit breaker", () => {
     expect(shouldDisableMonitorAfterFailure(4, 5)).toBe(false);
     expect(shouldDisableMonitorAfterFailure(5, 5)).toBe(true);
     expect(shouldDisableMonitorAfterFailure(10, 0)).toBe(false);
+    expect(shouldDisableMonitorAfterFailure(10, 5, "XAI_X_SEARCH_503")).toBe(false);
+    expect(shouldDisableMonitorAfterFailure(10, 5, "XAI_X_SEARCH_429")).toBe(false);
+    expect(shouldDisableMonitorAfterFailure(10, 5, "XAI_X_SEARCH_NETWORK:UND_ERR_SOCKET")).toBe(false);
+    expect(shouldDisableMonitorAfterFailure(10, 5, "XAI_X_SEARCH_TIMEOUT")).toBe(false);
+    expect(shouldDisableMonitorAfterFailure(10, 5, "GATHER_TIMEOUT:x")).toBe(false);
+    expect(shouldDisableMonitorAfterFailure(10, 5, "fetch failed")).toBe(false);
   });
 });

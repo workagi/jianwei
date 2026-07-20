@@ -5,8 +5,8 @@ import { useEffect, useState } from "react";
 const FIELDS = [
   {
     key: "x",
-    label: "X / Twitter",
-    description: "订阅公开账号、拉取推文内容。",
+    label: "X / Twitter · 官方 API（后备）",
+    description: "保留官方 API 采集能力；可在单个监控任务中从 SuperGrok 切换到此通道。",
     placeholder: "X_BEARER_TOKEN",
   },
   {

@@ -1,9 +1,13 @@
 import { z } from "zod";
+import type { SourceProviderId } from "@/sources/ids";
 
 export const xMonitorSchema = z.object({
+  provider: z.enum(["x_grok", "x_official"]).default("x_official"),
   username: z.string().trim().regex(/^@?[A-Za-z0-9_]{1,15}$/).transform((value) => value.replace(/^@/, "")),
   includeReplies: z.boolean().default(false),
   includeReposts: z.boolean().default(false),
+  /** Quote tweets (引用): excluded by default; when on, also store the quoted post for card display. */
+  includeQuotes: z.boolean().default(false),
 });
 
 export const wechatAccountMonitorSchema = z.object({
@@ -63,19 +67,73 @@ export interface MonitorConfigMap {
   web_search: WebSearchMonitorConfig;
 }
 
+export interface XQuotedPost {
+  authorName?: string;
+  authorHandle?: string;
+  text: string;
+  url?: string;
+}
+
 export interface NormalizedItem {
   platform: PlatformType;
+  /** Stable collector identity, independent from the reader's broad platform tab. */
+  sourceProvider?: SourceProviderId;
   upstreamId: string;
   canonicalUrl: string;
   authorId?: string;
   authorName?: string;
   authorHandle?: string;
+  avatarUrl?: string;
   title?: string;
   text: string;
   contentHtml?: string;
+  /** Which WeChat full-text channel produced contentHtml. */
+  contentProvider?: "werss" | "direct" | "wechat_download_api";
+  /** Full-text retrieval outcome; independent from list/article collection. */
+  contentFetchStatus?: "success" | "failed";
+  contentFetchError?: string;
+  contentFetchedAt?: Date;
+  /** For X quote tweets: the nested quoted post shown under the author's commentary. */
+  quotedPost?: XQuotedPost;
   imageUrls: string[];
   publishedAt: Date;
   raw: unknown;
+}
+
+/** Encode an X quote into contentHtml so it survives DB storage without a migration. */
+export function encodeXQuotedPost(quote: XQuotedPost): string {
+  return JSON.stringify({
+    type: "x_quote",
+    authorName: quote.authorName ?? "",
+    authorHandle: quote.authorHandle ?? "",
+    text: quote.text,
+    url: quote.url ?? "",
+  });
+}
+
+/** Decode X quote payload stored in contentHtml. */
+export function decodeXQuotedPost(contentHtml?: string | null): XQuotedPost | undefined {
+  if (!contentHtml?.trim()) return undefined;
+  try {
+    const parsed = JSON.parse(contentHtml) as {
+      type?: unknown;
+      authorName?: unknown;
+      authorHandle?: unknown;
+      text?: unknown;
+      url?: unknown;
+    };
+    if (parsed.type !== "x_quote" || typeof parsed.text !== "string" || !parsed.text.trim()) return undefined;
+    return {
+      authorName: typeof parsed.authorName === "string" && parsed.authorName.trim() ? parsed.authorName.trim() : undefined,
+      authorHandle: typeof parsed.authorHandle === "string" && parsed.authorHandle.trim()
+        ? parsed.authorHandle.trim().replace(/^@/, "")
+        : undefined,
+      text: parsed.text.trim(),
+      url: typeof parsed.url === "string" && parsed.url.trim() ? parsed.url.trim() : undefined,
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 export interface ConnectorPreview {
@@ -83,6 +141,7 @@ export interface ConnectorPreview {
   avatarUrl?: string;
   items: NormalizedItem[];
   warning?: string;
+  configPatch?: Record<string, unknown>;
 }
 
 export interface CollectionResult {

@@ -146,12 +146,12 @@ export function contentTypeFromLegacyTag(id?: string): ContentTypeId | undefined
 }
 
 function itemText(item: TaggableItem): string {
+  // 分类和主题标签必须基于“内容本身”，不要把来源名/账号名混进来。
+  // 否则会出现用户之前指出的那类问题：规则命中的不是文章内容，而是来源元数据。
   return [
     item.title,
     item.aiSummary,
     item.bodyText,
-    item.authorName,
-    item.authorHandle,
   ]
     .filter(Boolean)
     .join("\n");
@@ -213,8 +213,17 @@ export function normalizeTopicTags(value: unknown, fallback: string[] = []): str
 }
 
 export function normalizeTopicLabel(value?: string | null): string | undefined {
-  const cleaned = value?.replace(/^#+/, "").trim().replace(/\s+/g, " ");
-  return cleaned || undefined;
+  const cleaned = value
+    ?.replace(/^#+/, "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(/这些$/u, "")
+    .trim();
+  if (!cleaned || cleaned.length > 28) return undefined;
+  if (/^\d{1,2}(?:\.\d+)?$/.test(cleaned)) return undefined;
+  if (/^[\u4e00-\u9fa5]$/u.test(cleaned) || /^[A-Za-z]$/.test(cleaned)) return undefined;
+  if (TOPIC_STOP_WORDS.has(cleaned.toLocaleLowerCase())) return undefined;
+  return cleaned;
 }
 
 function uniqueTopicTags(tags: string[]): string[] {
@@ -234,6 +243,36 @@ const TITLE_STOP_TAGS = new Set([
   "相关内容",
   "最新消息",
   "直播",
+  "全文",
+]);
+
+const TOPIC_STOP_WORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "api",
+  "as",
+  "by",
+  "for",
+  "from",
+  "http",
+  "https",
+  "how",
+  "in",
+  "into",
+  "is",
+  "of",
+  "on",
+  "rss",
+  "that",
+  "the",
+  "this",
+  "to",
+  "url",
+  "with",
+  "your",
+  "相关内容",
+  "最新消息",
   "全文",
 ]);
 

@@ -15,7 +15,7 @@ const KEY_MAP: Record<string, string> = {
  * GET：返回各平台是否已配置凭据。仅返回布尔状态，绝不返回明文值。
  */
 export async function GET(req: Request) {
-  const denied = requireWriteAuth(req);
+  const denied = await requireWriteAuth(req);
   if (denied) return denied;
 
   const rows = await loadApiCredentials();
@@ -32,7 +32,7 @@ export async function GET(req: Request) {
  * 避免误清空已配置的密钥。写入后立即对 worker 生效（无需重启）。
  */
 export async function PUT(req: Request) {
-  const denied = requireWriteAuth(req);
+  const denied = await requireWriteAuth(req);
   if (denied) return denied;
 
   let body: Record<string, unknown>;

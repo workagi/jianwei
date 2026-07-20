@@ -76,6 +76,8 @@ TRENDRADAR_MCP_URL=http://localhost:3333/mcp
 TRENDRADAR_WEBSERVER_PORT=8088
 TRENDRADAR_CRON_SCHEDULE=*/30 * * * *
 WORKER_POLL_INTERVAL_SECONDS=60
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=__GENERATE__
 ADMIN_API_TOKEN=__GENERATE__
 ENV
       ok "已生成最小 .env（未找到 .env.example 模板）"
@@ -119,7 +121,27 @@ ENV
     ok "已生成随机 Postgres 密码（并同步到本地 DATABASE_URL 示例）"
   fi
 
-  # 若 ADMIN_API_TOKEN 仍是占位符或缺失，生成一个随机管理员令牌（默认开启鉴权）。
+  # 网页后台使用独立账号密码；API token 只留给脚本 / CI。
+  if ! grep -q '^ADMIN_USERNAME=.\+' .env 2>/dev/null; then
+    printf 'ADMIN_USERNAME=admin\n' >> .env
+  fi
+  if grep -q '^ADMIN_PASSWORD=__GENERATE__$' .env 2>/dev/null \
+     || ! grep -q '^ADMIN_PASSWORD=.\+' .env 2>/dev/null; then
+    local login_password
+    login_password="$(gen_key | tr -dc 'A-Za-z0-9' | head -c 18)"
+    if grep -q '^ADMIN_PASSWORD=' .env 2>/dev/null; then
+      if sed --version >/dev/null 2>&1; then
+        sed -i "s|^ADMIN_PASSWORD=.*|ADMIN_PASSWORD=$login_password|" .env
+      else
+        sed -i '' "s|^ADMIN_PASSWORD=.*|ADMIN_PASSWORD=$login_password|" .env
+      fi
+    else
+      printf 'ADMIN_PASSWORD=%s\n' "$login_password" >> .env
+    fi
+    ok "已生成后台登录密码（账号 admin，密码见 .env 的 ADMIN_PASSWORD）"
+  fi
+
+  # 若 ADMIN_API_TOKEN 仍是占位符或缺失，生成随机程序令牌。
   if grep -q '^ADMIN_API_TOKEN=__GENERATE__$' .env 2>/dev/null \
      || ! grep -q '^ADMIN_API_TOKEN=' .env 2>/dev/null; then
     local a
@@ -133,7 +155,7 @@ ENV
     else
       printf 'ADMIN_API_TOKEN=%s\n' "$a" >> .env
     fi
-    ok "已生成随机管理员令牌 ADMIN_API_TOKEN（写操作与 /admin 均需携带，详见 .env）"
+    ok "已生成程序 API 令牌 ADMIN_API_TOKEN（仅供脚本 / CI 调用）"
   fi
 }
 

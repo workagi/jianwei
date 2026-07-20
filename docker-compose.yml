@@ -46,10 +46,22 @@ services:
       BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
       WERSS_BASE_URL: http://werss:8001
       WERSS_ACCESS_KEY: ${WERSS_ACCESS_KEY:-}
+      WECHAT_DIRECT_FALLBACK_ENABLED: ${WECHAT_DIRECT_FALLBACK_ENABLED:-true}
+      # Prefer enhanced collector over WeRSS browser when the sidecar is up.
+      WECHAT_FALLBACK_BASE_URL: ${WECHAT_FALLBACK_BASE_URL:-http://wechat-fallback:5000}
+      WECHAT_FULLTEXT_RETRY_HOURS: ${WECHAT_FULLTEXT_RETRY_HOURS:-6}
+      WECHAT_FULLTEXT_BACKFILL_BATCH: ${WECHAT_FULLTEXT_BACKFILL_BATCH:-3}
+      WECHAT_WERSS_BROWSER_MIN_GAP_MS: ${WECHAT_WERSS_BROWSER_MIN_GAP_MS:-5000}
+      WECHAT_WERSS_BROWSER_MAX_PER_HOUR: ${WECHAT_WERSS_BROWSER_MAX_PER_HOUR:-36}
+      WECHAT_WERSS_BROWSER_CIRCUIT_FAILURES: ${WECHAT_WERSS_BROWSER_CIRCUIT_FAILURES:-4}
+      WECHAT_WERSS_BROWSER_CIRCUIT_MINUTES: ${WECHAT_WERSS_BROWSER_CIRCUIT_MINUTES:-30}
       TRENDRADAR_MCP_URL: http://trendradar-mcp:3333/mcp
       TRENDRADAR_CONFIG_DIR: /app/trendradar-config
       TRENDRADAR_REFRESH_URL: http://trendradar-refresh:8090/refresh
       TRENDRADAR_REFRESH_TOKEN: ${TRENDRADAR_REFRESH_TOKEN:-development-only-change-me}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET:-}
       ADMIN_API_TOKEN: ${ADMIN_API_TOKEN:-}
     ports:
       - "3000:3000"
@@ -87,8 +99,25 @@ services:
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-development-only-change-me}
       X_BEARER_TOKEN: ${X_BEARER_TOKEN:-}
       BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
+      # SuperGrok X Search cost controls (subscription quota, not USD).
+      XAI_X_SEARCH_MODEL: ${XAI_X_SEARCH_MODEL:-grok-4-1-fast-non-reasoning}
+      XAI_X_SEARCH_MAX_POSTS: ${XAI_X_SEARCH_MAX_POSTS:-10}
+      XAI_X_SEARCH_LOOKBACK_DAYS: ${XAI_X_SEARCH_LOOKBACK_DAYS:-2}
+      XAI_X_SEARCH_ATTEMPTS: ${XAI_X_SEARCH_ATTEMPTS:-2}
+      # Soft daily cap across all x_grok monitors. 0 = unlimited.
+      XAI_X_SEARCH_DAILY_BUDGET: ${XAI_X_SEARCH_DAILY_BUDGET:-200}
       WERSS_BASE_URL: http://werss:8001
       WERSS_ACCESS_KEY: ${WERSS_ACCESS_KEY:-}
+      WECHAT_DIRECT_FALLBACK_ENABLED: ${WECHAT_DIRECT_FALLBACK_ENABLED:-true}
+      # Prefer enhanced collector over WeRSS browser when the sidecar is up.
+      WECHAT_FALLBACK_BASE_URL: ${WECHAT_FALLBACK_BASE_URL:-http://wechat-fallback:5000}
+      WECHAT_FULLTEXT_RETRY_HOURS: ${WECHAT_FULLTEXT_RETRY_HOURS:-6}
+      WECHAT_FULLTEXT_BACKFILL_BATCH: ${WECHAT_FULLTEXT_BACKFILL_BATCH:-3}
+      # WeRSS 浏览器兜底：串行 + 最小间隔 + 小时预算 + 熔断（功能保留，防止打满）。
+      WECHAT_WERSS_BROWSER_MIN_GAP_MS: ${WECHAT_WERSS_BROWSER_MIN_GAP_MS:-5000}
+      WECHAT_WERSS_BROWSER_MAX_PER_HOUR: ${WECHAT_WERSS_BROWSER_MAX_PER_HOUR:-36}
+      WECHAT_WERSS_BROWSER_CIRCUIT_FAILURES: ${WECHAT_WERSS_BROWSER_CIRCUIT_FAILURES:-4}
+      WECHAT_WERSS_BROWSER_CIRCUIT_MINUTES: ${WECHAT_WERSS_BROWSER_CIRCUIT_MINUTES:-30}
       TRENDRADAR_MCP_URL: http://trendradar-mcp:3333/mcp
       X_BRAVE_MONTHLY_BUDGET_USD: ${X_BRAVE_MONTHLY_BUDGET_USD:-}
       WORKER_POLL_INTERVAL_SECONDS: ${WORKER_POLL_INTERVAL_SECONDS:-60}
@@ -101,8 +130,17 @@ services:
       SUMMARY_API_KEY: ${SUMMARY_API_KEY:-}
       SUMMARY_SKIP_PLATFORMS: ${SUMMARY_SKIP_PLATFORMS:-wechat}
       SUMMARY_MODEL: ${SUMMARY_MODEL:-}
-      SUMMARY_TIMEOUT_SECONDS: ${SUMMARY_TIMEOUT_SECONDS:-20}
+      SUMMARY_TIMEOUT_SECONDS: ${SUMMARY_TIMEOUT_SECONDS:-45}
       SUMMARY_MAX_CONCURRENCY: ${SUMMARY_MAX_CONCURRENCY:-4}
+      SUMMARY_REQUESTS_PER_MINUTE: ${SUMMARY_REQUESTS_PER_MINUTE:-}
+      SUMMARY_MAX_INPUT_CHARS: ${SUMMARY_MAX_INPUT_CHARS:-3000}
+      SUMMARY_INPUT_COST_PER_1M_USD: ${SUMMARY_INPUT_COST_PER_1M_USD:-}
+      SUMMARY_OUTPUT_COST_PER_1M_USD: ${SUMMARY_OUTPUT_COST_PER_1M_USD:-}
+      CONTENT_RETRY_INTERVAL_MINUTES: ${CONTENT_RETRY_INTERVAL_MINUTES:-15}
+      CONTENT_RETRY_BATCH_SIZE: ${CONTENT_RETRY_BATCH_SIZE:-5}
+      CONTENT_ENRICHMENT_BATCH_SIZE: ${CONTENT_ENRICHMENT_BATCH_SIZE:-20}
+      CONTENT_RETRY_MAX_ATTEMPTS: ${CONTENT_RETRY_MAX_ATTEMPTS:-5}
+      TITLE_TRANSLATION_BATCH_SIZE: ${TITLE_TRANSLATION_BATCH_SIZE:-100}
     command: ["pnpm", "worker"]
     init: true
     depends_on:
@@ -130,16 +168,53 @@ services:
       # 改用 web 方式授权：前端出二维码、手机微信扫码完成授权，
       # 不依赖容器内的 headless 浏览器（该镜像默认未打包浏览器，会导致扫码绑定失败）。
       - WERSS_AUTH_WEB=True
+      # 降低噪音日志；部分版本会打印整篇 HTML / SQL / 鉴权细节，加重磁盘 IO。
+      - LOG_LEVEL=${WERSS_LOG_LEVEL:-WARNING}
+      - WERSS_LOG_LEVEL=${WERSS_LOG_LEVEL:-WARNING}
+      # 保留「自动补正文」能力，但压低默认节奏，避免和 SignalDeck 叠加打满宿主机。
+      # content_mode=api：优先公众平台 API，失败再回退 web（Playwright）。
+      - GATHER.CONTENT_AUTO_CHECK=${GATHER_CONTENT_AUTO_CHECK:-True}
+      - GATHER.CONTENT_AUTO_INTERVAL=${GATHER_CONTENT_AUTO_INTERVAL:-59}
+      - GATHER.CONTENT_MODE=${GATHER_CONTENT_MODE:-api}
     ports:
       - "127.0.0.1:8001:8001"
     volumes:
       - werss-data:/app/data
+    # 硬顶：即使 Playwright 再泄漏，也不至于拖死整机（2026-07-17 曾到 600%+ CPU / 600+ 进程）。
+    mem_limit: ${WERSS_MEM_LIMIT:-2g}
+    cpus: ${WERSS_CPUS:-1.5}
+    # Baseline with Chromium is ~90–110; leave headroom without allowing 600+ leaks.
+    pids_limit: ${WERSS_PIDS_LIMIT:-200}
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8001/ || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 20s
+    restart: unless-stopped
+
+  # --- Optional enhanced WeChat full-text fallback ----------------------
+  # Start only when needed: docker compose --profile wechat-fallback up -d wechat-fallback
+  # Then scan at http://localhost:${WECHAT_FALLBACK_PORT:-5055}/login.html and
+  # configure http://wechat-fallback:5000 in “平台连接 → 公众号全文通道”.
+  wechat-fallback:
+    profiles: ["wechat-fallback"]
+    image: tmwgsicp/wechat-download-api:latest
+    environment:
+      TZ: Asia/Shanghai
+      SITE_URL: ${WECHAT_FALLBACK_PUBLIC_URL:-http://localhost:5055}
+    ports:
+      # Codex 内置浏览器运行在独立网络中，本地扫码时可临时设为 0.0.0.0；
+      # 授权完成后改回 127.0.0.1，避免把无鉴权管理页长期暴露到局域网。
+      - "${WECHAT_FALLBACK_BIND_HOST:-127.0.0.1}:${WECHAT_FALLBACK_PORT:-5055}:5000"
+    volumes:
+      - wechat-fallback-data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
 
   # --- TrendRadar sidecar (hotlists / RSS / scheduling / AI) -------------
@@ -200,4 +275,5 @@ services:
 volumes:
   monitor-postgres:
   werss-data:
+  wechat-fallback-data:
   trendradar-output:
