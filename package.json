@@ -6,12 +6,12 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/skymao2021/jianwei.git"
+    "url": "git+https://github.com/workagi/jianwei.git"
   },
   "bugs": {
-    "url": "https://github.com/skymao2021/jianwei/issues"
+    "url": "https://github.com/workagi/jianwei/issues"
   },
-  "homepage": "https://github.com/skymao2021/jianwei#readme",
+  "homepage": "https://github.com/workagi/jianwei#readme",
   "packageManager": "pnpm@10.28.1",
   "scripts": {
     "dev": "next dev",

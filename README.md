@@ -1,6 +1,6 @@
 # 见微
 
-[![CI](https://github.com/skymao2021/jianwei/actions/workflows/ci.yml/badge.svg)](https://github.com/skymao2021/jianwei/actions/workflows/ci.yml)
+[![CI](https://github.com/workagi/jianwei/actions/workflows/ci.yml/badge.svg)](https://github.com/workagi/jianwei/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-5b6475.svg)](LICENSE)
 
 **少刷几个平台，也不错过真正重要的信息。**
@@ -71,7 +71,7 @@
 克隆仓库并启动：
 
 ```bash
-git clone https://github.com/skymao2021/jianwei.git
+git clone https://github.com/workagi/jianwei.git
 cd jianwei
 ./start.sh
 ```

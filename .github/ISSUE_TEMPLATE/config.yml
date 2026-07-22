@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: 安全漏洞
-    url: https://github.com/skymao2021/jianwei/security
+    url: https://github.com/workagi/jianwei/security
     about: 请使用私有漏洞报告，不要公开披露可利用细节
   - name: 使用与支持边界
-    url: https://github.com/skymao2021/jianwei/blob/main/SUPPORT.md
+    url: https://github.com/workagi/jianwei/blob/main/SUPPORT.md
     about: 提交前先确认问题是否来自第三方平台、额度或登录状态

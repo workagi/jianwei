@@ -14,7 +14,7 @@
 需要 Node.js 22、pnpm 10.28.1，以及用于完整联调的 Docker。
 
 ```bash
-git clone https://github.com/skymao2021/jianwei.git
+git clone https://github.com/workagi/jianwei.git
 cd jianwei
 pnpm install --frozen-lockfile
 cp .env.example .env

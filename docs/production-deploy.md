@@ -24,7 +24,7 @@
 在服务器上：
 
 ```bash
-git clone https://github.com/skymao2021/jianwei.git
+git clone https://github.com/workagi/jianwei.git
 cd jianwei
 ```
 
