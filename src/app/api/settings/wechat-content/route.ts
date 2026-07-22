@@ -3,6 +3,9 @@ import { loadApiCredentials, saveApiCredentials } from "@/db/queries";
 import { requireWriteAuth } from "@/lib/auth";
 import { backfillWechatFullText } from "@/lib/wechat-content-backfill";
 import { probeWechatFallback, testWechatFallbackArticle } from "@/lib/wechat-fallback-status";
+import { db } from "@/db";
+import { runtimeHealth } from "@/db/schema";
+import { eq } from "drizzle-orm";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 180;
@@ -13,6 +16,11 @@ const LAST_TEST_AT_KEY = "WECHAT_FALLBACK_LAST_TEST_AT";
 const LAST_TEST_STATUS_KEY = "WECHAT_FALLBACK_LAST_TEST_STATUS";
 const LAST_TEST_MESSAGE_KEY = "WECHAT_FALLBACK_LAST_TEST_MESSAGE";
 
+function publicAdminUrl(value: string | undefined, fallback: string): string {
+  const trimmed = value?.trim();
+  return trimmed || fallback;
+}
+
 async function currentSettings() {
   const rows = await loadApiCredentials();
   const values = new Map(rows.map((row) => [row.key, row.value]));
@@ -21,11 +29,30 @@ async function currentSettings() {
   const lastTestAt = values.get(LAST_TEST_AT_KEY) ?? "";
   const lastTestStatus = values.get(LAST_TEST_STATUS_KEY) ?? "";
   const lastTestMessage = values.get(LAST_TEST_MESSAGE_KEY) ?? "";
+  const [authHealth] = await db
+    .select({ status: runtimeHealth.status, lastHeartbeatAt: runtimeHealth.lastHeartbeatAt, detail: runtimeHealth.detail })
+    .from(runtimeHealth)
+    .where(eq(runtimeHealth.service, "werss_auth"))
+    .limit(1);
   return {
     directFallbackEnabled: directValue !== "false",
     fallbackBaseUrl,
     fallbackConfigured: Boolean(fallbackBaseUrl.trim()),
     fallback: await probeWechatFallback(fallbackBaseUrl),
+    managementUrls: {
+      werss: publicAdminUrl(process.env.WERSS_ADMIN_URL, "http://localhost:8001/wechat-status"),
+      fallback: publicAdminUrl(process.env.WECHAT_FALLBACK_ADMIN_URL, "http://localhost:5055/admin.html"),
+    },
+    primaryAuth: authHealth
+      ? {
+          status: authHealth.status,
+          checkedAt: authHealth.lastHeartbeatAt.toISOString(),
+          account: typeof authHealth.detail.account === "string" ? authHealth.detail.account : undefined,
+          expiryTimestamp: typeof authHealth.detail.expiryTimestamp === "number" ? authHealth.detail.expiryTimestamp : undefined,
+          remainingSeconds: typeof authHealth.detail.remainingSeconds === "number" ? authHealth.detail.remainingSeconds : undefined,
+          message: typeof authHealth.detail.message === "string" ? authHealth.detail.message : undefined,
+        }
+      : null,
     lastTest: lastTestAt
       ? {
           at: lastTestAt,

@@ -9,6 +9,43 @@ function response(body: unknown, status = 200): Response {
 }
 
 describe("WeRssConnector", () => {
+  it("reads sanitized WeRSS authorization status with AK authentication", async () => {
+    let authorization = "";
+    const fetcher = (async (_input: string | URL, init?: RequestInit) => {
+      authorization = String(new Headers(init?.headers).get("authorization") ?? "");
+      return response({
+        code: 0,
+        data: {
+          authenticated: true,
+          has_token: true,
+          account: "运营账号",
+          expiry_timestamp: 1_800_000_000,
+          remaining_seconds: 86_400,
+        },
+      });
+    }) as typeof fetch;
+    const connector = new WeRssConnector("http://werss:8001", "key:secret", fetcher);
+
+    await expect(connector.sessionStatus()).resolves.toMatchObject({
+      authenticated: true,
+      account: "运营账号",
+      remaining_seconds: 86_400,
+    });
+    expect(authorization).toBe("AK-SK key:secret");
+  });
+
+  it("uses POST and rejects a failed silent WeRSS refresh envelope", async () => {
+    let method = "";
+    const fetcher = (async (_input: string | URL, init?: RequestInit) => {
+      method = String(init?.method ?? "GET");
+      return response({ code: 40901, message: "QR_REQUIRED", data: { authenticated: false } });
+    }) as typeof fetch;
+    const connector = new WeRssConnector("http://werss:8001", "key:secret", fetcher);
+
+    await expect(connector.refreshSession()).rejects.toThrow("WERSS_AUTH_REFRESH_FAILED:40901:QR_REQUIRED");
+    expect(method).toBe("POST");
+  });
+
   it("subscribes with the WeChat biz/faker_id that WeRSS expects instead of the derived MP_WXS id", async () => {
     const requests: Array<{ pathname: string; body?: unknown }> = [];
     const fetcher = (async (input: string | URL, init?: RequestInit) => {
@@ -263,6 +300,99 @@ describe("WeRssConnector", () => {
     expect(result.cursor).toEqual({ mpId: "MP_CACHED" });
     expect(result.items[0].title).toBe("已订阅公众号的新文章");
     expect(paths).toEqual(["/api/v1/wx/articles"]);
+  });
+
+  it("marks an existing WeRSS feed stale before accepting an unchanged old list", async () => {
+    const paths: string[] = [];
+    const fetcher = (async (input: string | URL) => {
+      const url = input instanceof URL ? input : new URL(input);
+      paths.push(url.pathname);
+      if (url.pathname === "/api/v1/wx/mps/MP_STALE") {
+        return response({ code: 0, data: { id: "MP_STALE", sync_time: 1_700_000_000 } });
+      }
+      return response({ code: 0, data: { list: [], total: 0 } });
+    }) as typeof fetch;
+
+    const connector = new WeRssConnector(
+      "http://werss:8001",
+      "key:secret",
+      fetcher,
+      { maxFeedStaleHours: 8 },
+    );
+
+    await expect(connector.collect({
+      provider: "werss",
+      articleUrl: "https://mp.weixin.qq.com/s/stale",
+      mpId: "MP_STALE",
+      mpName: "停更公众号",
+    })).rejects.toThrow("WERSS_FEED_STALE:");
+    expect(paths).toEqual(["/api/v1/wx/mps/MP_STALE"]);
+  });
+
+  it("creates, reloads and immediately runs the managed WeRSS collection task", async () => {
+    const requests: Array<{ pathname: string; method: string; body?: Record<string, unknown> }> = [];
+    const fetcher = (async (input: string | URL, init?: RequestInit) => {
+      const url = input instanceof URL ? input : new URL(input);
+      const method = init?.method ?? "GET";
+      requests.push({
+        pathname: url.pathname,
+        method,
+        body: init?.body ? JSON.parse(String(init.body)) : undefined,
+      });
+      if (url.pathname === "/api/v1/wx/message_tasks" && method === "GET") {
+        return response({ code: 0, data: { list: [] } });
+      }
+      return response({ code: 0, data: {} });
+    }) as typeof fetch;
+
+    const connector = new WeRssConnector("http://werss:8001", "key:secret", fetcher);
+    const result = await connector.ensureCollectionTask([
+      { mpId: "MP_B", mpName: "乙公众号" },
+      { mpId: "MP_A", mpName: "甲公众号" },
+    ], "17 */3 * * *");
+
+    expect(result).toEqual({ changed: true, feedCount: 2 });
+    expect(requests.map(({ pathname, method }) => ({ pathname, method }))).toEqual([
+      { pathname: "/api/v1/wx/message_tasks", method: "GET" },
+      { pathname: "/api/v1/wx/message_tasks", method: "POST" },
+      { pathname: "/api/v1/wx/message_tasks/job/fresh", method: "PUT" },
+      { pathname: "/api/v1/wx/message_tasks/jianwei-auto-collect/run", method: "GET" },
+    ]);
+    expect(requests[1].body).toMatchObject({
+      name: "见微公众号自动采集（错峰）",
+      cron_exp: "17 */3 * * *",
+      status: 1,
+      mps_id: JSON.stringify([
+        { id: "MP_A", name: "甲公众号" },
+        { id: "MP_B", name: "乙公众号" },
+      ]),
+    });
+  });
+
+  it("does not restart the managed task when the saved feed JSON only differs in whitespace", async () => {
+    const paths: string[] = [];
+    const fetcher = (async (input: string | URL) => {
+      const url = input instanceof URL ? input : new URL(input);
+      paths.push(url.pathname);
+      return response({
+        code: 0,
+        data: {
+          list: [{
+            id: "jianwei-auto-collect",
+            name: "见微公众号自动采集（错峰）",
+            mps_id: '[{"id": "MP_A", "name": "甲公众号"}]',
+            cron_exp: "17 */3 * * *",
+            status: 1,
+          }],
+        },
+      });
+    }) as typeof fetch;
+
+    const connector = new WeRssConnector("http://werss:8001", "key:secret", fetcher);
+    const result = await connector.ensureCollectionTask([{ mpId: "MP_A", mpName: "甲公众号" }]);
+
+    expect(result).toEqual({ changed: false, feedCount: 1 });
+    expect(paths).toEqual(["/api/v1/wx/message_tasks"]);
   });
 
   it("uses the public article page when WeRSS returns no full text", async () => {

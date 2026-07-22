@@ -37,6 +37,7 @@ export function createWeRssConnector(): WeRssConnector {
   return new WeRssConnector(WERSS_DEFAULT, process.env.WERSS_ACCESS_KEY, fetch, {
     directFallbackEnabled: process.env.WECHAT_DIRECT_FALLBACK_ENABLED !== "false",
     fallbackBaseUrl: process.env.WECHAT_FALLBACK_BASE_URL,
+    maxFeedStaleHours: Number(process.env.WERSS_MAX_FEED_STALE_HOURS ?? "8"),
   });
 }
 
@@ -82,5 +83,6 @@ export async function createRuntimeWeRssConnector(): Promise<WeRssConnector> {
   return new WeRssConnector(WERSS_DEFAULT, accessKey, fetch, {
     directFallbackEnabled: directFallback !== "false",
     fallbackBaseUrl,
+    maxFeedStaleHours: Number(process.env.WERSS_MAX_FEED_STALE_HOURS ?? "8"),
   });
 }

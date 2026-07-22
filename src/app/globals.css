@@ -184,6 +184,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 .pipeline-stage-icon{background:#eceff5;color:#3d4b66}
 .pipeline-progress span{background:#465775}
 .wechat-channel-card.primary{border-color:#d9d4ca;background:#faf8f4}
+.wechat-channel-link{display:inline-flex;align-items:center;gap:4px;margin-top:8px;color:var(--accent-strong);font-size:10.5px;font-weight:650;text-decoration:none}.wechat-channel-link:hover{text-decoration:underline}.wechat-channel-link:focus-visible{outline:2px solid var(--accent-strong);outline-offset:3px;border-radius:3px}
 .filter-panel,.hot-panel,.featured-top,.item-card,.panel,.credentials-card{border-color:var(--border);box-shadow:var(--shadow)}
 .platform-tabs{background:#eeece8}
 .platform-tabs button.active,.platform-tabs a.active{color:var(--accent-strong);box-shadow:0 1px 4px rgba(24,34,56,.1)}

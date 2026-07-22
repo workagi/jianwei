@@ -65,8 +65,11 @@ services:
       SERPER_API_KEY: ${SERPER_API_KEY:-}
       WERSS_BASE_URL: http://werss:8001
       WERSS_ACCESS_KEY: ${WERSS_ACCESS_KEY:-}
+      WERSS_ADMIN_URL: ${WERSS_ADMIN_URL:-http://localhost:8001/wechat-status}
+      WERSS_MAX_FEED_STALE_HOURS: ${WERSS_MAX_FEED_STALE_HOURS:-8}
       WECHAT_DIRECT_FALLBACK_ENABLED: ${WECHAT_DIRECT_FALLBACK_ENABLED:-true}
       WECHAT_FALLBACK_BASE_URL: ${WECHAT_FALLBACK_BASE_URL:-}
+      WECHAT_FALLBACK_ADMIN_URL: ${WECHAT_FALLBACK_ADMIN_URL:-http://localhost:5055/admin.html}
       TRENDRADAR_MCP_URL: http://trendradar-mcp:3333/mcp
       TRENDRADAR_CONFIG_DIR: /app/trendradar-config
       TRENDRADAR_REFRESH_URL: http://trendradar-refresh:8090/refresh
@@ -105,6 +108,10 @@ services:
       SERPER_API_KEY: ${SERPER_API_KEY:-}
       WERSS_BASE_URL: http://werss:8001
       WERSS_ACCESS_KEY: ${WERSS_ACCESS_KEY:-}
+      WERSS_COLLECTION_CRON: "${WERSS_COLLECTION_CRON:-17 */3 * * *}"
+      WERSS_MAX_FEED_STALE_HOURS: ${WERSS_MAX_FEED_STALE_HOURS:-8}
+      WERSS_AUTH_CHECK_INTERVAL_HOURS: ${WERSS_AUTH_CHECK_INTERVAL_HOURS:-6}
+      WERSS_AUTH_REFRESH_BEFORE_HOURS: ${WERSS_AUTH_REFRESH_BEFORE_HOURS:-48}
       WECHAT_DIRECT_FALLBACK_ENABLED: ${WECHAT_DIRECT_FALLBACK_ENABLED:-true}
       WECHAT_FALLBACK_BASE_URL: ${WECHAT_FALLBACK_BASE_URL:-}
       TRENDRADAR_MCP_URL: http://trendradar-mcp:3333/mcp
@@ -148,7 +155,11 @@ services:
 
   # --- Private sidecars -------------------------------------------------
   werss:
-    image: ${WERSS_IMAGE:-ghcr.io/rachelos/we-mp-rss:latest}
+    image: ${WERSS_IMAGE:-jianwei-werss:local}
+    build:
+      context: ./infra/werss
+      args:
+        WERSS_UPSTREAM_IMAGE: ${WERSS_UPSTREAM_IMAGE:-ghcr.io/rachelos/we-mp-rss:latest}
     environment:
       - WERSS_AUTH_WEB=True
     volumes:
