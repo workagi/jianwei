@@ -1,7 +1,7 @@
 # 见微项目手册
 
 > 文档版本：0.1  
-> 更新日期：2026-07-20  
+> 更新日期：2026-07-22
 > 当前状态：Apache-2.0 开源版本
 
 ## 1. 项目概览
@@ -416,6 +416,8 @@ Worker 和模型处理日志采用一行一个 JSON 事件，便于直接交给 
 - `werss.authorization.*`：记录授权有效、续期、失效或守护失败，不输出 Access Key、Cookie 等凭据。
 
 日志器会自动遮蔽名称中含 `token`、`password`、`secret`、`api_key`、`cookie` 等字段；仍然不要把文章全文、二维码或真实凭据主动放入日志字段。
+
+采集器原始错误会先转换成稳定错误码，再提供给后台状态展示。当前标准分类包括：`AUTH_REQUIRED`、`RATE_LIMITED`、`QUOTA_EXHAUSTED`、`COLLECTION_TIMEOUT`、`CONFIGURATION_ERROR`、`SOURCE_STALE`、`NETWORK_ERROR`、`UPSTREAM_UNAVAILABLE`、`SOURCE_NOT_FOUND` 和 `INVALID_RESPONSE`。用户界面只展示可理解、可操作的中文说明；Provider 原始错误仍保存在结构化日志中，便于开发者定位。
 
 ### 16.2 常见问题定位
 

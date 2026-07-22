@@ -21,6 +21,7 @@ import { deriveRetentionDecision, normalizeRetentionReason } from "@/lib/content
 import { normalizeSummaryForDisplay } from "@/lib/summarizer";
 import { buildFeaturedFeed, type RelatedEventSource } from "@/lib/content-clustering";
 import { createStructuredLogger } from "@/lib/structured-log";
+import { presentMonitorFailure } from "@/lib/monitor-error";
 
 const readerLog = createStructuredLogger({ service: "reader" });
 
@@ -107,6 +108,55 @@ export interface ReaderFeedResult {
   hasPrevious: boolean;
   hasNext: boolean;
   balancedOverview: boolean;
+}
+
+export interface ReaderDateGroup {
+  key: string;
+  label: string;
+  weekday: string;
+  items: ReaderItem[];
+}
+
+const READER_TIME_ZONE = "Asia/Shanghai";
+
+function readerDateKey(date: Date): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    timeZone: READER_TIME_ZONE,
+  }).formatToParts(date);
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((entry) => entry.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
+/** Insert a real Shanghai-calendar boundary whenever the feed crosses midnight. */
+export function groupReaderItemsByDate(items: ReaderItem[]): ReaderDateGroup[] {
+  const groups = new Map<string, ReaderDateGroup>();
+  for (const item of items) {
+    const parsed = new Date(item.date);
+    const date = Number.isNaN(parsed.getTime()) ? new Date(0) : parsed;
+    const key = readerDateKey(date);
+    const existing = groups.get(key);
+    if (existing) {
+      existing.items.push(item);
+      continue;
+    }
+    groups.set(key, {
+      key,
+      label: date.toLocaleDateString("zh-CN", {
+        month: "long",
+        day: "numeric",
+        timeZone: READER_TIME_ZONE,
+      }),
+      weekday: date.toLocaleDateString("zh-CN", {
+        weekday: "short",
+        timeZone: READER_TIME_ZONE,
+      }),
+      items: [item],
+    });
+  }
+  return [...groups.values()];
 }
 
 export function normalizeReaderPage(value: unknown): number {
@@ -208,6 +258,7 @@ export function monitorDetail(
 }
 
 export function deriveMonitorHealth(row: {
+  platform?: PlatformType;
   enabled: boolean;
   lastSuccessAt: Date | string | null;
   failureCount: number;
@@ -217,17 +268,25 @@ export function deriveMonitorHealth(row: {
   latestRunStatus?: string | null;
   latestRunStartedAt?: Date | string | null;
   latestRunFetchedCount?: number | null;
+  latestRunErrorCode?: string | null;
   latestRunErrorMessage?: string | null;
   latestSummaryStatus?: string | null;
   latestSummaryAttemptedCount?: number | null;
   latestSummarySucceededCount?: number | null;
   latestSummaryErrorCode?: string | null;
 }): { health: string; warning: boolean; statusDetail?: string } {
+  const failure = row.lastError || row.latestRunStatus === "failed"
+    ? presentMonitorFailure({
+        code: row.latestRunErrorCode,
+        message: row.lastError ?? row.latestRunErrorMessage,
+        platform: row.platform,
+      })
+    : undefined;
   if (!row.enabled) {
     return {
       health: "已停用",
       warning: true,
-      statusDetail: row.lastError ? `最后错误：${row.lastError}` : undefined,
+      statusDetail: failure ? `原因：${failure.health} · ${failure.detail}` : undefined,
     };
   }
   const itemCount = Number(row.itemCount ?? 0);
@@ -247,38 +306,8 @@ export function deriveMonitorHealth(row: {
       statusDetail: startedAt ? `已运行约 ${Math.max(ageMinutes, 1)} 分钟` : undefined,
     };
   }
-  if (row.lastError) {
-    if (row.lastError === "BUDGET_EXHAUSTED") return { health: "额度用尽", warning: true };
-    if (/401|403|auth|unauthorized|forbidden/i.test(row.lastError)) {
-      return { health: "需要授权", warning: true, statusDetail: "检查平台密钥或 WeRSS 扫码授权" };
-    }
-    if (/^WERSS_FEED_(?:STALE|NEVER_SYNCED)/.test(row.lastError)) {
-      return {
-        health: "公众号源停更",
-        warning: true,
-        statusDetail: "WeRSS 长时间没有同步该公众号；系统已保留任务并等待上游恢复",
-      };
-    }
-    if (/^XAI_X_SEARCH_(?:429|5\d\d|TIMEOUT|NETWORK(?::[A-Z0-9_]+)?)$/.test(row.lastError)
-      || row.lastError === "GATHER_TIMEOUT:x"
-      || row.lastError === "fetch failed") {
-      return { health: "等待重试", warning: true, statusDetail: "SuperGrok / X Search 暂时未响应，系统将在约 10 分钟后自动重试" };
-    }
-    return { health: "失败", warning: true, statusDetail: row.lastError };
-  }
-  if (row.latestRunStatus === "failed") {
-    const message = row.latestRunErrorMessage ?? "最近一次采集失败";
-    if (/401|403|auth|unauthorized|forbidden/i.test(message)) {
-      return { health: "需要授权", warning: true, statusDetail: "检查平台密钥或 WeRSS 扫码授权" };
-    }
-    if (/^WERSS_FEED_(?:STALE|NEVER_SYNCED)/.test(message)) {
-      return {
-        health: "公众号源停更",
-        warning: true,
-        statusDetail: "WeRSS 长时间没有同步该公众号；系统已保留任务并等待上游恢复",
-      };
-    }
-    return { health: "失败", warning: true, statusDetail: message };
+  if (failure) {
+    return { health: failure.health, warning: true, statusDetail: failure.detail };
   }
   if (row.lastSuccessAt) {
     const fetched = Number(row.latestRunFetchedCount ?? 0);
@@ -330,7 +359,7 @@ export function formatReaderTime(date: Date): string {
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
-    timeZone: "Asia/Shanghai",
+    timeZone: READER_TIME_ZONE,
   });
 }
 

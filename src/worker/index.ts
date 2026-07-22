@@ -28,6 +28,7 @@ import {
   type UsageBudgetReservation,
 } from "@/lib/usage-budget";
 import { createStructuredLogger } from "@/lib/structured-log";
+import { classifyMonitorFailure } from "@/lib/monitor-error";
 
 // Cost per 1000 billable units. Brave's published rate is $3 / 1k queries; X has
 // no stable public rate, so it defaults to 0 and can be overridden.
@@ -467,16 +468,15 @@ async function runMonitor(monitor: MonitorRow, shutdownSignal?: AbortSignal): Pr
         : new Error("WORKER_SHUTDOWN");
     }
     const budgetRetryAt = nextBudgetRetryAt(message);
+    const failure = classifyMonitorFailure(message);
     const failureCount = budgetRetryAt ? monitor.failureCount : monitor.failureCount + 1;
     if (budgetRetryAt) {
       nextRunAt = budgetRetryAt;
-    } else if (isTransientMonitorFailure(message)) {
-      nextRunAt = nextStaggeredRunAt({ intervalMinutes: 10, staggerKey });
+    } else if (failure.retryAfterMinutes) {
+      nextRunAt = nextStaggeredRunAt({ intervalMinutes: failure.retryAfterMinutes, staggerKey });
     }
     const shouldDisable = shouldDisableMonitorAfterFailure(failureCount, MONITOR_DISABLE_AFTER_FAILURES, message);
-    const errorCode = message.startsWith("CONNECTOR") || isBudgetExhaustion(message)
-      ? message
-      : "GATHER_FAILED";
+    const errorCode = failure.code;
     await db.transaction(async (tx) => {
       await releaseUsageReservation(tx, budgetReservationKey);
       await tx
@@ -521,18 +521,13 @@ export function shouldDisableMonitorAfterFailure(
   threshold = MONITOR_DISABLE_AFTER_FAILURES,
   message = "",
 ): boolean {
-  // Rate limits and upstream 5xx responses are recoverable service states, not
-  // evidence that the user's monitor configuration is broken.
-  if (isBudgetExhaustion(message)) return false;
-  if (isTransientMonitorFailure(message)) return false;
-  if (/^WERSS_FEED_(?:STALE|NEVER_SYNCED)/.test(message)) return false;
-  return threshold > 0 && failureCount >= threshold;
+  return threshold > 0
+    && failureCount >= threshold
+    && classifyMonitorFailure(message).disableEligible;
 }
 
 export function isTransientMonitorFailure(message: string): boolean {
-  return /^XAI_X_SEARCH_(?:429|5\d\d|TIMEOUT|NETWORK(?::[A-Z0-9_]+)?)$/.test(message)
-    || message === "GATHER_TIMEOUT:x"
-    || message === "fetch failed";
+  return Boolean(classifyMonitorFailure(message).retryAfterMinutes);
 }
 
 export function isBudgetExhaustion(message: string): boolean {

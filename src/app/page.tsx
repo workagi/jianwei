@@ -1,6 +1,6 @@
 import Link from "next/link";
-import { ChevronDown, ChevronLeft, ChevronRight, Search, SlidersHorizontal, Sparkles } from "lucide-react";
-import { loadReaderFeed, loadWechatKeywordRuleFilters } from "@/lib/reader-data";
+import { ChevronLeft, ChevronRight, Search, SlidersHorizontal, Sparkles } from "lucide-react";
+import { groupReaderItemsByDate, loadReaderFeed, loadWechatKeywordRuleFilters } from "@/lib/reader-data";
 import { TimelineCard } from "@/components/timeline-card";
 import { FeaturedTop } from "@/components/featured-top";
 import type { PlatformType } from "@/connectors/types";
@@ -60,17 +60,7 @@ export default async function Home({
     timeZone: "Asia/Shanghai",
   });
 
-  // 顶部分组标题显示信息流中最新一篇的发布日期（按北京时间），不再写死。
-  const latestItemDate = items[0]?.date ? new Date(items[0].date) : new Date();
-  const latestDateLabel = latestItemDate.toLocaleDateString("zh-CN", {
-    month: "long",
-    day: "numeric",
-    timeZone: "Asia/Shanghai",
-  });
-  const latestDateWeekday = latestItemDate.toLocaleDateString("zh-CN", {
-    weekday: "short",
-    timeZone: "Asia/Shanghai",
-  });
+  const dateGroups = groupReaderItemsByDate(items);
 
   const tabHref = (key: string) => {
     const params = new URLSearchParams();
@@ -241,23 +231,26 @@ export default async function Home({
         </form>
       </section>
 
-      <div className="date-row">
-        <button>
-          {latestDateLabel} <ChevronDown size={14} />
-        </button>
-        <span
-          className="date-context"
-          title={isFeaturedView ? "精选表示达到质量门槛，不代表每张卡片的名次；下方按发布时间倒序。" : undefined}
-        >
-          {latestDateWeekday} · 当前 {items.length} {isFeaturedView ? "个事件 · 入选后按时间倒序" : "条"}
-        </span>
-        <span>最近更新于 {now}</span>
-      </div>
-
-      <section className="timeline" aria-label="信息时间线">
-        {items.length > 0 ? (
-          items.map((item) => <TimelineCard item={item} key={item.id} topicHref={topicHref} />)
-        ) : (
+      {dateGroups.length > 0 ? dateGroups.map((group, index) => (
+        <div className="timeline-day" key={group.key}>
+          <div className="date-row">
+            <div className="date-label">
+              {group.label}
+            </div>
+            <span
+              className="date-context"
+              title={isFeaturedView ? "精选表示达到质量门槛，不代表每张卡片的名次；下方按发布时间倒序。" : undefined}
+            >
+              {group.weekday} · {group.items.length} {isFeaturedView ? "个事件 · 入选后按时间倒序" : "条"}
+            </span>
+            {index === 0 && <span>最近更新于 {now}</span>}
+          </div>
+          <section className="timeline" aria-label={`${group.label}信息时间线`}>
+            {group.items.map((item) => <TimelineCard item={item} key={item.id} topicHref={topicHref} />)}
+          </section>
+        </div>
+      )) : (
+        <section className="timeline" aria-label="信息时间线">
           <div className="empty-state">
             {search ? (
               <p>未找到匹配“{search}”的信息。</p>
@@ -281,8 +274,8 @@ export default async function Home({
               <p>暂无信息，采集任务运行后将在此显示。</p>
             )}
           </div>
-        )}
-      </section>
+        </section>
+      )}
       {!balancedOverview && (hasPrevious || hasNext) && (
         <nav className="reader-pagination" aria-label="信息流分页">
           {hasPrevious ? (

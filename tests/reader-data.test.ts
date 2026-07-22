@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { capRowsPerPlatformForUnifiedFeed, deriveMonitorHealth, formatReaderTime, monitorDetail, normalizeReaderPage, normalizeXDisplayText, readerDisplayTitle, readerRecommendationReason, rowPassesSourceQuality, trendRadarSourceKind } from "@/lib/reader-data";
+import { capRowsPerPlatformForUnifiedFeed, deriveMonitorHealth, formatReaderTime, groupReaderItemsByDate, monitorDetail, normalizeReaderPage, normalizeXDisplayText, readerDisplayTitle, readerRecommendationReason, rowPassesSourceQuality, trendRadarSourceKind, type ReaderItem } from "@/lib/reader-data";
 import type { PlatformType } from "@/connectors/types";
 
 describe("deriveMonitorHealth", () => {
@@ -82,13 +82,14 @@ describe("deriveMonitorHealth", () => {
   it("turns auth-like failures into an action-oriented authorization state", () => {
     const status = deriveMonitorHealth({
       ...base,
+      platform: "wechat",
       latestRunStatus: "failed",
       latestRunErrorMessage: "WERSS_RESOLVE_FAILED:401",
     });
 
     expect(status.health).toBe("需要授权");
     expect(status.warning).toBe(true);
-    expect(status.statusDetail).toContain("检查平台密钥");
+    expect(status.statusDetail).toContain("重新扫码");
   });
 
   it("surfaces stale WeRSS feeds without treating the monitor as misconfigured", () => {
@@ -102,7 +103,7 @@ describe("deriveMonitorHealth", () => {
     expect(status.statusDetail).toContain("等待上游恢复");
   });
 
-  it("shows the last error when a failed monitor has been auto-disabled", () => {
+  it("explains a disabled monitor without exposing the raw provider error", () => {
     const status = deriveMonitorHealth({
       ...base,
       enabled: false,
@@ -111,7 +112,8 @@ describe("deriveMonitorHealth", () => {
 
     expect(status.health).toBe("已停用");
     expect(status.warning).toBe(true);
-    expect(status.statusDetail).toContain("GATHER_TIMEOUT:wechat");
+    expect(status.statusDetail).toContain("原因：采集超时");
+    expect(status.statusDetail).not.toContain("GATHER_TIMEOUT:wechat");
   });
 });
 
@@ -216,6 +218,34 @@ describe("readerDisplayTitle", () => {
 describe("reader timeline presentation", () => {
   it("shows only hour and minute because the day is already grouped above", () => {
     expect(formatReaderTime(new Date("2026-07-16T05:10:00.000Z"))).toBe("13:10");
+  });
+
+  it("inserts a new Shanghai date heading when a feed crosses midnight", () => {
+    const item = (id: string, date: string): ReaderItem => ({
+      id,
+      platform: "wechat",
+      source: "测试公众号",
+      sourceKind: "wechat",
+      time: formatReaderTime(new Date(date)),
+      date,
+      title: id,
+      excerpt: "",
+      contentType: "opinion",
+      contentTypeLabel: "观点解读",
+      tags: [],
+      score: 60,
+      whyKept: "",
+      match: "",
+      bookmarked: false,
+    });
+    const groups = groupReaderItemsByDate([
+      item("today", "2026-07-22T00:10:00.000Z"),
+      item("yesterday", "2026-07-21T15:56:00.000Z"),
+    ]);
+
+    expect(groups.map((group) => group.key)).toEqual(["2026-07-22", "2026-07-21"]);
+    expect(groups.map((group) => group.label)).toEqual(["7月22日", "7月21日"]);
+    expect(groups.map((group) => group.items.map((entry) => entry.id))).toEqual([["today"], ["yesterday"]]);
   });
 
   it("removes invisible characters and excessive tweet whitespace without joining distinct lines", () => {
