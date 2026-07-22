@@ -204,6 +204,21 @@ describe("worker gather() dispatch — Task 3 P1 + P2 (direct connectors)", () =
 });
 
 describe("worker monitor circuit breaker", () => {
+  it("derives stable, metric-scoped idempotency keys for one scheduled run", async () => {
+    const { collectionRunIdempotencyKey, usageIdempotencyKey } = await import("@/worker");
+    const scheduledFor = new Date("2026-07-22T08:30:00.000Z");
+    const runKey = collectionRunIdempotencyKey("monitor-1", scheduledFor);
+
+    expect(runKey).toBe("monitor:monitor-1:2026-07-22T08:30:00.000Z");
+    expect(collectionRunIdempotencyKey("monitor-1", scheduledFor)).toBe(runKey);
+    expect(usageIdempotencyKey(runKey, "model_requests")).toBe(
+      `${runKey}:usage:model_requests`,
+    );
+    expect(usageIdempotencyKey(runKey, "model_input_tokens")).not.toBe(
+      usageIdempotencyKey(runKey, "model_requests"),
+    );
+  });
+
   it("auto-disables a monitor once consecutive failures reach the threshold", async () => {
     const { shouldDisableMonitorAfterFailure } = await import("@/worker");
 

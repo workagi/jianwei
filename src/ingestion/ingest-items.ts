@@ -2,7 +2,7 @@ import type { NormalizedItem } from "@/connectors/types";
 import { canonicalizeUrl, contentFingerprint, dedupeKey } from "./deduplicate";
 import { db } from "@/db";
 import { items, itemMatches } from "@/db/schema";
-import { and, eq, inArray, or, sql } from "drizzle-orm";
+import { and, eq, inArray, or } from "drizzle-orm";
 import { type SummaryRunStats } from "@/lib/summarizer";
 import { routeContentItems } from "@/lib/content-router";
 import { deriveItemClassification } from "@/lib/item-tags";
@@ -136,6 +136,17 @@ export interface IngestInput {
   matchedQuery?: string;
 }
 
+/**
+ * Fully analysed ingest payload. Creating this value may call the model, but
+ * does not mutate the database. It can therefore be prepared before opening a
+ * short commit transaction.
+ */
+export interface PreparedIngest {
+  input: IngestInput;
+  rows: IngestItemRow[];
+  summary: SummaryRunStats;
+}
+
 function defaultSummaryStats(status: SummaryRunStats["status"]): SummaryRunStats {
   return {
     status,
@@ -162,18 +173,14 @@ async function findExistingCanonicalUrls(repo: IngestRepository, urls: string[])
   return new Set();
 }
 
-/**
- * Import a batch of normalized items for one monitor into the shared store.
- * Idempotent: same upstream ID re-upserts the row; the match link is ignored on
- * conflict so a monitor re-collecting old items does not create duplicate edges.
- */
-export async function ingest(
+/** Analyse and normalize a batch without writing it. */
+export async function prepareIngest(
   repo: IngestRepository,
   input: IngestInput,
-): Promise<IngestResult> {
+): Promise<PreparedIngest> {
   const rows = toItemRows(input.items);
   if (rows.length === 0) {
-    return { itemsUpserted: 0, matchesInserted: 0, summary: defaultSummaryStats("not_applicable") };
+    return { input, rows, summary: defaultSummaryStats("not_applicable") };
   }
 
   // Only unseen items enter the model route, preventing repeated API spend.
@@ -225,6 +232,23 @@ export async function ingest(
     }
   }
 
+  return { input, rows, summary };
+}
+
+/**
+ * Persist a prepared batch. This function performs no provider or model calls,
+ * so callers may safely run it inside a short database transaction together
+ * with cursor, usage-ledger and collection-run updates.
+ */
+export async function commitPreparedIngest(
+  repo: IngestRepository,
+  prepared: PreparedIngest,
+): Promise<IngestResult> {
+  const { input, rows, summary } = prepared;
+  if (rows.length === 0) {
+    return { itemsUpserted: 0, matchesInserted: 0, summary };
+  }
+
   const upserted = await repo.upsertItems(rows);
 
   // Map returned identities back to source payloads. URL-merged rows keep a
@@ -263,53 +287,24 @@ export async function ingest(
   return { itemsUpserted: upserted.length, matchesInserted, summary };
 }
 
+/**
+ * Convenience wrapper used outside the worker transaction path.
+ * Idempotent: same upstream ID re-upserts the row; the match link is ignored on
+ * conflict so a monitor re-collecting old items does not create duplicate edges.
+ */
+export async function ingest(
+  repo: IngestRepository,
+  input: IngestInput,
+): Promise<IngestResult> {
+  const prepared = await prepareIngest(repo, input);
+  return commitPreparedIngest(repo, prepared);
+}
+
 type UpsertedItem = {
   id: string;
   platform: NormalizedItem["platform"];
   upstreamId: string;
 };
-
-const conflictUpdateSet = {
-  canonicalUrl: sql`excluded.canonical_url`,
-  authorId: sql`excluded.author_id`,
-  authorName: sql`excluded.author_name`,
-  authorHandle: sql`excluded.author_handle`,
-  avatarUrl: sql`coalesce(excluded.avatar_url, ${items.avatarUrl})`,
-  title: sql`excluded.title`,
-  translatedTitle: sql`coalesce(${items.translatedTitle}, excluded.translated_title)`,
-  bodyText: sql`excluded.body_text`,
-  sourceProvider: sql`coalesce(excluded.source_provider, ${items.sourceProvider})`,
-  // A polling pass starts with rule-derived classification. Preserve
-  // existing model output instead of replacing it with those rules.
-  contentType: sql`coalesce(${items.contentType}, excluded.content_type)`,
-  topicTags: sql`case when jsonb_array_length(${items.topicTags}) > 0 then ${items.topicTags} else excluded.topic_tags end`,
-  retentionReason: sql`coalesce(${items.retentionReason}, excluded.retention_reason)`,
-  relevanceScore: sql`coalesce(${items.relevanceScore}, excluded.relevance_score)`,
-  retentionSource: sql`coalesce(${items.retentionSource}, excluded.retention_source)`,
-  // A recurring list poll often has no body. Never let that null wipe
-  // a full body recovered by an earlier primary/fallback request.
-  contentHtml: sql`coalesce(excluded.content_html, ${items.contentHtml})`,
-  contentProvider: sql`case when excluded.content_html is not null then excluded.content_provider else ${items.contentProvider} end`,
-  contentFetchStatus: sql`case when ${items.contentHtml} is not null then ${items.contentFetchStatus} else coalesce(excluded.content_fetch_status, ${items.contentFetchStatus}) end`,
-  contentFetchError: sql`case when excluded.content_html is not null then null else coalesce(excluded.content_fetch_error, ${items.contentFetchError}) end`,
-  contentFetchedAt: sql`coalesce(excluded.content_fetched_at, ${items.contentFetchedAt})`,
-  imageUrls: sql`excluded.image_urls`,
-  // Polling sources (especially site hotlists) may return the time of
-  // the latest ranking snapshot rather than an immutable article
-  // publication time. Never let a later poll move an existing item
-  // forward in the reader timeline; an earlier timestamp is allowed
-  // because it can be a correction from a richer source response.
-  publishedAt: sql`least(${items.publishedAt}, excluded.published_at)`,
-  contentHash: sql`excluded.content_hash`,
-  updatedAt: new Date(),
-};
-
-function postgresErrorCode(error: unknown): string | undefined {
-  if (!error || typeof error !== "object") return undefined;
-  if ("code" in error && typeof error.code === "string") return error.code;
-  if ("cause" in error) return postgresErrorCode(error.cause);
-  return undefined;
-}
 
 /**
  * Drizzle-backed implementation of {@link IngestRepository}.
@@ -317,7 +312,9 @@ function postgresErrorCode(error: unknown): string | undefined {
  * exists under a different upstream id (WeRSS id format churn), update that
  * row instead of inserting — `items_canonical_url_uidx` is global.
  */
-export function createDrizzleIngestRepository(database = db): IngestRepository {
+type IngestDatabase = Pick<typeof db, "select" | "insert" | "update">;
+
+export function createDrizzleIngestRepository(database: IngestDatabase = db): IngestRepository {
   return {
     async upsertItems(rows) {
       if (rows.length === 0) return [];
@@ -405,48 +402,49 @@ export function createDrizzleIngestRepository(database = db): IngestRepository {
       if (toInsert.length === 0) return merged;
 
       const inserted: UpsertedItem[] = [];
-      // Insert one row at a time so a concurrent canonical-url conflict cannot
-      // roll back an otherwise valid whole batch. On that race, reselect and
-      // merge into the row that won the unique constraint.
+      // Insert one row at a time and ignore every unique conflict. This is
+      // transaction-safe: catching a PostgreSQL 23505 would leave the entire
+      // transaction aborted. A no-op conflict lets us reselect and merge into
+      // whichever source/canonical row won the race.
       for (const row of toInsert) {
-        try {
-          const [saved] = await database
-            .insert(items)
-            .values(row as typeof items.$inferInsert)
-            .onConflictDoUpdate({
-              target: [items.platform, items.upstreamId],
-              set: conflictUpdateSet,
-            })
-            .returning({
-              id: items.id,
-              platform: items.platform,
-              upstreamId: items.upstreamId,
-            });
+        const [saved] = await database
+          .insert(items)
+          .values(row as typeof items.$inferInsert)
+          .onConflictDoNothing()
+          .returning({
+            id: items.id,
+            platform: items.platform,
+            upstreamId: items.upstreamId,
+          });
+        if (saved) {
           inserted.push({
             id: saved.id,
             platform: saved.platform as NormalizedItem["platform"],
             upstreamId: saved.upstreamId,
           });
-        } catch (error) {
-          if (postgresErrorCode(error) !== "23505") throw error;
-          const [winner] = await database
-            .select({
-              id: items.id,
-              platform: items.platform,
-              upstreamId: items.upstreamId,
-              publishedAt: items.publishedAt,
-              contentType: items.contentType,
-              topicTags: items.topicTags,
-            })
-            .from(items)
-            .where(eq(items.canonicalUrl, row.canonicalUrl))
-            .limit(1);
-          if (!winner) throw error;
-          await mergeIntoExisting(row, {
-            ...winner,
-            platform: winner.platform as NormalizedItem["platform"],
-          });
+          continue;
         }
+
+        const [winner] = await database
+          .select({
+            id: items.id,
+            platform: items.platform,
+            upstreamId: items.upstreamId,
+            publishedAt: items.publishedAt,
+            contentType: items.contentType,
+            topicTags: items.topicTags,
+          })
+          .from(items)
+          .where(or(
+            and(eq(items.platform, row.platform), eq(items.upstreamId, row.upstreamId)),
+            eq(items.canonicalUrl, row.canonicalUrl),
+          ))
+          .limit(1);
+        if (!winner) throw new Error("INGEST_CONFLICT_WINNER_NOT_FOUND");
+        await mergeIntoExisting(row, {
+          ...winner,
+          platform: winner.platform as NormalizedItem["platform"],
+        });
       }
 
       return [

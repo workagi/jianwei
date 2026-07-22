@@ -4,7 +4,11 @@ import { loadApiCredentials } from "@/db/queries";
 import { and, eq, gte, isNull, lte, or, sql } from "drizzle-orm";
 import { writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { ingest, createDrizzleIngestRepository } from "@/ingestion/ingest-items";
+import {
+  commitPreparedIngest,
+  createDrizzleIngestRepository,
+  prepareIngest,
+} from "@/ingestion/ingest-items";
 import type {
   NormalizedItem,
   PlatformType,
@@ -47,6 +51,15 @@ export async function gather(input: GatherInput, context?: CollectContext): Prom
 }
 
 type MonitorRow = typeof monitors.$inferSelect;
+type WorkerDatabase = Pick<typeof db, "insert" | "update">;
+
+export function collectionRunIdempotencyKey(monitorId: string, scheduledFor: Date): string {
+  return `monitor:${monitorId}:${scheduledFor.toISOString()}`;
+}
+
+export function usageIdempotencyKey(runKey: string, metric: string): string {
+  return `${runKey}:usage:${metric}`;
+}
 
 /** Sum of estimated_cost (USD) for a connector since the 1st of the current month. */
 async function monthlySpendUsd(connectorId: string): Promise<number> {
@@ -85,19 +98,22 @@ async function checkXGrokDailyBudget(): Promise<void> {
 }
 
 async function recordUsage(
+  database: WorkerDatabase,
+  runKey: string,
   connectorId: string,
   monitorId: string,
   metric: string,
   quantity: number,
   estimatedCostUsd: number,
 ): Promise<void> {
-  await db.insert(usageLedger).values({
+  await database.insert(usageLedger).values({
+    idempotencyKey: usageIdempotencyKey(runKey, metric),
     connectorId,
     monitorId,
     metric,
     quantity,
     estimatedCost: String(estimatedCostUsd),
-  });
+  }).onConflictDoNothing({ target: usageLedger.idempotencyKey });
 }
 
 function summaryEstimatedCostUsd(inputTokens = 0, outputTokens = 0): number {
@@ -134,12 +150,54 @@ function resolvedWechatConfigPatch(cursor: Record<string, unknown>): Record<stri
   };
 }
 
-async function runMonitor(monitor: MonitorRow, shutdownSignal?: AbortSignal): Promise<void> {
-  const [run] = await db
+async function startCollectionRun(monitor: MonitorRow): Promise<{
+  runId: string;
+  runKey: string;
+  alreadySucceeded: boolean;
+}> {
+  const scheduledFor = monitor.nextRunAt;
+  const runKey = collectionRunIdempotencyKey(monitor.id, scheduledFor);
+  const [created] = await db
     .insert(collectionRuns)
-    .values({ monitorId: monitor.id, status: "running" })
+    .values({
+      monitorId: monitor.id,
+      scheduledFor,
+      idempotencyKey: runKey,
+      status: "running",
+    })
+    .onConflictDoNothing({ target: collectionRuns.idempotencyKey })
     .returning({ id: collectionRuns.id });
-  const runId = run.id;
+  if (created) return { runId: created.id, runKey, alreadySucceeded: false };
+
+  const [existing] = await db
+    .select({
+      id: collectionRuns.id,
+      status: collectionRuns.status,
+    })
+    .from(collectionRuns)
+    .where(eq(collectionRuns.idempotencyKey, runKey))
+    .limit(1);
+  if (!existing) throw new Error("COLLECTION_RUN_IDEMPOTENCY_CONFLICT");
+  if (existing.status === "success") {
+    return { runId: existing.id, runKey, alreadySucceeded: true };
+  }
+
+  await db
+    .update(collectionRuns)
+    .set({
+      status: "running",
+      startedAt: new Date(),
+      finishedAt: null,
+      errorCode: null,
+      errorMessage: null,
+      attempt: sql`${collectionRuns.attempt} + 1`,
+    })
+    .where(eq(collectionRuns.id, existing.id));
+  return { runId: existing.id, runKey, alreadySucceeded: false };
+}
+
+async function runMonitor(monitor: MonitorRow, shutdownSignal?: AbortSignal): Promise<void> {
+  const { runId, runKey, alreadySucceeded } = await startCollectionRun(monitor);
   const staggerKey = monitorStaggerKey({
     id: monitor.id,
     platform: monitor.platform,
@@ -150,6 +208,16 @@ async function runMonitor(monitor: MonitorRow, shutdownSignal?: AbortSignal): Pr
     intervalMinutes: monitor.pollIntervalMinutes,
     staggerKey,
   });
+
+  if (alreadySucceeded) {
+    await db.update(monitors).set({
+      nextRunAt,
+      leaseOwner: null,
+      leaseUntil: null,
+    }).where(and(eq(monitors.id, monitor.id), eq(monitors.leaseOwner, WORKER_ID)));
+    console.info(`[worker] ${monitor.id}: skipped completed run ${runKey}`);
+    return;
+  }
 
   try {
     // Billable platforms are gated by the monthly budget before any call.
@@ -178,53 +246,15 @@ async function runMonitor(monitor: MonitorRow, shutdownSignal?: AbortSignal): Pr
       monitor.platform,
       shutdownSignal,
     );
-    const result = await ingest(createDrizzleIngestRepository(), {
+    // Provider and model work stays outside a database transaction. Only the
+    // final durable state is committed atomically below.
+    const prepared = await prepareIngest(createDrizzleIngestRepository(), {
       items,
       monitorId: monitor.id,
     });
-    const summaryInputTokens = result.summary.inputTokens ?? 0;
-    const summaryOutputTokens = result.summary.outputTokens ?? 0;
+    const summaryInputTokens = prepared.summary.inputTokens ?? 0;
+    const summaryOutputTokens = prepared.summary.outputTokens ?? 0;
     const summaryCost = summaryEstimatedCostUsd(summaryInputTokens, summaryOutputTokens);
-
-    // Record cost/usage for billable platforms (WeChat cost is 0).
-    if (monitor.platform === "x") {
-      const units = billableUnits ?? 1;
-      const grokSubscription = monitor.config.provider === "x_grok";
-      await recordUsage(
-        monitor.connectorId,
-        monitor.id,
-        grokSubscription ? "x_grok_searches" : "x_billable_units",
-        units,
-        grokSubscription ? 0 : (units / 1000) * X_COST_PER_1K_UNITS,
-      );
-    } else if (monitor.platform === "web_search") {
-      const provider = ((monitor.config as WebSearchMonitorConfig).provider ?? "brave");
-      await recordUsage(
-        monitor.connectorId,
-        monitor.id,
-        `${provider}_queries`,
-        billableUnits ?? 1,
-        provider === "brave" ? BRAVE_COST_PER_1K / 1000 : 0,
-      );
-    }
-    if (result.summary.attempted > 0) {
-      const summaryUsage = [
-        recordUsage(
-          monitor.connectorId,
-          monitor.id,
-          "model_requests",
-          result.summary.attempted,
-          summaryCost,
-        ),
-      ];
-      if (summaryInputTokens > 0) {
-        summaryUsage.push(recordUsage(monitor.connectorId, monitor.id, "model_input_tokens", summaryInputTokens, 0));
-      }
-      if (summaryOutputTokens > 0) {
-        summaryUsage.push(recordUsage(monitor.connectorId, monitor.id, "model_output_tokens", summaryOutputTokens, 0));
-      }
-      await Promise.all(summaryUsage);
-    }
 
     const monitorUpdate: Partial<typeof monitors.$inferInsert> = {
       lastSuccessAt: new Date(),
@@ -253,28 +283,77 @@ async function runMonitor(monitor: MonitorRow, shutdownSignal?: AbortSignal): Pr
       if (profileName && isAutoXName(monitor.name, monitor.config)) monitorUpdate.name = profileName;
     }
 
-    await db
-      .update(monitors)
-      .set(monitorUpdate)
-      .where(and(eq(monitors.id, monitor.id), eq(monitors.leaseOwner, WORKER_ID)));
+    const result = await db.transaction(async (tx) => {
+      const committed = await commitPreparedIngest(createDrizzleIngestRepository(tx), prepared);
 
-    await db
-      .update(collectionRuns)
-      .set({
-        status: "success",
-        finishedAt: new Date(),
-        fetchedCount: items.length,
-        insertedCount: result.itemsUpserted,
-        matchedCount: result.matchesInserted,
-        summaryStatus: result.summary.status,
-        summaryAttemptedCount: result.summary.attempted,
-        summarySucceededCount: result.summary.succeeded,
-        summaryFailedCount: result.summary.failed,
-        summaryErrorCode: result.summary.errorCode ?? null,
-        summaryErrorMessage: result.summary.errorMessage ?? null,
-        providerCost: String(summaryCost),
-      })
-      .where(eq(collectionRuns.id, runId));
+      // Usage rows share the run's idempotency key. A retried commit can never
+      // count the same provider/model metric twice.
+      if (monitor.platform === "x") {
+        const units = billableUnits ?? 1;
+        const grokSubscription = monitor.config.provider === "x_grok";
+        await recordUsage(
+          tx,
+          runKey,
+          monitor.connectorId,
+          monitor.id,
+          grokSubscription ? "x_grok_searches" : "x_billable_units",
+          units,
+          grokSubscription ? 0 : (units / 1000) * X_COST_PER_1K_UNITS,
+        );
+      } else if (monitor.platform === "web_search") {
+        const provider = ((monitor.config as WebSearchMonitorConfig).provider ?? "brave");
+        await recordUsage(
+          tx,
+          runKey,
+          monitor.connectorId,
+          monitor.id,
+          `${provider}_queries`,
+          billableUnits ?? 1,
+          provider === "brave" ? BRAVE_COST_PER_1K / 1000 : 0,
+        );
+      }
+      if (committed.summary.attempted > 0) {
+        await recordUsage(
+          tx,
+          runKey,
+          monitor.connectorId,
+          monitor.id,
+          "model_requests",
+          committed.summary.attempted,
+          summaryCost,
+        );
+        if (summaryInputTokens > 0) {
+          await recordUsage(tx, runKey, monitor.connectorId, monitor.id, "model_input_tokens", summaryInputTokens, 0);
+        }
+        if (summaryOutputTokens > 0) {
+          await recordUsage(tx, runKey, monitor.connectorId, monitor.id, "model_output_tokens", summaryOutputTokens, 0);
+        }
+      }
+
+      await tx
+        .update(monitors)
+        .set(monitorUpdate)
+        .where(and(eq(monitors.id, monitor.id), eq(monitors.leaseOwner, WORKER_ID)));
+
+      await tx
+        .update(collectionRuns)
+        .set({
+          status: "success",
+          finishedAt: new Date(),
+          fetchedCount: items.length,
+          insertedCount: committed.itemsUpserted,
+          matchedCount: committed.matchesInserted,
+          summaryStatus: committed.summary.status,
+          summaryAttemptedCount: committed.summary.attempted,
+          summarySucceededCount: committed.summary.succeeded,
+          summaryFailedCount: committed.summary.failed,
+          summaryErrorCode: committed.summary.errorCode ?? null,
+          summaryErrorMessage: committed.summary.errorMessage ?? null,
+          providerCost: String(summaryCost),
+        })
+        .where(eq(collectionRuns.id, runId));
+      return committed;
+    });
 
     const summaryNote =
       result.summary.attempted > 0
@@ -284,18 +363,18 @@ async function runMonitor(monitor: MonitorRow, shutdownSignal?: AbortSignal): Pr
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (shutdownSignal?.aborted) {
-      await Promise.all([
-        db.update(monitors).set({ leaseOwner: null, leaseUntil: null }).where(and(
+      await db.transaction(async (tx) => {
+        await tx.update(monitors).set({ leaseOwner: null, leaseUntil: null }).where(and(
           eq(monitors.id, monitor.id),
           eq(monitors.leaseOwner, WORKER_ID),
-        )),
-        db.update(collectionRuns).set({
+        ));
+        await tx.update(collectionRuns).set({
           status: "failed",
           finishedAt: new Date(),
           errorCode: "RUN_INTERRUPTED",
           errorMessage: "Worker stopped before this run finished.",
-        }).where(eq(collectionRuns.id, runId)),
-      ]);
+        }).where(eq(collectionRuns.id, runId));
+      });
       throw shutdownSignal.reason instanceof Error
         ? shutdownSignal.reason
         : new Error("WORKER_SHUTDOWN");
@@ -305,30 +384,32 @@ async function runMonitor(monitor: MonitorRow, shutdownSignal?: AbortSignal): Pr
       nextRunAt = nextStaggeredRunAt({ intervalMinutes: 10, staggerKey });
     }
     const shouldDisable = shouldDisableMonitorAfterFailure(failureCount, MONITOR_DISABLE_AFTER_FAILURES, message);
-    await db
-      .update(monitors)
-      .set({
-        failureCount,
-        lastError: message,
-        nextRunAt,
-        leaseOwner: null,
-        leaseUntil: null,
-        ...(shouldDisable ? { enabled: false } : {}),
-      })
-      .where(and(eq(monitors.id, monitor.id), eq(monitors.leaseOwner, WORKER_ID)));
+    await db.transaction(async (tx) => {
+      await tx
+        .update(monitors)
+        .set({
+          failureCount,
+          lastError: message,
+          nextRunAt,
+          leaseOwner: null,
+          leaseUntil: null,
+          ...(shouldDisable ? { enabled: false } : {}),
+        })
+        .where(and(eq(monitors.id, monitor.id), eq(monitors.leaseOwner, WORKER_ID)));
 
-    await db
-      .update(collectionRuns)
-      .set({
-        status: "failed",
-        finishedAt: new Date(),
-        errorCode:
-          message.startsWith("CONNECTOR") || message === "BUDGET_EXHAUSTED"
-            ? message
-            : "GATHER_FAILED",
-        errorMessage: message,
-      })
-      .where(eq(collectionRuns.id, runId));
+      await tx
+        .update(collectionRuns)
+        .set({
+          status: "failed",
+          finishedAt: new Date(),
+          errorCode:
+            message.startsWith("CONNECTOR") || message === "BUDGET_EXHAUSTED"
+              ? message
+              : "GATHER_FAILED",
+          errorMessage: message,
+        })
+        .where(eq(collectionRuns.id, runId));
+    });
 
     console.warn(
       `[worker] ${monitor.id} 失败(${failureCount}/${MONITOR_DISABLE_AFTER_FAILURES || "∞"}): ${message}${

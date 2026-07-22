@@ -143,6 +143,9 @@ export const bookmarks = pgTable("bookmarks", {
 export const collectionRuns = pgTable("collection_runs", {
   id: uuid("id").primaryKey().defaultRandom(),
   monitorId: uuid("monitor_id").notNull().references(() => monitors.id, { onDelete: "cascade" }),
+  scheduledFor: timestamp("scheduled_for", { withTimezone: true }).notNull(),
+  idempotencyKey: text("idempotency_key").notNull(),
+  attempt: integer("attempt").notNull().default(1),
   status: runStatus("status").notNull().default("running"),
   startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
   finishedAt: timestamp("finished_at", { withTimezone: true }),
@@ -159,12 +162,14 @@ export const collectionRuns = pgTable("collection_runs", {
   summaryErrorCode: text("summary_error_code"),
   summaryErrorMessage: text("summary_error_message"),
 }, (table) => [
+  uniqueIndex("collection_runs_idempotency_uidx").on(table.idempotencyKey),
   index("collection_runs_monitor_started_idx").on(table.monitorId, table.startedAt),
   index("collection_runs_status_started_idx").on(table.status, table.startedAt),
 ]);
 
 export const usageLedger = pgTable("usage_ledger", {
   id: uuid("id").primaryKey().defaultRandom(),
+  idempotencyKey: text("idempotency_key").notNull(),
   connectorId: uuid("connector_id").notNull().references(() => connectors.id),
   monitorId: uuid("monitor_id").references(() => monitors.id, { onDelete: "set null" }),
   metric: text("metric").notNull(),
@@ -172,6 +177,7 @@ export const usageLedger = pgTable("usage_ledger", {
   estimatedCost: numeric("estimated_cost", { precision: 12, scale: 6 }).notNull().default("0"),
   occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
+  uniqueIndex("usage_ledger_idempotency_uidx").on(table.idempotencyKey),
   index("usage_ledger_connector_time_idx").on(table.connectorId, table.occurredAt),
   index("usage_ledger_metric_time_idx").on(table.metric, table.occurredAt),
 ]);

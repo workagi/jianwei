@@ -1,5 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { safePublishedAt, toItemRows, ingest, type IngestRepository, type IngestItemRow } from "@/ingestion/ingest-items";
+import {
+  commitPreparedIngest,
+  ingest,
+  prepareIngest,
+  safePublishedAt,
+  toItemRows,
+  type IngestItemRow,
+  type IngestRepository,
+} from "@/ingestion/ingest-items";
 import type { NormalizedItem } from "@/connectors/types";
 
 function makeItem(over: Partial<NormalizedItem> = {}): NormalizedItem {
@@ -139,6 +147,19 @@ describe("toItemRows", () => {
 });
 
 describe("ingest", () => {
+  it("does not write until a prepared batch is explicitly committed", async () => {
+    const repo = new MemRepo();
+    const prepared = await prepareIngest(repo, { items: [makeItem()], monitorId: "m1" });
+
+    expect(repo.itemRows).toHaveLength(0);
+    expect(repo.matchLinks).toHaveLength(0);
+
+    const result = await commitPreparedIngest(repo, prepared);
+    expect(result.itemsUpserted).toBe(1);
+    expect(repo.itemRows).toHaveLength(1);
+    expect(repo.matchLinks).toHaveLength(1);
+  });
+
   it("upserts items and links them to the monitor", async () => {
     const repo = new MemRepo();
     const result = await ingest(repo, {
