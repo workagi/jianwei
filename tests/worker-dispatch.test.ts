@@ -197,5 +197,7 @@ describe("worker monitor circuit breaker", () => {
     expect(shouldDisableMonitorAfterFailure(10, 5, "XAI_X_SEARCH_TIMEOUT")).toBe(false);
     expect(shouldDisableMonitorAfterFailure(10, 5, "GATHER_TIMEOUT:x")).toBe(false);
     expect(shouldDisableMonitorAfterFailure(10, 5, "fetch failed")).toBe(false);
+    expect(shouldDisableMonitorAfterFailure(10, 5, "WERSS_FEED_STALE:2026-07-19T10:00:00.000Z")).toBe(false);
+    expect(shouldDisableMonitorAfterFailure(10, 5, "WERSS_FEED_NEVER_SYNCED")).toBe(false);
   });
 });

@@ -1,12 +1,24 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { CheckCircle2, CircleAlert, FlaskConical, Layers3 } from "lucide-react";
+import { CheckCircle2, CircleAlert, ExternalLink, FlaskConical, Layers3 } from "lucide-react";
 
 interface WechatContentState {
   directFallbackEnabled: boolean;
   fallbackBaseUrl: string;
   fallbackConfigured: boolean;
+  managementUrls: {
+    werss: string;
+    fallback: string;
+  };
+  primaryAuth: {
+    status: "ok" | "warning" | "auth_required" | "error";
+    checkedAt: string;
+    account?: string;
+    expiryTimestamp?: number;
+    remainingSeconds?: number;
+    message?: string;
+  } | null;
   fallback: {
     configured: boolean;
     reachable: boolean;
@@ -35,8 +47,32 @@ function formatTime(value?: string): string {
   }).format(date);
 }
 
+function epochMs(value?: number): number | null {
+  if (!value || !Number.isFinite(value)) return null;
+  return value < 1_000_000_000_000 ? value * 1000 : value;
+}
+
+function formatExpiry(value?: number): string {
+  const milliseconds = epochMs(value);
+  if (!milliseconds) return "到期时间待确认";
+  return `${new Intl.DateTimeFormat("zh-CN", {
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(milliseconds))} 到期`;
+}
+
+function expiresWithin(value: number | undefined, hours: number): boolean {
+  const milliseconds = epochMs(value);
+  return milliseconds !== null && milliseconds > Date.now() && milliseconds - Date.now() <= hours * 60 * 60 * 1000;
+}
+
 function enhancedBadge(state: WechatContentState | null): { label: string; className: string } {
   if (!state) return { label: "检查中", className: "warning" };
+  if (state.fallback.authenticated && expiresWithin(state.fallback.expiresAt, 24)) {
+    return { label: "即将到期", className: "warning" };
+  }
   if (state.fallback.authenticated) return { label: "可用", className: "ok" };
   if (state.fallback.reachable) return { label: "待扫码", className: "warning" };
   if (state.fallback.configured) return { label: "连接失败", className: "danger" };
@@ -184,6 +220,17 @@ export function WechatContentSettings({
 
   const badge = enhancedBadge(state);
   const collector = state?.fallback;
+  const primaryAuth = state?.primaryAuth;
+  const primaryExpiring = expiresWithin(primaryAuth?.expiryTimestamp, 24);
+  const primaryBadge = primaryAuth?.status === "auth_required"
+    ? { label: "需扫码", className: "danger" }
+    : primaryAuth?.status === "error"
+      ? { label: "检查失败", className: "warning" }
+      : primaryAuth?.status === "warning"
+        ? { label: "待确认", className: "warning" }
+        : primaryExpiring
+          ? { label: "即将到期", className: "warning" }
+          : { label: primaryHealthy ? "正常" : "待检查", className: primaryHealthy ? "ok" : "warning" };
 
   return (
     <section className="credentials-card wechat-content-card" id="wechat-content-settings">
@@ -199,8 +246,18 @@ export function WechatContentSettings({
         <div className="wechat-channel-card primary">
           <small>1 · 主通道</small>
           <strong>WeRSS</strong>
-          <span className={`health-badge ${primaryHealthy ? "ok" : "warning"}`}>{primaryHealthy ? "正常" : "待检查"}</span>
-          <p>订阅公众号、拉取文章列表，并优先获取正文。</p>
+          <span className={`health-badge ${primaryBadge.className}`}>{primaryBadge.label}</span>
+          <p>
+            {primaryAuth?.status === "auth_required"
+              ? "授权已失效，请打开 WeRSS 扫码。"
+              : primaryAuth
+                ? `${primaryAuth.account ? `${primaryAuth.account} · ` : ""}${formatExpiry(primaryAuth.expiryTimestamp)}`
+                : "订阅公众号、拉取文章列表，并优先获取正文。"}
+          </p>
+          <a className="wechat-channel-link" href={state?.managementUrls.werss ?? "http://localhost:8001/wechat-status"} target="_blank" rel="noreferrer">
+            {primaryAuth?.status === "auth_required" || primaryExpiring ? "去扫码续期" : "管理授权"}
+            <ExternalLink size={12} />
+          </a>
         </div>
         <label className="wechat-channel-card switchable">
           <small>2 · 轻量备用</small>
@@ -218,7 +275,15 @@ export function WechatContentSettings({
           <small>3 · 增强备用</small>
           <strong>增强采集器</strong>
           <span className={`health-badge ${badge.className}`}>{badge.label}</span>
-          <p>{collector?.authenticated ? `微信已登录：${collector.account ?? "授权账号"}` : collector?.status ?? "正在检查服务与登录状态"}</p>
+          <p>
+            {collector?.authenticated
+              ? `微信已登录：${collector.account ?? "授权账号"}${collector.expiresAt ? ` · ${formatExpiry(collector.expiresAt)}` : ""}`
+              : collector?.status ?? "正在检查服务与登录状态"}
+          </p>
+          <a className="wechat-channel-link" href={state?.managementUrls.fallback ?? "http://localhost:5055/admin.html"} target="_blank" rel="noreferrer">
+            {!collector?.authenticated || expiresWithin(collector?.expiresAt, 24) ? "去扫码续期" : "管理授权"}
+            <ExternalLink size={12} />
+          </a>
         </div>
       </div>
 

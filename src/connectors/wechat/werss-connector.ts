@@ -72,6 +72,41 @@ export interface ResolvedFeed {
 export interface WeRssFullTextOptions {
   directFallbackEnabled?: boolean;
   fallbackBaseUrl?: string;
+  /** Mark the upstream feed unhealthy when WeRSS has not synced it recently. */
+  maxFeedStaleHours?: number;
+}
+
+export interface WeRssCollectionFeed {
+  mpId: string;
+  mpName: string;
+}
+
+const JIANWEI_COLLECTION_TASK_ID = "jianwei-auto-collect";
+const JIANWEI_COLLECTION_TASK_NAME = "见微公众号自动采集（错峰）";
+
+interface WeRssFeedDetail {
+  id?: string;
+  mp_name?: string;
+  sync_time?: number;
+  update_time?: number;
+}
+
+interface WeRssMessageTask {
+  id?: string;
+  name?: string;
+  mps_id?: string;
+  cron_exp?: string;
+  status?: number;
+}
+
+export interface WeRssSessionStatus {
+  authenticated: boolean;
+  has_token: boolean;
+  account?: string | null;
+  expiry_timestamp?: number | null;
+  expiry_time?: string | null;
+  remaining_seconds?: number | null;
+  refreshing?: boolean;
 }
 
 export class WeRssConnector implements Connector<"wechat"> {
@@ -125,6 +160,105 @@ export class WeRssConnector implements Connector<"wechat"> {
     return envelope;
   }
 
+  private async fetchFeedDetail(mpId: string): Promise<WeRssFeedDetail> {
+    const response = await this.fetcher(`${this.base}/api/v1/wx/mps/${encodeURIComponent(mpId)}`, {
+      headers: this.headers(),
+      signal: AbortSignal.timeout(10_000),
+    });
+    const body = await this.readWeRssEnvelope<WeRssFeedDetail>(response, "WERSS_FEED_STATUS_FAILED");
+    return body.data ?? {};
+  }
+
+  private async assertFeedRecentlySynced(mpId: string): Promise<void> {
+    const maxHours = Number(this.fullTextOptions.maxFeedStaleHours);
+    if (!Number.isFinite(maxHours) || maxHours <= 0) return;
+
+    const feed = await this.fetchFeedDetail(mpId);
+    const syncTime = Number(feed.sync_time);
+    if (!Number.isFinite(syncTime) || syncTime <= 0) {
+      throw new Error("WERSS_FEED_NEVER_SYNCED");
+    }
+    const ageMs = Date.now() - syncTime * 1000;
+    if (ageMs > maxHours * 60 * 60 * 1000) {
+      throw new Error(`WERSS_FEED_STALE:${new Date(syncTime * 1000).toISOString()}`);
+    }
+  }
+
+  /**
+   * Keep one WeRSS scheduler task in sync with SignalDeck's enabled account
+   * monitors. WeRSS subscriptions alone are static records; without a message
+   * task their article lists never refresh.
+   */
+  async ensureCollectionTask(
+    feeds: WeRssCollectionFeed[],
+    cronExpression = "17 */3 * * *",
+  ): Promise<{ changed: boolean; feedCount: number }> {
+    const normalized = feeds
+      .filter((feed) => feed.mpId.trim())
+      .map((feed) => ({ id: feed.mpId.trim(), name: feed.mpName.trim() || feed.mpId.trim() }))
+      .sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
+    if (!normalized.length) return { changed: false, feedCount: 0 };
+
+    const listResponse = await this.fetcher(`${this.base}/api/v1/wx/message_tasks?limit=100&offset=0`, {
+      headers: this.headers(),
+      signal: AbortSignal.timeout(10_000),
+    });
+    const listBody = await this.readWeRssEnvelope<{ list?: WeRssMessageTask[] }>(
+      listResponse,
+      "WERSS_TASK_LIST_FAILED",
+    );
+    const existing = listBody.data?.list?.find((task) => task.id === JIANWEI_COLLECTION_TASK_ID);
+    const mpsId = JSON.stringify(normalized);
+    let existingMpsId = existing?.mps_id ?? "";
+    try {
+      existingMpsId = JSON.stringify(JSON.parse(existingMpsId));
+    } catch {
+      // Keep the raw value so a malformed task is replaced below.
+    }
+    const unchanged = existing
+      && existing.name === JIANWEI_COLLECTION_TASK_NAME
+      && existingMpsId === mpsId
+      && existing.cron_exp === cronExpression
+      && Number(existing.status) === 1;
+    if (unchanged) return { changed: false, feedCount: normalized.length };
+
+    const payload = {
+      message_template: "",
+      web_hook_url: "",
+      mps_id: mpsId,
+      name: JIANWEI_COLLECTION_TASK_NAME,
+      message_type: 1,
+      cron_exp: cronExpression,
+      status: 1,
+      headers: "",
+      cookies: "",
+    };
+    const taskUrl = existing
+      ? `${this.base}/api/v1/wx/message_tasks/${JIANWEI_COLLECTION_TASK_ID}`
+      : `${this.base}/api/v1/wx/message_tasks`;
+    const saveResponse = await this.fetcher(taskUrl, {
+      method: existing ? "PUT" : "POST",
+      headers: { ...this.headers(), "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(10_000),
+    });
+    await this.readWeRssEnvelope<unknown>(saveResponse, "WERSS_TASK_SAVE_FAILED");
+
+    const reloadResponse = await this.fetcher(`${this.base}/api/v1/wx/message_tasks/job/fresh`, {
+      method: "PUT",
+      headers: this.headers(),
+      signal: AbortSignal.timeout(10_000),
+    });
+    await this.readWeRssEnvelope<unknown>(reloadResponse, "WERSS_TASK_RELOAD_FAILED");
+
+    const runResponse = await this.fetcher(
+      `${this.base}/api/v1/wx/message_tasks/${JIANWEI_COLLECTION_TASK_ID}/run`,
+      { headers: this.headers(), signal: AbortSignal.timeout(20_000) },
+    );
+    await this.readWeRssEnvelope<unknown>(runResponse, "WERSS_TASK_RUN_FAILED");
+    return { changed: true, feedCount: normalized.length };
+  }
+
   async health() {
     try {
       const response = await this.fetcher(`${this.base}/api/v1/wx/mps?limit=1`, {
@@ -135,6 +269,27 @@ export class WeRssConnector implements Connector<"wechat"> {
     } catch {
       return { ok: false, message: "WeRSS 未启动或无法访问" };
     }
+  }
+
+  /** Read sanitized authorization metadata from Jianwei's WeRSS guard. */
+  async sessionStatus(): Promise<WeRssSessionStatus> {
+    const response = await this.fetcher(`${this.base}/api/v1/wx/auth/session/status`, {
+      headers: this.headers(),
+      signal: AbortSignal.timeout(10_000),
+    });
+    const body = await this.readWeRssEnvelope<WeRssSessionStatus>(response, "WERSS_AUTH_STATUS_FAILED");
+    return body.data ?? { authenticated: false, has_token: false };
+  }
+
+  /** Refresh the existing single-account session without creating a QR code. */
+  async refreshSession(): Promise<WeRssSessionStatus> {
+    const response = await this.fetcher(`${this.base}/api/v1/wx/auth/session/refresh`, {
+      method: "POST",
+      headers: this.headers(),
+      signal: AbortSignal.timeout(120_000),
+    });
+    const body = await this.readWeRssEnvelope<WeRssSessionStatus>(response, "WERSS_AUTH_REFRESH_FAILED");
+    return body.data ?? { authenticated: false, has_token: false };
   }
 
   private async resolveArticle(articleUrl: string): Promise<ResolvedArticle> {
@@ -348,6 +503,7 @@ export class WeRssConnector implements Connector<"wechat"> {
       resolvedFeed = feed;
       fallbackArticle = resolved.article;
     }
+    if (!resolvedFeed) await this.assertFeedRecentlySynced(mpId);
     // WeRSS returns articles newest-first; always fetch the latest page from
     // offset 0 so each poll picks up newly published posts. We only persist
     // mpId in the cursor (dedupe happens on upsert by upstreamId upstream).

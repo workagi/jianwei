@@ -91,6 +91,17 @@ describe("deriveMonitorHealth", () => {
     expect(status.statusDetail).toContain("检查平台密钥");
   });
 
+  it("surfaces stale WeRSS feeds without treating the monitor as misconfigured", () => {
+    const status = deriveMonitorHealth({
+      ...base,
+      lastError: "WERSS_FEED_STALE:2026-07-19T10:00:00.000Z",
+    });
+
+    expect(status.health).toBe("公众号源停更");
+    expect(status.warning).toBe(true);
+    expect(status.statusDetail).toContain("等待上游恢复");
+  });
+
   it("shows the last error when a failed monitor has been auto-disabled", () => {
     const status = deriveMonitorHealth({
       ...base,

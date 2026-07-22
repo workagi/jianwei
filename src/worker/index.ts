@@ -14,6 +14,7 @@ import { createWorkerSourceProvider } from "@/sources/registry";
 import { collectFromProvider } from "@/sources/types";
 import { monitorStaggerKey, nextStaggeredRunAt } from "@/lib/monitor-schedule";
 import { backfillMissingSummaries } from "@/lib/summary-backfill";
+import { createWeRssConnector } from "@/connectors/factory";
 
 // Cost per 1000 billable units. Brave's published rate is $3 / 1k queries; X has
 // no stable public rate, so it defaults to 0 and can be overridden.
@@ -320,6 +321,7 @@ export function shouldDisableMonitorAfterFailure(
   // Rate limits and upstream 5xx responses are recoverable service states, not
   // evidence that the user's monitor configuration is broken.
   if (isTransientMonitorFailure(message)) return false;
+  if (/^WERSS_FEED_(?:STALE|NEVER_SYNCED)/.test(message)) return false;
   return threshold > 0 && failureCount >= threshold;
 }
 
@@ -373,9 +375,115 @@ async function refreshCredentials(): Promise<void> {
   }
 }
 
+const WERSS_TASK_REFRESH_INTERVAL_MS = 15 * 60_000;
+let lastWeRssTaskRefreshAt = 0;
+let lastWeRssAuthCheckAt = 0;
+
+const WERSS_AUTH_CHECK_INTERVAL_MS = Math.max(
+  1,
+  Number(process.env.WERSS_AUTH_CHECK_INTERVAL_HOURS) || 6,
+) * 60 * 60 * 1000;
+const WERSS_AUTH_REFRESH_BEFORE_SECONDS = Math.max(
+  1,
+  Number(process.env.WERSS_AUTH_REFRESH_BEFORE_HOURS) || 48,
+) * 60 * 60;
+
+async function saveWeRssAuthHealth(
+  status: "ok" | "warning" | "auth_required" | "error",
+  detail: Record<string, unknown>,
+  now = new Date(),
+): Promise<void> {
+  await db.insert(runtimeHealth).values({
+    service: "werss_auth",
+    status,
+    lastHeartbeatAt: now,
+    detail,
+  }).onConflictDoUpdate({
+    target: runtimeHealth.service,
+    set: { status, lastHeartbeatAt: now, detail },
+  });
+}
+
+async function maybeGuardWeRssAuthorization(now = Date.now()): Promise<void> {
+  if (now - lastWeRssAuthCheckAt < WERSS_AUTH_CHECK_INTERVAL_MS) return;
+  lastWeRssAuthCheckAt = now;
+  const connector = createWeRssConnector();
+  try {
+    let session = await connector.sessionStatus();
+    if (!session.authenticated) {
+      await saveWeRssAuthHealth("auth_required", {
+        account: session.account ?? null,
+        expiryTimestamp: session.expiry_timestamp ?? null,
+        remainingSeconds: session.remaining_seconds ?? 0,
+        message: "微信公众号授权已失效，请打开 WeRSS 扫码恢复",
+      });
+      console.warn("[worker] WeRSS 微信授权已失效，需要重新扫码");
+      return;
+    }
+
+    const remaining = typeof session.remaining_seconds === "number"
+      ? session.remaining_seconds
+      : null;
+    let refreshed = false;
+    if (remaining !== null && remaining <= WERSS_AUTH_REFRESH_BEFORE_SECONDS) {
+      session = await connector.refreshSession();
+      refreshed = true;
+    }
+    const nextRemaining = typeof session.remaining_seconds === "number"
+      ? session.remaining_seconds
+      : null;
+    await saveWeRssAuthHealth(nextRemaining === null ? "warning" : "ok", {
+      account: session.account ?? null,
+      expiryTimestamp: session.expiry_timestamp ?? null,
+      remainingSeconds: nextRemaining,
+      refreshed,
+      lastRefreshAt: refreshed ? new Date(now).toISOString() : null,
+      message: nextRemaining === null ? "授权有效，但 WeRSS 未返回到期时间" : "微信公众号授权有效",
+    });
+    if (refreshed) console.log("[worker] WeRSS 微信授权已静默续期");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await saveWeRssAuthHealth("error", { message: message.slice(0, 300) });
+    console.warn(`[worker] WeRSS 授权守护失败: ${message}`);
+  }
+}
+
+async function maybeEnsureWeRssCollectionTask(now = Date.now()): Promise<void> {
+  if (now - lastWeRssTaskRefreshAt < WERSS_TASK_REFRESH_INTERVAL_MS) return;
+  const rows = await db
+    .select({ name: monitors.name, config: monitors.config })
+    .from(monitors)
+    .where(and(eq(monitors.enabled, true), eq(monitors.platform, "wechat")));
+  const feeds = rows.flatMap((row) => {
+    if (isWechatKeywordRuleConfig(row.config)) return [];
+    const mpId = typeof row.config.mpId === "string" ? row.config.mpId.trim() : "";
+    if (!mpId) return [];
+    const mpName = typeof row.config.mpName === "string" && row.config.mpName.trim()
+      ? row.config.mpName.trim()
+      : row.name;
+    return [{ mpId, mpName }];
+  });
+  if (!feeds.length) {
+    lastWeRssTaskRefreshAt = now;
+    return;
+  }
+  const cron = process.env.WERSS_COLLECTION_CRON?.trim() || "17 */3 * * *";
+  const result = await createWeRssConnector().ensureCollectionTask(feeds, cron);
+  lastWeRssTaskRefreshAt = now;
+  if (result.changed) {
+    console.log(`[worker] 已同步 WeRSS 自动采集任务：${result.feedCount} 个公众号 (${cron})`);
+  }
+}
+
 export async function runOnce(): Promise<number> {
   // 每轮开始前刷新凭据，确保界面保存的密钥立即生效。
   await refreshCredentials();
+  await maybeGuardWeRssAuthorization();
+  try {
+    await maybeEnsureWeRssCollectionTask();
+  } catch (error) {
+    console.warn(`[worker] 同步 WeRSS 自动采集任务失败: ${error instanceof Error ? error.message : String(error)}`);
+  }
 
   const due = await db
     .select()

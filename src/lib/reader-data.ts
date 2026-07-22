@@ -249,6 +249,13 @@ export function deriveMonitorHealth(row: {
     if (/401|403|auth|unauthorized|forbidden/i.test(row.lastError)) {
       return { health: "需要授权", warning: true, statusDetail: "检查平台密钥或 WeRSS 扫码授权" };
     }
+    if (/^WERSS_FEED_(?:STALE|NEVER_SYNCED)/.test(row.lastError)) {
+      return {
+        health: "公众号源停更",
+        warning: true,
+        statusDetail: "WeRSS 长时间没有同步该公众号；系统已保留任务并等待上游恢复",
+      };
+    }
     if (/^XAI_X_SEARCH_(?:429|5\d\d|TIMEOUT|NETWORK(?::[A-Z0-9_]+)?)$/.test(row.lastError)
       || row.lastError === "GATHER_TIMEOUT:x"
       || row.lastError === "fetch failed") {
@@ -260,6 +267,13 @@ export function deriveMonitorHealth(row: {
     const message = row.latestRunErrorMessage ?? "最近一次采集失败";
     if (/401|403|auth|unauthorized|forbidden/i.test(message)) {
       return { health: "需要授权", warning: true, statusDetail: "检查平台密钥或 WeRSS 扫码授权" };
+    }
+    if (/^WERSS_FEED_(?:STALE|NEVER_SYNCED)/.test(message)) {
+      return {
+        health: "公众号源停更",
+        warning: true,
+        statusDetail: "WeRSS 长时间没有同步该公众号；系统已保留任务并等待上游恢复",
+      };
     }
     return { health: "失败", warning: true, statusDetail: message };
   }
