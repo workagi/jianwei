@@ -1,5 +1,8 @@
 import type { PlatformType } from "@/connectors/types";
 import { getContentPipelineStats } from "@/db/queries";
+import { createStructuredLogger } from "@/lib/structured-log";
+
+const pipelineLog = createStructuredLogger({ service: "content-pipeline" });
 
 export interface PipelinePlatformAggregate {
   platform: PlatformType;
@@ -258,7 +261,7 @@ export async function loadContentPipelineView(): Promise<ContentPipelineView> {
       stats.recent,
     );
   } catch (error) {
-    console.warn("[content-pipeline] 处理状态统计失败:", (error as Error).message);
+    pipelineLog.warn("pipeline.stats.failed", { error });
     return buildContentPipelineView([], emptyRecent(), false);
   }
 }

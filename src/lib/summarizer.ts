@@ -22,6 +22,9 @@ import type { NormalizedItem } from "@/connectors/types";
 import { normalizeContentType, normalizeTopicTags, type ContentTypeId } from "@/lib/item-tags";
 import { normalizeRelevanceScore, normalizeRetentionReason } from "@/lib/content-retention";
 import { waitForDistributedRateLimit } from "@/lib/distributed-rate-limit";
+import { createStructuredLogger } from "@/lib/structured-log";
+
+const analysisLog = createStructuredLogger({ service: "content-analysis" });
 
 export interface SummaryInput {
   platform: string;
@@ -243,7 +246,7 @@ function resolveProvider(): SummaryProvider | null {
     case "disabled":
       return null;
     default:
-      console.warn(`[summarizer] 未知 SUMMARY_PROVIDER="${name}"，摘要生成已禁用`);
+      analysisLog.warn("analysis.provider.unknown", { provider: name });
       return null;
   }
 }
@@ -804,7 +807,12 @@ export async function generateTitleTranslations(entries: TitleTranslationInput[]
     return translations;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.warn(`[summarizer:${provider.name}] 批量标题翻译失败，保留原题等待下次重试: ${message}`);
+    analysisLog.warn("analysis.title_translation.failed", {
+      provider: provider.name,
+      model: provider.model,
+      itemCount: entries.length,
+      errorMessage: message,
+    });
     return translations;
   } finally {
     if (timer) clearTimeout(timer);
@@ -872,8 +880,21 @@ export async function generateSummaryAttempt(item: NormalizedItem): Promise<Summ
       : { status: "failed", provider: provider.name, model: provider.model, errorCode: "SUMMARY_EMPTY", errorMessage: "摘要返回为空" };
   } catch (err) {
     const classified = classifySummaryError(provider.name, err);
-    if (classified.status === "timeout") console.warn(`[summarizer:${provider.name}] 超时(${timeoutMs}ms)，跳过`);
-    else console.error(`[summarizer:${provider.name}] 生成失败：${classified.errorMessage}`);
+    const fields = {
+      provider: provider.name,
+      model: provider.model,
+      platform: item.platform,
+      upstreamId: item.upstreamId,
+      timeoutMs,
+      status: classified.status,
+      errorCode: classified.errorCode,
+      errorMessage: classified.errorMessage,
+    };
+    if (classified.status === "timeout" || classified.status === "rate_limited") {
+      analysisLog.warn("analysis.item.failed", fields);
+    } else {
+      analysisLog.error("analysis.item.failed", fields);
+    }
     return { ...classified, provider: provider.name, model: provider.model };
   } finally {
     if (timer) clearTimeout(timer);
@@ -901,6 +922,7 @@ export async function generateSummariesWithStats(items: NormalizedItem[]): Promi
   attempts: Map<string, SummaryAttemptResult>;
   stats: SummaryRunStats;
 }> {
+  const startedAt = Date.now();
   const out = new Map<string, string>();
   const analyses = new Map<string, ContentAnalysis>();
   const attempts = new Map<string, SummaryAttemptResult>();
@@ -966,6 +988,17 @@ export async function generateSummariesWithStats(items: NormalizedItem[]): Promi
   }
   stats.errorCode = lastError.errorCode;
   stats.errorMessage = lastError.errorMessage;
+  analysisLog.info("analysis.batch.completed", {
+    durationMs: Date.now() - startedAt,
+    itemCount: items.length,
+    status: stats.status,
+    attempted: stats.attempted,
+    succeeded: stats.succeeded,
+    failed: stats.failed,
+    inputTokens: stats.inputTokens ?? 0,
+    outputTokens: stats.outputTokens ?? 0,
+    errorCode: stats.errorCode,
+  });
   return { summaries: out, analyses, attempts, stats };
 }
 

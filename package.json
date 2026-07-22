@@ -25,6 +25,7 @@
     "db:migrate": "drizzle-kit migrate",
     "db:seed": "tsx src/db/seed.ts",
     "content:cleanup": "tsx scripts/cleanup-content-quality.ts",
+    "content:evaluate": "tsx scripts/evaluate-content-rules.ts",
     "audit:open-source": "node scripts/open-source-audit.mjs"
   },
   "dependencies": {

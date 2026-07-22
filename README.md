@@ -251,6 +251,7 @@ docker compose down
 
 ```bash
 pnpm install
+pnpm content:evaluate
 pnpm lint
 pnpm test
 pnpm build

@@ -27,6 +27,7 @@ import {
   settleUsageReservation,
   type UsageBudgetReservation,
 } from "@/lib/usage-budget";
+import { createStructuredLogger } from "@/lib/structured-log";
 
 // Cost per 1000 billable units. Brave's published rate is $3 / 1k queries; X has
 // no stable public rate, so it defaults to 0 and can be overridden.
@@ -41,6 +42,7 @@ const BUDGET_ENABLED = Number.isFinite(MONTHLY_BUDGET_USD) && MONTHLY_BUDGET_USD
 const MONITOR_DISABLE_AFTER_FAILURES = Number(process.env.WORKER_DISABLE_MONITOR_AFTER_FAILURES ?? "5") || 0;
 const WORKER_HEARTBEAT_FILE = process.env.WORKER_HEARTBEAT_FILE ?? "/tmp/jianwei-worker-heartbeat";
 const WORKER_ID = process.env.WORKER_ID?.trim() || `${process.pid}-${randomUUID()}`;
+const workerLog = createStructuredLogger({ service: "worker", workerId: WORKER_ID });
 
 interface GatherInput {
   platform: PlatformType;
@@ -248,7 +250,16 @@ async function startCollectionRun(monitor: MonitorRow): Promise<{
 }
 
 async function runMonitor(monitor: MonitorRow, shutdownSignal?: AbortSignal): Promise<void> {
+  const startedAt = Date.now();
   const { runId, runKey, alreadySucceeded } = await startCollectionRun(monitor);
+  const runLog = workerLog.child({
+    runId,
+    runKey,
+    monitorId: monitor.id,
+    connectorId: monitor.connectorId,
+    platform: monitor.platform,
+    provider: typeof monitor.config.provider === "string" ? monitor.config.provider : undefined,
+  });
   const staggerKey = monitorStaggerKey({
     id: monitor.id,
     platform: monitor.platform,
@@ -266,12 +277,20 @@ async function runMonitor(monitor: MonitorRow, shutdownSignal?: AbortSignal): Pr
       leaseOwner: null,
       leaseUntil: null,
     }).where(and(eq(monitors.id, monitor.id), eq(monitors.leaseOwner, WORKER_ID)));
-    console.info(`[worker] ${monitor.id}: skipped completed run ${runKey}`);
+    runLog.info("collection.skipped", {
+      reason: "already_succeeded",
+      durationMs: Date.now() - startedAt,
+      nextRunAt,
+    });
     return;
   }
 
   let budgetReservationKey: string | undefined;
   try {
+    runLog.info("collection.started", {
+      scheduledFor: monitor.nextRunAt,
+      pollIntervalMinutes: monitor.pollIntervalMinutes,
+    });
     // Reserve provider budget before the external call. The database lock in
     // reserveUsageBudget makes concurrent workers participate in one budget.
     const budgetReservation = budgetReservationForMonitor(monitor, runKey);
@@ -412,11 +431,21 @@ async function runMonitor(monitor: MonitorRow, shutdownSignal?: AbortSignal): Pr
       return committed;
     });
 
-    const summaryNote =
-      result.summary.attempted > 0
-        ? ` / summary ${result.summary.succeeded}/${result.summary.attempted} (${result.summary.status})`
-        : "";
-    console.log(`[worker] ${monitor.id}: +${result.itemsUpserted} items / ${result.matchesInserted} matches${summaryNote}`);
+    runLog.info("collection.succeeded", {
+      durationMs: Date.now() - startedAt,
+      fetchedCount: items.length,
+      itemsUpserted: result.itemsUpserted,
+      matchesInserted: result.matchesInserted,
+      billableUnits: billableUnits ?? null,
+      summaryStatus: result.summary.status,
+      summaryAttempted: result.summary.attempted,
+      summarySucceeded: result.summary.succeeded,
+      summaryFailed: result.summary.failed,
+      summaryInputTokens,
+      summaryOutputTokens,
+      summaryEstimatedCostUsd: summaryCost,
+      nextRunAt,
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (shutdownSignal?.aborted) {
@@ -445,6 +474,9 @@ async function runMonitor(monitor: MonitorRow, shutdownSignal?: AbortSignal): Pr
       nextRunAt = nextStaggeredRunAt({ intervalMinutes: 10, staggerKey });
     }
     const shouldDisable = shouldDisableMonitorAfterFailure(failureCount, MONITOR_DISABLE_AFTER_FAILURES, message);
+    const errorCode = message.startsWith("CONNECTOR") || isBudgetExhaustion(message)
+      ? message
+      : "GATHER_FAILED";
     await db.transaction(async (tx) => {
       await releaseUsageReservation(tx, budgetReservationKey);
       await tx
@@ -464,20 +496,23 @@ async function runMonitor(monitor: MonitorRow, shutdownSignal?: AbortSignal): Pr
         .set({
           status: "failed",
           finishedAt: new Date(),
-          errorCode:
-            message.startsWith("CONNECTOR") || isBudgetExhaustion(message)
-              ? message
-              : "GATHER_FAILED",
+          errorCode,
           errorMessage: message,
         })
         .where(eq(collectionRuns.id, runId));
     });
 
-    console.warn(
-      `[worker] ${monitor.id} 失败(${failureCount}/${MONITOR_DISABLE_AFTER_FAILURES || "∞"}): ${message}${
-        shouldDisable ? "；已自动停用该监控" : ""
-      }`,
-    );
+    runLog.warn("collection.failed", {
+      durationMs: Date.now() - startedAt,
+      errorCode,
+      errorMessage: message,
+      failureCount,
+      disableThreshold: MONITOR_DISABLE_AFTER_FAILURES || null,
+      monitorDisabled: shouldDisable,
+      transient: isTransientMonitorFailure(message),
+      budgetExhausted: isBudgetExhaustion(message),
+      nextRunAt,
+    });
   }
 }
 
@@ -560,7 +595,7 @@ async function refreshCredentials(): Promise<void> {
       if (v !== undefined) process.env[key] = v;
     }
   } catch (err) {
-    console.warn("[worker] 刷新 API 凭据失败:", err);
+    workerLog.warn("credentials.refresh.failed", { error: err });
   }
 }
 
@@ -606,7 +641,10 @@ async function maybeGuardWeRssAuthorization(now = Date.now()): Promise<void> {
         remainingSeconds: session.remaining_seconds ?? 0,
         message: "微信公众号授权已失效，请打开 WeRSS 扫码恢复",
       });
-      console.warn("[worker] WeRSS 微信授权已失效，需要重新扫码");
+      workerLog.warn("werss.authorization.required", {
+        account: session.account ?? null,
+        expiryTimestamp: session.expiry_timestamp ?? null,
+      });
       return;
     }
 
@@ -629,11 +667,17 @@ async function maybeGuardWeRssAuthorization(now = Date.now()): Promise<void> {
       lastRefreshAt: refreshed ? new Date(now).toISOString() : null,
       message: nextRemaining === null ? "授权有效，但 WeRSS 未返回到期时间" : "微信公众号授权有效",
     });
-    if (refreshed) console.log("[worker] WeRSS 微信授权已静默续期");
+    if (refreshed) {
+      workerLog.info("werss.authorization.refreshed", {
+        account: session.account ?? null,
+        expiryTimestamp: session.expiry_timestamp ?? null,
+        remainingSeconds: nextRemaining,
+      });
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await saveWeRssAuthHealth("error", { message: message.slice(0, 300) });
-    console.warn(`[worker] WeRSS 授权守护失败: ${message}`);
+    workerLog.warn("werss.authorization.guard_failed", { errorMessage: message });
   }
 }
 
@@ -660,7 +704,7 @@ async function maybeEnsureWeRssCollectionTask(now = Date.now()): Promise<void> {
   const result = await createWeRssConnector().ensureCollectionTask(feeds, cron);
   lastWeRssTaskRefreshAt = now;
   if (result.changed) {
-    console.log(`[worker] 已同步 WeRSS 自动采集任务：${result.feedCount} 个公众号 (${cron})`);
+    workerLog.info("werss.collection_task.synced", { feedCount: result.feedCount, cron });
   }
 }
 
@@ -688,7 +732,7 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
   try {
     await maybeEnsureWeRssCollectionTask();
   } catch (error) {
-    console.warn(`[worker] 同步 WeRSS 自动采集任务失败: ${error instanceof Error ? error.message : String(error)}`);
+    workerLog.warn("werss.collection_task.sync_failed", { error });
   }
 
   const due = await db
@@ -714,7 +758,11 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
       }).where(and(
         eq(monitors.id, monitor.id),
         eq(monitors.leaseOwner, WORKER_ID),
-      )).catch((error) => console.warn(`[worker] ${monitor.id} 租约续期失败:`, error))
+      )).catch((error) => workerLog.warn("monitor.lease_renewal.failed", {
+        monitorId: monitor.id,
+        platform: monitor.platform,
+        error,
+      }))
         .finally(() => { leaseRenewalRunning = false; });
     }, Math.min(60_000, Math.max(5_000, Math.floor(MONITOR_LEASE_MS / 3))));
     try {
@@ -784,12 +832,16 @@ async function maybeRetryFailedContentAnalysis(now = Date.now()): Promise<void> 
       maxAttempts: CONTENT_RETRY_MAX_ATTEMPTS,
     });
     if (result.processed > 0) {
-      console.log(
-        `[worker] 模型理解失败重试 ${result.processed} 条，成功 ${result.stats.succeeded}/${result.stats.attempted}`,
-      );
+      workerLog.info("analysis.retry.completed", {
+        processed: result.processed,
+        attempted: result.stats.attempted,
+        succeeded: result.stats.succeeded,
+        failed: result.stats.failed,
+        status: result.stats.status,
+      });
     }
   } catch (error) {
-    console.warn("[worker] 模型理解自动重试失败:", error);
+    workerLog.warn("analysis.retry.failed", { error });
   }
 }
 
@@ -848,43 +900,47 @@ async function main(): Promise<void> {
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
 
-  console.log(`[worker] 启动采集循环，间隔 ${POLL_INTERVAL_MS / 1000}s`);
+  workerLog.info("worker.started", {
+    pid: process.pid,
+    pollIntervalSeconds: POLL_INTERVAL_MS / 1000,
+    monitorLeaseSeconds: MONITOR_LEASE_MS / 1000,
+  });
   await markWorkerHeartbeat();
   let heartbeatRunning = false;
   const heartbeatTimer = setInterval(() => {
     if (heartbeatRunning) return;
     heartbeatRunning = true;
     markWorkerHeartbeat()
-      .catch((error) => console.warn("[worker] 心跳更新失败:", error))
+      .catch((error) => workerLog.warn("worker.heartbeat.failed", { error }))
       .finally(() => { heartbeatRunning = false; });
   }, 15_000);
   try {
     const cleaned = await cleanupStaleRunningRuns();
-    if (cleaned) console.warn(`[worker] 已清理 ${cleaned} 条中断的运行记录`);
+    if (cleaned) workerLog.warn("collection.stale_runs.cleaned", { cleaned });
   } catch (err) {
-    console.warn("[worker] 清理中断运行记录失败:", err);
+    workerLog.warn("collection.stale_runs.cleanup_failed", { error: err });
   }
   while (!stopped) {
     try {
       const count = await runOnce(shutdownController.signal);
       await markWorkerHeartbeat();
-      console.log(`[worker] 处理 ${count} 个到期监控任务`);
+      workerLog.info("worker.poll.completed", { claimedMonitorCount: count });
     } catch (err) {
-      console.error("[worker] runOnce 异常:", err);
+      workerLog.error("worker.poll.failed", { error: err });
     }
     // 以 1s 粒度等待，便于收到 SIGTERM 时快速退出。
     const deadline = Date.now() + POLL_INTERVAL_MS;
     while (Date.now() < deadline && !stopped) await sleep(1000);
   }
   clearInterval(heartbeatTimer);
-  console.log("[worker] 已停止");
+  workerLog.info("worker.stopped");
 }
 
 // Only run the loop when invoked directly (e.g. `pnpm worker`). When imported
 // by unit tests, this must not execute.
 if (process.argv[1] && /worker\/index\.ts$/.test(process.argv[1])) {
   main().catch((err) => {
-    console.error("[worker] 致命错误:", err);
+    workerLog.error("worker.fatal", { error: err });
     process.exit(1);
   });
 }

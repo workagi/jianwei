@@ -39,6 +39,7 @@ pnpm dev
 
 ```bash
 pnpm audit:open-source
+pnpm content:evaluate
 pnpm lint
 pnpm test
 pnpm build

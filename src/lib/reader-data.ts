@@ -20,6 +20,9 @@ import { formatPollInterval } from "@/lib/monitor-schedule";
 import { deriveRetentionDecision, normalizeRetentionReason } from "@/lib/content-retention";
 import { normalizeSummaryForDisplay } from "@/lib/summarizer";
 import { buildFeaturedFeed, type RelatedEventSource } from "@/lib/content-clustering";
+import { createStructuredLogger } from "@/lib/structured-log";
+
+const readerLog = createStructuredLogger({ service: "reader" });
 
 const READER_PLATFORMS: PlatformType[] = ["x", "wechat", "web_search", "trendradar"];
 const UNIFIED_FEED_PLATFORM_LIMIT = 18;
@@ -548,7 +551,7 @@ export async function loadBookmarkedFeed(): Promise<{ items: ReaderItem[]; total
     const rows = await getItems({ bookmarkedOnly: true, limit: 200 });
     return { items: rows.map(mapRow), total, usingDemo: false };
   } catch (error) {
-    console.warn("[reader-data] 收藏列表加载失败:", (error as Error).message);
+    readerLog.warn("reader.bookmarks.load_failed", { error });
     return { items: [], total: 0, usingDemo: true };
   }
 }
@@ -726,7 +729,7 @@ export async function loadReaderFeed(filter: {
       balancedOverview: true,
     });
   } catch (err) {
-    console.warn("[reader-data] 数据库不可用，回退到演示数据:", (err as Error).message);
+    readerLog.warn("reader.feed.demo_fallback", { error: err });
     let items = demoToReader();
     const selectedType = getContentTypeFilter(filter.contentType);
     if (selectedType) items = items.filter((item) => item.contentType === selectedType.id);
@@ -750,7 +753,7 @@ export async function loadWechatKeywordRuleFilters(): Promise<ReaderKeywordRuleF
       itemCount: Number(row.itemCount ?? 0),
     }));
   } catch (err) {
-    console.warn("[reader-data] 关键词规则筛选加载失败:", (err as Error).message);
+    readerLog.warn("reader.keyword_filters.load_failed", { error: err });
     return [];
   }
 }
@@ -778,7 +781,7 @@ export async function loadAdminMonitors(): Promise<{
     });
     return { monitors, usingDemo: false };
   } catch (err) {
-    console.warn("[reader-data] 监控列表回退演示数据:", (err as Error).message);
+    readerLog.warn("reader.monitors.demo_fallback", { error: err });
     return { monitors: demoAdminMonitors(), usingDemo: true };
   }
 }

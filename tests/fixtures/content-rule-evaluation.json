@@ -1,0 +1,152 @@
+[
+  {
+    "id": "wechat-codex-tutorial",
+    "platform": "wechat",
+    "authorName": "数字生命卡兹克",
+    "title": "远程操控 Agent 干活：Codex + UU 远程方案",
+    "bodyText": "完整实践教程，介绍如何部署 Codex Agent、配置脚本并复用工作流。",
+    "expectedContentType": "tutorial",
+    "requiredTopicTags": ["Agent", "OpenAI"],
+    "expectedReaderVisible": true
+  },
+  {
+    "id": "wechat-model-release",
+    "platform": "wechat",
+    "authorName": "机器之心",
+    "title": "DeepSeek 发布新一代 MoE 大模型",
+    "bodyText": "新模型公布参数规模、上下文窗口与 benchmark 评测结果。",
+    "expectedContentType": "model_release",
+    "requiredTopicTags": ["DeepSeek", "国产模型"]
+  },
+  {
+    "id": "rss-product-update",
+    "platform": "trendradar",
+    "authorName": "OpenAI News",
+    "title": "ChatGPT 新增 Codex 自动化工作流入口",
+    "bodyText": "产品更新向订阅用户开放新的 Agent 功能。",
+    "expectedContentType": "product_update",
+    "requiredTopicTags": ["OpenAI", "Agent"],
+    "expectedReaderVisible": true
+  },
+  {
+    "id": "web-ai-financing",
+    "platform": "web_search",
+    "authorName": "TechCrunch",
+    "title": "AI 公司完成 5 亿美元融资，估值升至 80 亿美元",
+    "bodyText": "该公司计划扩大企业客户团队并推进商业化。",
+    "expectedContentType": "industry_business",
+    "requiredTopicTags": ["融资", "人工智能"]
+  },
+  {
+    "id": "rss-arxiv-research",
+    "platform": "trendradar",
+    "authorName": "arXiv cs.AI",
+    "title": "多智能体协作规划的新评测数据集",
+    "bodyText": "论文提出实验方法、训练数据和新的 benchmark，并在多个 LLM 上验证。",
+    "expectedContentType": "research",
+    "requiredTopicTags": ["Agent"],
+    "expectedReaderVisible": true
+  },
+  {
+    "id": "web-ai-policy",
+    "platform": "web_search",
+    "authorName": "EU News",
+    "title": "欧盟公布人工智能模型安全监管细则",
+    "bodyText": "新政策要求披露训练数据风险，满足隐私、版权与合规要求。",
+    "expectedContentType": "policy_safety",
+    "requiredTopicTags": ["安全/对齐", "人工智能"]
+  },
+  {
+    "id": "x-agent-opinion",
+    "platform": "x",
+    "authorName": "AI Researcher",
+    "authorHandle": "researcher",
+    "title": null,
+    "bodyText": "为什么我认为 Agent 的下一步不是增加工具，而是减少无效决策？这是一次复盘和判断。",
+    "expectedContentType": "opinion",
+    "requiredTopicTags": ["Agent"]
+  },
+  {
+    "id": "hotlist-unrelated-elderly",
+    "platform": "trendradar",
+    "authorName": "百度热搜",
+    "title": "多省开始抢老人",
+    "bodyText": "多省开始抢老人。",
+    "expectedReaderVisible": false,
+    "forbiddenTopicTags": ["人工智能"],
+    "note": "用户实际反馈过的无关热榜噪声"
+  },
+  {
+    "id": "hotlist-unrelated-celebrity",
+    "platform": "trendradar",
+    "authorName": "百度热搜",
+    "title": "张小斐主演电影票房破 110 亿",
+    "bodyText": "电影市场娱乐新闻。",
+    "expectedReaderVisible": false,
+    "note": "娱乐内容应在进入模型前被挡住"
+  },
+  {
+    "id": "hotlist-unrelated-legal",
+    "platform": "trendradar",
+    "authorName": "百度热搜",
+    "title": "女子追尾身亡，男友副驾驶被起诉",
+    "bodyText": "社会法治新闻。",
+    "expectedReaderVisible": false
+  },
+  {
+    "id": "broad-source-body-only-hit",
+    "platform": "trendradar",
+    "authorName": "Hacker News",
+    "title": "Chrome 发布常规稳定版本",
+    "bodyText": "正文末尾顺带提到 AI 和开发者工具。",
+    "expectedReaderVisible": false,
+    "note": "宽泛来源只允许标题命中，避免正文顺带提及造成误收"
+  },
+  {
+    "id": "disabled-rss-source",
+    "platform": "trendradar",
+    "authorName": "IT之家",
+    "title": "OpenAI 发布新的 AI Agent 功能",
+    "bodyText": "这是一条与人工智能相关的产品更新。",
+    "expectedReaderVisible": false,
+    "note": "后台已停用的 RSS 来源不得继续进入信息流"
+  },
+  {
+    "id": "source-name-must-not-tag",
+    "platform": "web_search",
+    "authorName": "OpenAI Daily",
+    "authorHandle": "openai-ai-news",
+    "title": "今天的普通城市天气",
+    "bodyText": "晴转多云，适合出行。",
+    "expectedContentType": "opinion",
+    "forbiddenTopicTags": ["OpenAI", "人工智能"],
+    "note": "来源名和账号名不能参与内容分类"
+  },
+  {
+    "id": "hotlist-ai-career",
+    "platform": "trendradar",
+    "authorName": "澎湃新闻",
+    "title": "AI 时代需要什么样的人：从 DeepSeek 招聘清单说起",
+    "bodyText": "文章分析人工智能行业的人才变化。",
+    "expectedReaderVisible": true,
+    "requiredTopicTags": ["DeepSeek", "人工智能"]
+  },
+  {
+    "id": "hotlist-semiconductor",
+    "platform": "trendradar",
+    "authorName": "华尔街见闻",
+    "title": "英伟达发布新一代 AI 芯片，算力提升三倍",
+    "bodyText": "新芯片面向大模型训练。",
+    "requiredTopicTags": ["半导体", "人工智能"],
+    "expectedReaderVisible": true
+  },
+  {
+    "id": "multimodal-model",
+    "platform": "web_search",
+    "authorName": "Model Lab",
+    "title": "全新多模态模型支持视频、语音与 OCR",
+    "bodyText": "模型发布后可同时理解图片、音频和视频。",
+    "expectedContentType": "model_release",
+    "requiredTopicTags": ["多模态"]
+  }
+]

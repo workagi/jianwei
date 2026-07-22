@@ -14,6 +14,8 @@ export interface ContentTypeFilter {
   label: string;
   description: string;
   keywords: RegExp[];
+  /** Explicit content cues outweigh generic words such as “发布” or “模型”. */
+  strongKeywords?: RegExp[];
 }
 
 interface TopicTagRule {
@@ -41,6 +43,7 @@ export const CONTENT_TYPE_FILTERS: ContentTypeFilter[] = [
     label: "产品动态",
     description: "产品发布、功能更新、客户端、平台能力和商业化入口",
     keywords: [/产品|发布|上线|更新|客户端|App|应用|插件|平台|功能|入口|订阅|会员|定价|生态/i],
+    strongKeywords: [/新增.{0,12}(?:功能|入口|能力)|功能更新|正式上线|客户端|插件|工作流入口/i],
   },
   {
     id: "model_release",
@@ -50,24 +53,31 @@ export const CONTENT_TYPE_FILTERS: ContentTypeFilter[] = [
       /模型|大模型|LLM|多模态模型|基座|推理模型|参数|MoE|上下文|benchmark|评测|能力/i,
       /GPT|Claude|Gemini|Grok|DeepSeek|Qwen|Kimi|豆包|混元|通义|千问|GLM|Llama|Mistral|MiniMax|Step|阶跃/i,
     ],
+    strongKeywords: [
+      /(?:发布|推出|开源|升级).{0,16}(?:模型|大模型|LLM)|(?:新一代|全新|新款|多模态|推理|MoE).{0,10}(?:模型|大模型)/i,
+      /(?:模型|大模型).{0,16}(?:发布|推出|开源|升级)/i,
+    ],
   },
   {
     id: "industry_business",
     label: "行业商业",
     description: "公司、融资、市场、组织和产业动态",
     keywords: [/行业|公司|融资|估值|收入|营收|IPO|上市|收购|裁员|招聘|市场|商业化|客户|合作/i],
+    strongKeywords: [/融资|估值|IPO|上市|收购|裁员|营收|收入增长|商业化/i],
   },
   {
     id: "research",
     label: "论文研究",
     description: "论文、研究、实验、数据集和学术进展",
     keywords: [/论文|研究|实验|数据集|paper|arxiv|研究员|学术|方法|训练数据|SOTA|基准/i],
+    strongKeywords: [/论文|paper|arxiv|数据集|研究方法|实验方法|学术研究|benchmark|基准测试/i],
   },
   {
     id: "tutorial",
     label: "实践教程",
     description: "教程、实践、提示词、开源项目和可复用方法",
     keywords: [/教程|实践|技巧|指南|Prompt|提示词|模板|开源|GitHub|复现|部署|脚本|案例|经验/i],
+    strongKeywords: [/教程|实战|实践指南|操作指南|如何.{0,16}(?:部署|配置|搭建|使用)|复现|部署步骤/i],
   },
   {
     id: "policy_safety",
@@ -78,12 +88,14 @@ export const CONTENT_TYPE_FILTERS: ContentTypeFilter[] = [
       /监管|政策|合规|对齐|隐私/i,
       /安全|风险|泄露|漏洞|滥用/i,
     ],
+    strongKeywords: [/安全评估|监管细则|政策要求|隐私.{0,8}合规|漏洞|数据泄露|版权诉讼/i],
   },
   {
     id: "opinion",
     label: "观点解读",
     description: "评论、判断、复盘、趋势分析和个人观点",
     keywords: [/观点|解读|复盘|评论|判断|趋势|观察|思考|为什么|意味着|启示|看法|深度/i],
+    strongKeywords: [/为什么|复盘|我的判断|我认为|意味着什么|趋势分析|观点|思考/i],
   },
 ];
 
@@ -160,7 +172,10 @@ function itemText(item: TaggableItem): string {
 export function deriveContentTypeId(item: TaggableItem): ContentTypeId {
   const haystack = itemText(item);
   const scored = CONTENT_TYPE_FILTERS.map((tag) => {
-    const score = tag.keywords.reduce((count, pattern) => count + (pattern.test(haystack) ? 1 : 0), 0);
+    const broadScore = tag.keywords.reduce((count, pattern) => count + (pattern.test(haystack) ? 1 : 0), 0);
+    const strongScore = (tag.strongKeywords ?? [])
+      .reduce((count, pattern) => count + (pattern.test(haystack) ? 2 : 0), 0);
+    const score = broadScore + strongScore;
     return { tag, score };
   })
     .filter((entry) => entry.score > 0)

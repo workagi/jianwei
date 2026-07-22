@@ -408,6 +408,15 @@ docker compose logs -f web
 curl http://localhost:3000/api/health
 ```
 
+Worker 和模型处理日志采用一行一个 JSON 事件，便于直接交给 Loki、Vector、Fluent Bit 或其他日志系统。核心事件包括：
+
+- `collection.started / succeeded / failed`：带 `runId`、`monitorId`、平台、Provider、耗时、抓取/入库数量和下一次执行时间。
+- `analysis.batch.completed / analysis.item.failed`：带摘要成功率、Token 用量、模型、错误码和限流状态。
+- `worker.poll.completed / worker.heartbeat.failed`：区分“Worker 还活着”和“某轮任务是否异常”。
+- `werss.authorization.*`：记录授权有效、续期、失效或守护失败，不输出 Access Key、Cookie 等凭据。
+
+日志器会自动遮蔽名称中含 `token`、`password`、`secret`、`api_key`、`cookie` 等字段；仍然不要把文章全文、二维码或真实凭据主动放入日志字段。
+
 ### 16.2 常见问题定位
 
 | 现象 | 优先检查 |
@@ -426,6 +435,7 @@ curl http://localhost:3000/api/health
 ```bash
 pnpm install
 pnpm dev
+pnpm content:evaluate
 pnpm lint
 pnpm test
 pnpm build
@@ -440,6 +450,16 @@ docker compose config
 4. `git diff --check` 无空白错误。
 5. `.env`、真实 Token、数据库和用户内容没有进入 Git。
 6. 涉及部署时，验证 `/api/health` 和实际容器状态。
+
+### 17.1 内容规则黄金评估集
+
+`tests/fixtures/content-rule-evaluation.json` 保存真实产品使用中出现过的代表性样本，包括无关百度热榜、宽泛 RSS 正文误命中、来源名污染标签、论文与模型发布混淆等问题。
+
+```bash
+pnpm content:evaluate
+```
+
+命令会分别输出内容类型、主题标签和信息流准入准确率；任何回归都会以非零状态退出并阻断 CI。修改分类、标签、榜单兴趣规则或 RSS 开关时，应同步增加或修正样本，不能通过删除失败样本来迁就规则。
 
 ## 18. 第三方依赖与升级风险
 

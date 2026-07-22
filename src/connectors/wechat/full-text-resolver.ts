@@ -1,3 +1,7 @@
+import { createStructuredLogger } from "@/lib/structured-log";
+
+const fullTextLog = createStructuredLogger({ service: "wechat-full-text" });
+
 export type WechatContentProvider = "werss" | "direct" | "wechat_download_api";
 export type WechatContentFetchStatus = "success" | "failed";
 
@@ -139,9 +143,11 @@ function noteHourlyCall(now: number): "ok" | "budget_exhausted" {
 function openCircuit(now: number, reason: string): void {
   const until = now + werssBrowserCircuitMinutes() * 60_000;
   guard.circuitOpenUntil = Math.max(guard.circuitOpenUntil, until);
-  console.warn(
-    `[wechat-fulltext] WeRSS browser circuit open until ${new Date(guard.circuitOpenUntil).toISOString()} (${reason})`,
-  );
+  fullTextLog.warn("werss.browser.circuit_opened", {
+    circuitOpenUntil: new Date(guard.circuitOpenUntil),
+    reason,
+    hourlyCallCount: guard.hourCallCount,
+  });
 }
 
 function sleep(ms: number): Promise<void> {

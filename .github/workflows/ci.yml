@@ -66,6 +66,9 @@ jobs:
       - name: Audit public-release safety
         run: pnpm audit:open-source -- --history
 
+      - name: Evaluate content rules
+        run: pnpm content:evaluate
+
       - name: Lint
         run: pnpm lint
 
