@@ -182,6 +182,37 @@ export const usageLedger = pgTable("usage_ledger", {
   index("usage_ledger_metric_time_idx").on(table.metric, table.occurredAt),
 ]);
 
+/**
+ * Shared request schedule used by every web/worker process. Reserving the next
+ * slot in PostgreSQL prevents horizontally scaled workers from each applying
+ * the provider RPM limit independently.
+ */
+export const rateLimitSlots = pgTable("rate_limit_slots", {
+  key: text("key").primaryKey(),
+  nextAllowedAt: timestamp("next_allowed_at", { withTimezone: true }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Pending billable provider calls. Active, unexpired rows count against the
+ * budget before the external request starts; success settles them into the
+ * usage ledger, while failed attempts release them. */
+export const usageReservations = pgTable("usage_reservations", {
+  idempotencyKey: text("idempotency_key").primaryKey(),
+  connectorId: uuid("connector_id").notNull().references(() => connectors.id),
+  monitorId: uuid("monitor_id").references(() => monitors.id, { onDelete: "cascade" }),
+  metric: text("metric").notNull(),
+  quantity: integer("quantity").notNull(),
+  estimatedCost: numeric("estimated_cost", { precision: 12, scale: 6 }).notNull().default("0"),
+  status: text("status").notNull().default("reserved"),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("usage_reservations_connector_status_idx").on(table.connectorId, table.status),
+  index("usage_reservations_metric_status_idx").on(table.metric, table.status),
+  index("usage_reservations_expiry_idx").on(table.expiresAt),
+]);
+
 export const runtimeHealth = pgTable("runtime_health", {
   service: text("service").primaryKey(),
   status: text("status").notNull().default("ok"),

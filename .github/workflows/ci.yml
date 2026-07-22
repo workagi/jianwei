@@ -38,6 +38,7 @@ jobs:
       ADMIN_USERNAME: admin
       ADMIN_PASSWORD: ci-placeholder-password
       ADMIN_API_TOKEN: ci-placeholder-api-token
+      RUN_DB_INTEGRATION_TESTS: "1"
 
     steps:
       - name: Check out repository

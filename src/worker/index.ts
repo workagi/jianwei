@@ -1,7 +1,7 @@
 import { db } from "@/db";
 import { monitors, collectionRuns, runtimeHealth, usageLedger } from "@/db/schema";
 import { loadApiCredentials } from "@/db/queries";
-import { and, eq, gte, isNull, lte, or, sql } from "drizzle-orm";
+import { and, eq, isNull, lte, or, sql } from "drizzle-orm";
 import { writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import {
@@ -21,11 +21,21 @@ import { collectFromProvider } from "@/sources/types";
 import { monitorStaggerKey, nextStaggeredRunAt } from "@/lib/monitor-schedule";
 import { backfillMissingSummaries } from "@/lib/summary-backfill";
 import { createWeRssConnector } from "@/connectors/factory";
+import {
+  releaseUsageReservation,
+  reserveUsageBudget,
+  settleUsageReservation,
+  type UsageBudgetReservation,
+} from "@/lib/usage-budget";
 
 // Cost per 1000 billable units. Brave's published rate is $3 / 1k queries; X has
 // no stable public rate, so it defaults to 0 and can be overridden.
 const BRAVE_COST_PER_1K = 3;
 const X_COST_PER_1K_UNITS = Number(process.env.X_COST_PER_1K_UNITS ?? "0") || 0;
+// One official-X collection resolves the user once and can read up to 100 posts.
+// Reserve the worst case so concurrent workers cannot push the monthly cap over
+// its configured ceiling; successful runs still record their actual units.
+const X_OFFICIAL_MAX_BILLABLE_UNITS = 101;
 const MONTHLY_BUDGET_USD = Number(process.env.X_BRAVE_MONTHLY_BUDGET_USD);
 const BUDGET_ENABLED = Number.isFinite(MONTHLY_BUDGET_USD) && MONTHLY_BUDGET_USD > 0;
 const MONITOR_DISABLE_AFTER_FAILURES = Number(process.env.WORKER_DISABLE_MONITOR_AFTER_FAILURES ?? "5") || 0;
@@ -61,42 +71,6 @@ export function usageIdempotencyKey(runKey: string, metric: string): string {
   return `${runKey}:usage:${metric}`;
 }
 
-/** Sum of estimated_cost (USD) for a connector since the 1st of the current month. */
-async function monthlySpendUsd(connectorId: string): Promise<number> {
-  const start = new Date();
-  start.setDate(1);
-  start.setHours(0, 0, 0, 0);
-  const [row] = await db
-    .select({ sum: sql<number>`coalesce(sum(${usageLedger.estimatedCost}), 0)` })
-    .from(usageLedger)
-    .where(and(eq(usageLedger.connectorId, connectorId), gte(usageLedger.occurredAt, start)));
-  return Number(row?.sum ?? 0);
-}
-
-/** Throw BUDGET_EXHAUSTED if the connector's monthly spend has hit the cap. */
-async function checkBudget(connectorId: string): Promise<void> {
-  if (!BUDGET_ENABLED) return;
-  const spent = await monthlySpendUsd(connectorId);
-  if (spent >= MONTHLY_BUDGET_USD) throw new Error("BUDGET_EXHAUSTED");
-}
-
-/**
- * SuperGrok X Search burns subscription quota (not the USD Brave/X budget).
- * Soft daily cap stops a misconfigured fleet of 60-minute monitors from
- * emptying the quota before noon. 0 / unset = disabled.
- */
-async function checkXGrokDailyBudget(): Promise<void> {
-  const max = Number(process.env.XAI_X_SEARCH_DAILY_BUDGET);
-  if (!Number.isFinite(max) || max <= 0) return;
-  const start = new Date();
-  start.setHours(0, 0, 0, 0);
-  const [row] = await db
-    .select({ sum: sql<number>`coalesce(sum(${usageLedger.quantity}), 0)` })
-    .from(usageLedger)
-    .where(and(eq(usageLedger.metric, "x_grok_searches"), gte(usageLedger.occurredAt, start)));
-  if (Number(row?.sum ?? 0) >= max) throw new Error("XAI_X_SEARCH_DAILY_BUDGET_EXHAUSTED");
-}
-
 async function recordUsage(
   database: WorkerDatabase,
   runKey: string,
@@ -114,6 +88,67 @@ async function recordUsage(
     quantity,
     estimatedCost: String(estimatedCostUsd),
   }).onConflictDoNothing({ target: usageLedger.idempotencyKey });
+}
+
+function budgetReservationForMonitor(
+  monitor: MonitorRow,
+  runKey: string,
+): UsageBudgetReservation | null {
+  if (monitor.platform === "x" && monitor.config.provider === "x_grok") {
+    const limit = Number(process.env.XAI_X_SEARCH_DAILY_BUDGET);
+    if (!Number.isFinite(limit) || limit <= 0) return null;
+    const metric = "x_grok_searches";
+    return {
+      idempotencyKey: usageIdempotencyKey(runKey, metric),
+      scopeKey: `daily:${metric}`,
+      connectorId: monitor.connectorId,
+      monitorId: monitor.id,
+      metric,
+      quantity: 1,
+      estimatedCostUsd: 0,
+      kind: "daily_quantity",
+      limit,
+      exhaustedError: "XAI_X_SEARCH_DAILY_BUDGET_EXHAUSTED",
+    };
+  }
+
+  if (!BUDGET_ENABLED) return null;
+  if (monitor.platform === "x") {
+    const estimatedCostUsd = (X_OFFICIAL_MAX_BILLABLE_UNITS / 1000) * X_COST_PER_1K_UNITS;
+    if (estimatedCostUsd <= 0) return null;
+    const metric = "x_billable_units";
+    return {
+      idempotencyKey: usageIdempotencyKey(runKey, metric),
+      scopeKey: `monthly-cost:${monitor.connectorId}`,
+      connectorId: monitor.connectorId,
+      monitorId: monitor.id,
+      metric,
+      quantity: X_OFFICIAL_MAX_BILLABLE_UNITS,
+      estimatedCostUsd,
+      kind: "monthly_cost",
+      limit: MONTHLY_BUDGET_USD,
+      exhaustedError: "BUDGET_EXHAUSTED",
+    };
+  }
+  if (monitor.platform === "web_search") {
+    const provider = ((monitor.config as WebSearchMonitorConfig).provider ?? "brave");
+    const estimatedCostUsd = provider === "brave" ? BRAVE_COST_PER_1K / 1000 : 0;
+    if (estimatedCostUsd <= 0) return null;
+    const metric = `${provider}_queries`;
+    return {
+      idempotencyKey: usageIdempotencyKey(runKey, metric),
+      scopeKey: `monthly-cost:${monitor.connectorId}`,
+      connectorId: monitor.connectorId,
+      monitorId: monitor.id,
+      metric,
+      quantity: 1,
+      estimatedCostUsd,
+      kind: "monthly_cost",
+      limit: MONTHLY_BUDGET_USD,
+      exhaustedError: "BUDGET_EXHAUSTED",
+    };
+  }
+  return null;
 }
 
 function summaryEstimatedCostUsd(inputTokens = 0, outputTokens = 0): number {
@@ -219,14 +254,17 @@ async function runMonitor(monitor: MonitorRow, shutdownSignal?: AbortSignal): Pr
     return;
   }
 
+  let budgetReservationKey: string | undefined;
   try {
-    // Billable platforms are gated by the monthly budget before any call.
-    if ((monitor.platform === "x" && monitor.config.provider !== "x_grok") || monitor.platform === "web_search") {
-      await checkBudget(monitor.connectorId);
-    }
-    // SuperGrok X Search has its own soft daily quota (subscription units).
-    if (monitor.platform === "x" && monitor.config.provider === "x_grok") {
-      await checkXGrokDailyBudget();
+    // Reserve provider budget before the external call. The database lock in
+    // reserveUsageBudget makes concurrent workers participate in one budget.
+    const budgetReservation = budgetReservationForMonitor(monitor, runKey);
+    if (budgetReservation) {
+      budgetReservationKey = budgetReservation.idempotencyKey;
+      const reservationStatus = await reserveUsageBudget(budgetReservation);
+      if (reservationStatus === "settled") {
+        throw new Error("USAGE_RESERVATION_ALREADY_SETTLED");
+      }
     }
 
     // 微信在「包含全文摘要」模式下会逐篇抓正文（by_article 约 15–30s/篇），
@@ -300,6 +338,7 @@ async function runMonitor(monitor: MonitorRow, shutdownSignal?: AbortSignal): Pr
           units,
           grokSubscription ? 0 : (units / 1000) * X_COST_PER_1K_UNITS,
         );
+        await settleUsageReservation(tx, budgetReservationKey);
       } else if (monitor.platform === "web_search") {
         const provider = ((monitor.config as WebSearchMonitorConfig).provider ?? "brave");
         await recordUsage(
@@ -311,6 +350,7 @@ async function runMonitor(monitor: MonitorRow, shutdownSignal?: AbortSignal): Pr
           billableUnits ?? 1,
           provider === "brave" ? BRAVE_COST_PER_1K / 1000 : 0,
         );
+        await settleUsageReservation(tx, budgetReservationKey);
       }
       if (committed.summary.attempted > 0) {
         await recordUsage(
@@ -364,6 +404,7 @@ async function runMonitor(monitor: MonitorRow, shutdownSignal?: AbortSignal): Pr
     const message = err instanceof Error ? err.message : String(err);
     if (shutdownSignal?.aborted) {
       await db.transaction(async (tx) => {
+        await releaseUsageReservation(tx, budgetReservationKey);
         await tx.update(monitors).set({ leaseOwner: null, leaseUntil: null }).where(and(
           eq(monitors.id, monitor.id),
           eq(monitors.leaseOwner, WORKER_ID),
@@ -379,12 +420,16 @@ async function runMonitor(monitor: MonitorRow, shutdownSignal?: AbortSignal): Pr
         ? shutdownSignal.reason
         : new Error("WORKER_SHUTDOWN");
     }
-    const failureCount = monitor.failureCount + 1;
-    if (isTransientMonitorFailure(message)) {
+    const budgetRetryAt = nextBudgetRetryAt(message);
+    const failureCount = budgetRetryAt ? monitor.failureCount : monitor.failureCount + 1;
+    if (budgetRetryAt) {
+      nextRunAt = budgetRetryAt;
+    } else if (isTransientMonitorFailure(message)) {
       nextRunAt = nextStaggeredRunAt({ intervalMinutes: 10, staggerKey });
     }
     const shouldDisable = shouldDisableMonitorAfterFailure(failureCount, MONITOR_DISABLE_AFTER_FAILURES, message);
     await db.transaction(async (tx) => {
+      await releaseUsageReservation(tx, budgetReservationKey);
       await tx
         .update(monitors)
         .set({
@@ -403,7 +448,7 @@ async function runMonitor(monitor: MonitorRow, shutdownSignal?: AbortSignal): Pr
           status: "failed",
           finishedAt: new Date(),
           errorCode:
-            message.startsWith("CONNECTOR") || message === "BUDGET_EXHAUSTED"
+            message.startsWith("CONNECTOR") || isBudgetExhaustion(message)
               ? message
               : "GATHER_FAILED",
           errorMessage: message,
@@ -426,6 +471,7 @@ export function shouldDisableMonitorAfterFailure(
 ): boolean {
   // Rate limits and upstream 5xx responses are recoverable service states, not
   // evidence that the user's monitor configuration is broken.
+  if (isBudgetExhaustion(message)) return false;
   if (isTransientMonitorFailure(message)) return false;
   if (/^WERSS_FEED_(?:STALE|NEVER_SYNCED)/.test(message)) return false;
   return threshold > 0 && failureCount >= threshold;
@@ -433,9 +479,29 @@ export function shouldDisableMonitorAfterFailure(
 
 export function isTransientMonitorFailure(message: string): boolean {
   return /^XAI_X_SEARCH_(?:429|5\d\d|TIMEOUT|NETWORK(?::[A-Z0-9_]+)?)$/.test(message)
-    || message === "XAI_X_SEARCH_DAILY_BUDGET_EXHAUSTED"
     || message === "GATHER_TIMEOUT:x"
     || message === "fetch failed";
+}
+
+export function isBudgetExhaustion(message: string): boolean {
+  return message === "BUDGET_EXHAUSTED"
+    || message === "XAI_X_SEARCH_DAILY_BUDGET_EXHAUSTED";
+}
+
+/**
+ * Budget exhaustion is a planned pause, not a connector failure. Resume shortly
+ * after the next local billing window starts instead of retrying every 10 minutes.
+ */
+export function nextBudgetRetryAt(message: string, now = new Date()): Date | null {
+  if (!isBudgetExhaustion(message)) return null;
+  const retryAt = new Date(now);
+  retryAt.setHours(0, 15, 0, 0);
+  if (message === "XAI_X_SEARCH_DAILY_BUDGET_EXHAUSTED") {
+    retryAt.setDate(retryAt.getDate() + 1);
+  } else {
+    retryAt.setMonth(retryAt.getMonth() + 1, 1);
+  }
+  return retryAt;
 }
 
 // API 凭据键名（与 .env / factory.ts / summarizer.ts 保持一致）。

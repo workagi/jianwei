@@ -7,10 +7,12 @@ import {
   isSummaryActiveFor,
   parseAnalysisResponse,
   summaryMaxConcurrency,
+  summaryRateLimitKey,
   summaryRequestIntervalMs,
   summaryRequestsPerMinute,
   summaryTimeoutSeconds,
 } from "@/lib/summarizer";
+import { resetDistributedRateLimitForTests } from "@/lib/distributed-rate-limit";
 import type { NormalizedItem } from "@/connectors/types";
 
 const ORIGINAL_FETCH = globalThis.fetch;
@@ -30,6 +32,7 @@ function item(): NormalizedItem {
 }
 
 afterEach(() => {
+  resetDistributedRateLimitForTests();
   globalThis.fetch = ORIGINAL_FETCH;
   vi.restoreAllMocks();
   for (const key of [
@@ -41,6 +44,8 @@ afterEach(() => {
     "SUMMARY_MAX_INPUT_CHARS",
     "SUMMARY_MAX_CONCURRENCY",
     "SUMMARY_REQUESTS_PER_MINUTE",
+    "SUMMARY_RATE_LIMIT_BACKEND",
+    "SUMMARY_RATE_LIMIT_KEY",
     "SUMMARY_REQUEST_INTERVAL_MS",
     "SUMMARY_TIMEOUT_SECONDS",
     "SUMMARY_INPUT_COST_PER_1M_USD",
@@ -54,6 +59,14 @@ afterEach(() => {
 });
 
 describe("summarizer providers", () => {
+  it("uses a stable shared rate-limit key and supports an explicit account scope", () => {
+    expect(summaryRateLimitKey({ name: "openai-compatible", model: "step-3.5-flash" }))
+      .toBe("summary:openai-compatible:step-3.5-flash");
+    process.env.SUMMARY_RATE_LIMIT_KEY = "summary-account:primary";
+    expect(summaryRateLimitKey({ name: "openai-compatible", model: "another-model" }))
+      .toBe("summary-account:primary");
+  });
+
   it("uses DeepSeek preset through OpenAI-compatible chat completions", async () => {
     process.env.SUMMARY_PROVIDER = "deepseek";
     process.env.SUMMARY_API_KEY = "ds-key";

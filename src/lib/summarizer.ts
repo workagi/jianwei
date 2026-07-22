@@ -21,6 +21,7 @@
 import type { NormalizedItem } from "@/connectors/types";
 import { normalizeContentType, normalizeTopicTags, type ContentTypeId } from "@/lib/item-tags";
 import { normalizeRelevanceScore, normalizeRetentionReason } from "@/lib/content-retention";
+import { waitForDistributedRateLimit } from "@/lib/distributed-rate-limit";
 
 export interface SummaryInput {
   platform: string;
@@ -187,20 +188,15 @@ export function summaryRequestIntervalMs(): number {
   return rpm > 0 ? Math.ceil(60_000 / rpm) : 0;
 }
 
-let nextSummaryRequestAt = 0;
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+export function summaryRateLimitKey(provider: Pick<SummaryProvider, "name" | "model">): string {
+  const configured = process.env.SUMMARY_RATE_LIMIT_KEY?.trim();
+  return configured || `summary:${provider.name}:${provider.model}`;
 }
 
-async function waitForSummaryRateLimit(): Promise<void> {
+async function waitForSummaryRateLimit(provider: SummaryProvider): Promise<void> {
   const intervalMs = summaryRequestIntervalMs();
   if (intervalMs <= 0) return;
-  const now = Date.now();
-  const requestAt = Math.max(now, nextSummaryRequestAt);
-  nextSummaryRequestAt = requestAt + intervalMs;
-  const waitMs = requestAt - now;
-  if (waitMs > 0) await sleep(waitMs);
+  await waitForDistributedRateLimit(summaryRateLimitKey(provider), intervalMs);
 }
 
 /** 按 SUMMARY_PROVIDER 解析 provider；未配置/未知均返回 null（禁用）。 */
@@ -773,13 +769,14 @@ export async function generateTitleTranslations(entries: TitleTranslationInput[]
   if (!entries.length) return translations;
   const provider = resolveProvider();
   if (!provider) return translations;
-  await waitForSummaryRateLimit();
 
-  const ctrl = new AbortController();
   // 批量历史标题比单篇摘要输出更长，使用独立的宽松预算；失败仍不会写入脏数据。
   const timeoutMs = Math.max(summaryTimeoutMs(), 60_000);
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
+    await waitForSummaryRateLimit(provider);
+    const ctrl = new AbortController();
+    timer = setTimeout(() => ctrl.abort(), timeoutMs);
     const generated = await provider.generate(
       { platform: "trendradar", text: "" },
       ctrl.signal,
@@ -810,7 +807,7 @@ export async function generateTitleTranslations(entries: TitleTranslationInput[]
     console.warn(`[summarizer:${provider.name}] 批量标题翻译失败，保留原题等待下次重试: ${message}`);
     return translations;
   } finally {
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -831,11 +828,12 @@ export async function generateSummaryAttempt(item: NormalizedItem): Promise<Summ
     return { status: "disabled" };
   }
   if (!provider) return { status: "disabled" };
-  await waitForSummaryRateLimit();
-  const ctrl = new AbortController();
   const timeoutMs = summaryTimeoutMs();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
+    await waitForSummaryRateLimit(provider);
+    const ctrl = new AbortController();
+    timer = setTimeout(() => ctrl.abort(), timeoutMs);
     const generated = await provider.generate(
       {
         platform: item.platform,
@@ -878,7 +876,7 @@ export async function generateSummaryAttempt(item: NormalizedItem): Promise<Summ
     else console.error(`[summarizer:${provider.name}] 生成失败：${classified.errorMessage}`);
     return { ...classified, provider: provider.name, model: provider.model };
   } finally {
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
   }
 }
 
