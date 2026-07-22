@@ -7,6 +7,7 @@
 ### Security
 
 - 将间接依赖中的 `postcss` 和 `esbuild` 固定到已修复版本，消除公开前的中等级别安全告警。
+- 后台鉴权改为 fail-closed：未配置登录密码时拒绝访问，API Token 不再兼任网页登录密码。
 
 ### Added
 
@@ -14,11 +15,16 @@
 - 贡献、安全、支持、行为准则和 GitHub 社区模板。
 - 可扫描当前文件与 Git 历史的脱敏开源审计。
 - GitHub Actions 自动执行审计、lint、测试、构建和 Compose 校验。
+- CI 使用真实 PostgreSQL 17 验证数据库迁移和种子数据。
 
 ### Changed
 
 - WeRSS 默认使用公开上游镜像，并允许通过环境变量覆盖。
 - 文档改为面向公开用户说明能力、边界和部署方式。
+- Worker 使用数据库租约原子领取任务并自动续期，重叠部署不再重复执行同一监控。
+- 采集超时会取消连接器的真实网络请求，worker 心跳独立于整轮任务持续刷新。
+- 修复跨平台相同 upstream ID 的误判，以及 canonical URL 并发冲突导致整批写入失败的问题。
+- 生产 Compose 为 WeRSS、公众号备用采集器和 TrendRadar sidecar 增加资源上限。
 
 ## [0.1.0]
 

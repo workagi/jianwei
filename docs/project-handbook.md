@@ -317,7 +317,7 @@ information-monitor/
 - 后台鉴权：`ADMIN_USERNAME`、`ADMIN_PASSWORD`、`ADMIN_API_TOKEN`。
 - 平台连接：X、搜索、WeRSS、TrendRadar、xAI。
 - 模型：Provider、Base URL、API Key、模型名、并发、RPM、输入上限和成本。
-- Worker：轮询、超时、失败阈值和心跳。
+- Worker：轮询、任务租约、超时、失败阈值和独立心跳。
 - 公众号全文：直连开关、备用采集器和补抓批次。
 
 完整字段、默认值和说明以两个 example 文件为准。

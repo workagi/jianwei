@@ -182,6 +182,25 @@ describe("worker gather() dispatch — Task 3 P1 + P2 (direct connectors)", () =
     expect(out.items[0].imageUrls).toEqual(["https://img/1.jpg"]);
     expect(out.cursor).toMatchObject({ mpId: "mpX", mpName: "账号X", mpBiz: "bizX" });
   });
+
+  it("propagates worker cancellation to the connector network request", async () => {
+    globalThis.fetch = ((_input: FetchInput, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal;
+      if (!signal) return reject(new Error("missing abort signal"));
+      if (signal.aborted) return reject(signal.reason);
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    })) as typeof fetch;
+    const controller = new AbortController();
+    const { gather } = await import("@/worker");
+    const pending = gather({
+      platform: "web_search",
+      config: { provider: "brave", query: "AI agent" },
+      cursor: {},
+    }, { signal: controller.signal });
+
+    controller.abort(new Error("TEST_CANCELLED"));
+    await expect(pending).rejects.toThrow("TEST_CANCELLED");
+  });
 });
 
 describe("worker monitor circuit breaker", () => {

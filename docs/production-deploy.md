@@ -86,6 +86,7 @@ https://你的域名/admin/connectors
 ```
 
 后台登录使用 `.env.production` 里的 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD`。
+`ADMIN_API_TOKEN` 只供脚本调用写接口，不能用于网页登录；三项凭据缺失时系统会拒绝访问，不会降级为无密码模式。
 `ADMIN_API_TOKEN` 只用于脚本或 CI 调用受保护的写接口。
 
 ## 5. WeRSS 授权方式

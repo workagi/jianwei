@@ -117,6 +117,7 @@ services:
       TRENDRADAR_MCP_URL: http://trendradar-mcp:3333/mcp
       X_BRAVE_MONTHLY_BUDGET_USD: ${X_BRAVE_MONTHLY_BUDGET_USD:-}
       WORKER_POLL_INTERVAL_SECONDS: ${WORKER_POLL_INTERVAL_SECONDS:-60}
+      WORKER_MONITOR_LEASE_SECONDS: ${WORKER_MONITOR_LEASE_SECONDS:-1800}
       WORKER_DISABLE_MONITOR_AFTER_FAILURES: ${WORKER_DISABLE_MONITOR_AFTER_FAILURES:-5}
       WORKER_HEARTBEAT_FILE: ${WORKER_HEARTBEAT_FILE:-/tmp/jianwei-worker-heartbeat}
       WORKER_HEALTHCHECK_STALE_SECONDS: ${WORKER_HEALTHCHECK_STALE_SECONDS:-600}
@@ -164,6 +165,11 @@ services:
       - WERSS_AUTH_WEB=True
     volumes:
       - werss-data:/app/data
+    mem_limit: ${WERSS_MEM_LIMIT:-2g}
+    cpus: ${WERSS_CPUS:-1.5}
+    pids_limit: ${WERSS_PIDS_LIMIT:-200}
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8001/ || exit 1"]
       interval: 15s
@@ -184,6 +190,11 @@ services:
       - "127.0.0.1:${WECHAT_FALLBACK_PORT:-5000}:5000"
     volumes:
       - wechat-fallback-data:/app/data
+    mem_limit: ${WECHAT_FALLBACK_MEM_LIMIT:-1g}
+    cpus: ${WECHAT_FALLBACK_CPUS:-1.0}
+    pids_limit: ${WECHAT_FALLBACK_PIDS_LIMIT:-150}
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:5000/api/health"]
       interval: 30s
@@ -207,6 +218,11 @@ services:
     volumes:
       - ./infra/trendradar/config:/app/config:ro
       - trendradar-output:/app/output
+    mem_limit: ${TRENDRADAR_MEM_LIMIT:-1g}
+    cpus: ${TRENDRADAR_CPUS:-1.0}
+    pids_limit: ${TRENDRADAR_PIDS_LIMIT:-150}
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
 
   trendradar-mcp:
@@ -217,6 +233,11 @@ services:
     volumes:
       - ./infra/trendradar/config:/app/config:ro
       - trendradar-output:/app/output
+    mem_limit: ${TRENDRADAR_MCP_MEM_LIMIT:-512m}
+    cpus: ${TRENDRADAR_MCP_CPUS:-0.75}
+    pids_limit: ${TRENDRADAR_MCP_PIDS_LIMIT:-100}
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
 
   trendradar-refresh:
@@ -234,6 +255,11 @@ services:
       - ./infra/trendradar/config:/app/config:ro
       - ./infra/trendradar/refresh-server.py:/app/refresh-server.py:ro
       - trendradar-output:/app/output
+    mem_limit: ${TRENDRADAR_REFRESH_MEM_LIMIT:-512m}
+    cpus: ${TRENDRADAR_REFRESH_CPUS:-0.75}
+    pids_limit: ${TRENDRADAR_REFRESH_PIDS_LIMIT:-100}
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
 
 volumes:

@@ -2,7 +2,7 @@ import type { NormalizedItem } from "@/connectors/types";
 import { canonicalizeUrl, contentFingerprint, dedupeKey } from "./deduplicate";
 import { db } from "@/db";
 import { items, itemMatches } from "@/db/schema";
-import { eq, sql, inArray } from "drizzle-orm";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { type SummaryRunStats } from "@/lib/summarizer";
 import { routeContentItems } from "@/lib/content-router";
 import { deriveItemClassification } from "@/lib/item-tags";
@@ -117,7 +117,9 @@ export interface IngestRepository {
     rows: IngestItemRow[],
   ): Promise<Array<{ id: string; platform: NormalizedItem["platform"]; upstreamId: string }>>;
   linkMatches(links: IngestMatchLink[]): Promise<number>;
-  findExistingUpstreamIds?(upstreamIds: string[]): Promise<Set<string>>;
+  findExistingSourceKeys?(
+    sources: Array<{ platform: NormalizedItem["platform"]; upstreamId: string }>,
+  ): Promise<Set<string>>;
   /** Return canonical URLs that already exist so model routing can skip them. */
   findExistingCanonicalUrls?(canonicalUrls: string[]): Promise<Set<string>>;
 }
@@ -143,8 +145,15 @@ function defaultSummaryStats(status: SummaryRunStats["status"]): SummaryRunStats
   };
 }
 
-async function findExistingUpstreamIds(repo: IngestRepository, upstreamIds: string[]): Promise<Set<string>> {
-  if (repo.findExistingUpstreamIds) return repo.findExistingUpstreamIds(upstreamIds);
+function sourceKey(platform: string, upstreamId: string): string {
+  return `${platform}|${upstreamId}`;
+}
+
+async function findExistingSourceKeys(
+  repo: IngestRepository,
+  sources: Array<{ platform: NormalizedItem["platform"]; upstreamId: string }>,
+): Promise<Set<string>> {
+  if (repo.findExistingSourceKeys) return repo.findExistingSourceKeys(sources);
   return new Set();
 }
 
@@ -171,15 +180,18 @@ export async function ingest(
   // Every new item receives a durable route status, including disabled,
   // skipped and failed outcomes, so later retries can target exact rows.
   let summary = defaultSummaryStats("not_applicable");
-  const upstreamIds = rows.map((r) => r.upstreamId).filter(Boolean) as string[];
+  const sources = rows.map((r) => ({
+    platform: r.platform as NormalizedItem["platform"],
+    upstreamId: r.upstreamId as string,
+  }));
   const canonicalUrls = rows.map((r) => r.canonicalUrl).filter(Boolean) as string[];
-  if (upstreamIds.length) {
+  if (sources.length) {
     const [existingUpstream, existingUrls] = await Promise.all([
-      findExistingUpstreamIds(repo, upstreamIds),
+      findExistingSourceKeys(repo, sources),
       findExistingCanonicalUrls(repo, canonicalUrls),
     ]);
     const newItems = input.items.filter((it) => {
-      if (existingUpstream.has(it.upstreamId)) return false;
+      if (existingUpstream.has(sourceKey(it.platform, it.upstreamId))) return false;
       try {
         const url = safeCanonicalUrl(it.canonicalUrl, it.platform, it.upstreamId);
         if (existingUrls.has(url)) return false;
@@ -292,6 +304,13 @@ const conflictUpdateSet = {
   updatedAt: new Date(),
 };
 
+function postgresErrorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  if ("code" in error && typeof error.code === "string") return error.code;
+  if ("cause" in error) return postgresErrorCode(error.cause);
+  return undefined;
+}
+
 /**
  * Drizzle-backed implementation of {@link IngestRepository}.
  * Items upsert on (platform, upstream_id). When the same canonical_url already
@@ -338,16 +357,9 @@ export function createDrizzleIngestRepository(database = db): IngestRepository {
       const toInsert: IngestItemRow[] = [];
       const merged: UpsertedItem[] = [];
 
-      for (const row of rows) {
-        const hit = existingByUrl.get(row.canonicalUrl);
-        if (!hit) {
-          toInsert.push(row);
-          continue;
-        }
+      const mergeIntoExisting = async (row: IngestItemRow, hit: ExistingRow) => {
         // Same article, possibly different upstream id: refresh plain content
         // fields only. Keep historical identity (id / upstream_id) for matches.
-        // Prefer simple column assignments — complex sql`` coalesces previously
-        // produced empty placeholders when optional fields were undefined.
         const patch: Partial<IngestItemRow> & { updatedAt: Date } = {
           authorId: row.authorId ?? null,
           authorName: row.authorName ?? null,
@@ -379,40 +391,80 @@ export function createDrizzleIngestRepository(database = db): IngestRepository {
 
         await database.update(items).set(patch).where(eq(items.id, hit.id));
         merged.push({ id: hit.id, platform: hit.platform, upstreamId: hit.upstreamId });
+      };
+
+      for (const row of rows) {
+        const hit = existingByUrl.get(row.canonicalUrl);
+        if (!hit) {
+          toInsert.push(row);
+          continue;
+        }
+        await mergeIntoExisting(row, hit);
       }
 
       if (toInsert.length === 0) return merged;
 
-      const inserted = await database
-        .insert(items)
-        .values(toInsert as (typeof items.$inferInsert)[])
-        .onConflictDoUpdate({
-          target: [items.platform, items.upstreamId],
-          set: conflictUpdateSet,
-        })
-        .returning({
-          id: items.id,
-          platform: items.platform,
-          upstreamId: items.upstreamId,
-        });
+      const inserted: UpsertedItem[] = [];
+      // Insert one row at a time so a concurrent canonical-url conflict cannot
+      // roll back an otherwise valid whole batch. On that race, reselect and
+      // merge into the row that won the unique constraint.
+      for (const row of toInsert) {
+        try {
+          const [saved] = await database
+            .insert(items)
+            .values(row as typeof items.$inferInsert)
+            .onConflictDoUpdate({
+              target: [items.platform, items.upstreamId],
+              set: conflictUpdateSet,
+            })
+            .returning({
+              id: items.id,
+              platform: items.platform,
+              upstreamId: items.upstreamId,
+            });
+          inserted.push({
+            id: saved.id,
+            platform: saved.platform as NormalizedItem["platform"],
+            upstreamId: saved.upstreamId,
+          });
+        } catch (error) {
+          if (postgresErrorCode(error) !== "23505") throw error;
+          const [winner] = await database
+            .select({
+              id: items.id,
+              platform: items.platform,
+              upstreamId: items.upstreamId,
+              publishedAt: items.publishedAt,
+              contentType: items.contentType,
+              topicTags: items.topicTags,
+            })
+            .from(items)
+            .where(eq(items.canonicalUrl, row.canonicalUrl))
+            .limit(1);
+          if (!winner) throw error;
+          await mergeIntoExisting(row, {
+            ...winner,
+            platform: winner.platform as NormalizedItem["platform"],
+          });
+        }
+      }
 
       return [
         ...merged,
-        ...inserted.map((row) => ({
-          id: row.id,
-          platform: row.platform as NormalizedItem["platform"],
-          upstreamId: row.upstreamId,
-        })),
+        ...inserted,
       ];
     },
 
-    async findExistingUpstreamIds(upstreamIds) {
-      if (upstreamIds.length === 0) return new Set();
+    async findExistingSourceKeys(sources) {
+      if (sources.length === 0) return new Set();
       const existing = await database
-        .select({ upstreamId: items.upstreamId })
+        .select({ platform: items.platform, upstreamId: items.upstreamId })
         .from(items)
-        .where(inArray(items.upstreamId, upstreamIds));
-      return new Set(existing.map((e) => e.upstreamId));
+        .where(or(...sources.map((source) => and(
+          eq(items.platform, source.platform),
+          eq(items.upstreamId, source.upstreamId),
+        ))));
+      return new Set(existing.map((e) => sourceKey(e.platform, e.upstreamId)));
     },
 
     async findExistingCanonicalUrls(canonicalUrls) {

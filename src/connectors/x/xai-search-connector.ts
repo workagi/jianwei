@@ -1,5 +1,6 @@
-import type { CollectionResult, Connector, NormalizedItem, XMonitorConfig, XQuotedPost } from "@/connectors/types";
+import type { CollectContext, CollectionResult, Connector, NormalizedItem, XMonitorConfig, XQuotedPost } from "@/connectors/types";
 import { encodeXQuotedPost, xMonitorSchema } from "@/connectors/types";
+import { abortableDelay, signalWithTimeout } from "@/lib/abort-signal";
 
 type TokenResolver = () => Promise<string>;
 type XaiPost = {
@@ -221,7 +222,12 @@ export class XaiSearchConnector implements Connector<"x"> {
     private readonly model = xaiSearchModel(),
   ) {}
 
-  private async search(config: XMonitorConfig, cursor: Record<string, unknown>, preview: boolean) {
+  private async search(
+    config: XMonitorConfig,
+    cursor: Record<string, unknown>,
+    preview: boolean,
+    signal?: AbortSignal,
+  ) {
     const token = await this.tokenResolver();
     const lookbackDays = xaiSearchLookbackDays();
     // Small overlap when resuming so posts near the previous boundary are not missed.
@@ -267,16 +273,17 @@ export class XaiSearchConnector implements Connector<"x"> {
           method: "POST",
           headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
           body,
-          signal: AbortSignal.timeout(XAI_SEARCH_TIMEOUT_MS),
+          signal: signalWithTimeout(signal, XAI_SEARCH_TIMEOUT_MS),
         });
         lastFetchError = undefined;
         const transient = response.status === 429 || response.status >= 500;
         if (response.ok || !transient || attempt === attempts - 1) break;
       } catch (error) {
+        if (signal?.aborted) throw signal.reason;
         lastFetchError = transientFetchError(error);
         if (attempt === attempts - 1 || lastFetchError.message === "XAI_X_SEARCH_TIMEOUT") break;
       }
-      await new Promise((resolve) => setTimeout(resolve, 700 * (attempt + 1)));
+      await abortableDelay(700 * (attempt + 1), signal);
     }
     if (lastFetchError) throw lastFetchError;
     if (!response) throw new Error("XAI_X_SEARCH_NO_RESPONSE");
@@ -328,9 +335,9 @@ export class XaiSearchConnector implements Connector<"x"> {
     return { displayName: result.profileName || `@${parsed.username}`, avatarUrl: result.items[0]?.avatarUrl, items: result.items, warning: result.warning };
   }
 
-  async collect(config: XMonitorConfig, cursor: Record<string, unknown>): Promise<CollectionResult> {
+  async collect(config: XMonitorConfig, cursor: Record<string, unknown>, context?: CollectContext): Promise<CollectionResult> {
     const parsed = xMonitorSchema.parse(config);
-    const result = await this.search(parsed, cursor, false);
+    const result = await this.search(parsed, cursor, false, context?.signal);
     return {
       items: result.items,
       cursor: { lastCollectedAt: new Date().toISOString(), ...(result.profileName ? { profileName: result.profileName } : {}) },

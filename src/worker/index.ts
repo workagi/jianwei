@@ -1,12 +1,14 @@
 import { db } from "@/db";
 import { monitors, collectionRuns, runtimeHealth, usageLedger } from "@/db/schema";
 import { loadApiCredentials } from "@/db/queries";
-import { and, eq, lte, gte, sql } from "drizzle-orm";
+import { and, eq, gte, isNull, lte, or, sql } from "drizzle-orm";
 import { writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { ingest, createDrizzleIngestRepository } from "@/ingestion/ingest-items";
 import type {
   NormalizedItem,
   PlatformType,
+  CollectContext,
   WebSearchMonitorConfig,
 } from "@/connectors/types";
 import { isWechatKeywordRuleConfig } from "@/connectors/types";
@@ -24,6 +26,7 @@ const MONTHLY_BUDGET_USD = Number(process.env.X_BRAVE_MONTHLY_BUDGET_USD);
 const BUDGET_ENABLED = Number.isFinite(MONTHLY_BUDGET_USD) && MONTHLY_BUDGET_USD > 0;
 const MONITOR_DISABLE_AFTER_FAILURES = Number(process.env.WORKER_DISABLE_MONITOR_AFTER_FAILURES ?? "5") || 0;
 const WORKER_HEARTBEAT_FILE = process.env.WORKER_HEARTBEAT_FILE ?? "/tmp/jianwei-worker-heartbeat";
+const WORKER_ID = process.env.WORKER_ID?.trim() || `${process.pid}-${randomUUID()}`;
 
 interface GatherInput {
   platform: PlatformType;
@@ -38,9 +41,9 @@ export interface GatherOutput {
 }
 
 /** Collect one monitor through the unified source-provider registry. */
-export async function gather(input: GatherInput): Promise<GatherOutput> {
+export async function gather(input: GatherInput, context?: CollectContext): Promise<GatherOutput> {
   const provider = createWorkerSourceProvider(input.platform, input.config);
-  return collectFromProvider(provider, input.config, input.cursor);
+  return collectFromProvider(provider, input.config, input.cursor, context);
 }
 
 type MonitorRow = typeof monitors.$inferSelect;
@@ -131,7 +134,7 @@ function resolvedWechatConfigPatch(cursor: Record<string, unknown>): Record<stri
   };
 }
 
-async function runMonitor(monitor: MonitorRow): Promise<void> {
+async function runMonitor(monitor: MonitorRow, shutdownSignal?: AbortSignal): Promise<void> {
   const [run] = await db
     .insert(collectionRuns)
     .values({ monitorId: monitor.id, status: "running" })
@@ -166,13 +169,14 @@ async function runMonitor(monitor: MonitorRow): Promise<void> {
         ? X_GATHER_TIMEOUT_MS
         : GATHER_TIMEOUT_MS;
     const { items, cursor, billableUnits } = await withTimeout(
-      gather({
+      (signal) => gather({
         platform: monitor.platform,
         config: monitor.config,
         cursor: monitor.cursor,
-      }),
+      }, { signal, runId, deadline: new Date(Date.now() + gatherTimeout) }),
       gatherTimeout,
       monitor.platform,
+      shutdownSignal,
     );
     const result = await ingest(createDrizzleIngestRepository(), {
       items,
@@ -228,6 +232,8 @@ async function runMonitor(monitor: MonitorRow): Promise<void> {
       failureCount: 0,
       lastError: null,
       cursor,
+      leaseOwner: null,
+      leaseUntil: null,
     };
     if (monitor.platform === "wechat" && !isWechatKeywordRuleConfig(monitor.config)) {
       const patch = resolvedWechatConfigPatch(cursor);
@@ -250,7 +256,7 @@ async function runMonitor(monitor: MonitorRow): Promise<void> {
     await db
       .update(monitors)
       .set(monitorUpdate)
-      .where(eq(monitors.id, monitor.id));
+      .where(and(eq(monitors.id, monitor.id), eq(monitors.leaseOwner, WORKER_ID)));
 
     await db
       .update(collectionRuns)
@@ -277,6 +283,23 @@ async function runMonitor(monitor: MonitorRow): Promise<void> {
     console.log(`[worker] ${monitor.id}: +${result.itemsUpserted} items / ${result.matchesInserted} matches${summaryNote}`);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    if (shutdownSignal?.aborted) {
+      await Promise.all([
+        db.update(monitors).set({ leaseOwner: null, leaseUntil: null }).where(and(
+          eq(monitors.id, monitor.id),
+          eq(monitors.leaseOwner, WORKER_ID),
+        )),
+        db.update(collectionRuns).set({
+          status: "failed",
+          finishedAt: new Date(),
+          errorCode: "RUN_INTERRUPTED",
+          errorMessage: "Worker stopped before this run finished.",
+        }).where(eq(collectionRuns.id, runId)),
+      ]);
+      throw shutdownSignal.reason instanceof Error
+        ? shutdownSignal.reason
+        : new Error("WORKER_SHUTDOWN");
+    }
     const failureCount = monitor.failureCount + 1;
     if (isTransientMonitorFailure(message)) {
       nextRunAt = nextStaggeredRunAt({ intervalMinutes: 10, staggerKey });
@@ -288,9 +311,11 @@ async function runMonitor(monitor: MonitorRow): Promise<void> {
         failureCount,
         lastError: message,
         nextRunAt,
+        leaseOwner: null,
+        leaseUntil: null,
         ...(shouldDisable ? { enabled: false } : {}),
       })
-      .where(eq(monitors.id, monitor.id));
+      .where(and(eq(monitors.id, monitor.id), eq(monitors.leaseOwner, WORKER_ID)));
 
     await db
       .update(collectionRuns)
@@ -475,7 +500,24 @@ async function maybeEnsureWeRssCollectionTask(now = Date.now()): Promise<void> {
   }
 }
 
-export async function runOnce(): Promise<number> {
+async function claimMonitor(monitor: MonitorRow, now = new Date()): Promise<boolean> {
+  const [claimed] = await db
+    .update(monitors)
+    .set({
+      leaseOwner: WORKER_ID,
+      leaseUntil: new Date(now.getTime() + MONITOR_LEASE_MS),
+    })
+    .where(and(
+      eq(monitors.id, monitor.id),
+      eq(monitors.enabled, true),
+      lte(monitors.nextRunAt, now),
+      or(isNull(monitors.leaseUntil), lte(monitors.leaseUntil, now)),
+    ))
+    .returning({ id: monitors.id });
+  return Boolean(claimed);
+}
+
+export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
   // 每轮开始前刷新凭据，确保界面保存的密钥立即生效。
   await refreshCredentials();
   await maybeGuardWeRssAuthorization();
@@ -488,11 +530,42 @@ export async function runOnce(): Promise<number> {
   const due = await db
     .select()
     .from(monitors)
-    .where(and(eq(monitors.enabled, true), lte(monitors.nextRunAt, new Date())));
+    .where(and(
+      eq(monitors.enabled, true),
+      lte(monitors.nextRunAt, new Date()),
+      or(isNull(monitors.leaseUntil), lte(monitors.leaseUntil, new Date())),
+    ));
 
-  for (const monitor of due) await runMonitor(monitor);
-  await maybeRetryFailedContentAnalysis();
-  return due.length;
+  let claimedCount = 0;
+  for (const monitor of due) {
+    if (shutdownSignal?.aborted) break;
+    if (!(await claimMonitor(monitor))) continue;
+    claimedCount += 1;
+    let leaseRenewalRunning = false;
+    const leaseRenewalTimer = setInterval(() => {
+      if (leaseRenewalRunning) return;
+      leaseRenewalRunning = true;
+      db.update(monitors).set({
+        leaseUntil: new Date(Date.now() + MONITOR_LEASE_MS),
+      }).where(and(
+        eq(monitors.id, monitor.id),
+        eq(monitors.leaseOwner, WORKER_ID),
+      )).catch((error) => console.warn(`[worker] ${monitor.id} 租约续期失败:`, error))
+        .finally(() => { leaseRenewalRunning = false; });
+    }, Math.min(60_000, Math.max(5_000, Math.floor(MONITOR_LEASE_MS / 3))));
+    try {
+      await runMonitor(monitor, shutdownSignal);
+    } finally {
+      clearInterval(leaseRenewalTimer);
+      // Also releases a lease if creating the collection_run itself failed.
+      await db.update(monitors).set({ leaseOwner: null, leaseUntil: null }).where(and(
+        eq(monitors.id, monitor.id),
+        eq(monitors.leaseOwner, WORKER_ID),
+      ));
+    }
+  }
+  if (!shutdownSignal?.aborted) await maybeRetryFailedContentAnalysis();
+  return claimedCount;
 }
 
 export async function markWorkerHeartbeat(now = new Date()): Promise<void> {
@@ -502,10 +575,10 @@ export async function markWorkerHeartbeat(now = new Date()): Promise<void> {
       service: "worker",
       status: "ok",
       lastHeartbeatAt: now,
-      detail: { pid: process.pid },
+      detail: { pid: process.pid, workerId: WORKER_ID },
     }).onConflictDoUpdate({
       target: runtimeHealth.service,
-      set: { status: "ok", lastHeartbeatAt: now, detail: { pid: process.pid } },
+      set: { status: "ok", lastHeartbeatAt: now, detail: { pid: process.pid, workerId: WORKER_ID } },
     }),
   ]);
 }
@@ -513,7 +586,7 @@ export async function markWorkerHeartbeat(now = new Date()): Promise<void> {
 // Poll interval: clamp to a sane minimum so a misconfigured 0 / negative
 // value can't turn the loop into a busy-wait.
 const rawPoll = Number(process.env.WORKER_POLL_INTERVAL_SECONDS);
-const POLL_INTERVAL_MS = (Number.isFinite(rawPoll) && rawPoll > 0 ? rawPoll : 60) * 1000;
+const POLL_INTERVAL_MS = Math.max(5, Number.isFinite(rawPoll) && rawPoll > 0 ? rawPoll : 60) * 1000;
 
 // Per-gather hard timeout. A single connector that hangs (slow X API, wedged
 // WeRSS/TrendRadar MCP) must not block the whole poll cycle and starve the
@@ -525,6 +598,10 @@ const X_GATHER_TIMEOUT_MS = (Number(process.env.WORKER_X_GATHER_TIMEOUT_SECONDS)
 // 微信公众号在「包含全文摘要」模式下会逐篇抓取文章正文（by_article 约 15–30s/篇），
 // 需要比通用采集更长的超时预算，否则会被通用 60s 一刀切中断。
 const WECHAT_GATHER_TIMEOUT_MS = (Number(process.env.WORKER_WECHAT_GATHER_TIMEOUT_SECONDS) || 180) * 1000;
+const MONITOR_LEASE_MS = Math.max(
+  5 * 60_000,
+  (Number(process.env.WORKER_MONITOR_LEASE_SECONDS) || 30 * 60) * 1000,
+);
 const CONTENT_RETRY_INTERVAL_MS = (Number(process.env.CONTENT_RETRY_INTERVAL_MINUTES) || 15) * 60_000;
 const CONTENT_RETRY_BATCH_SIZE = Math.max(1, Number(process.env.CONTENT_RETRY_BATCH_SIZE) || 5);
 const CONTENT_RETRY_MAX_ATTEMPTS = Math.max(1, Number(process.env.CONTENT_RETRY_MAX_ATTEMPTS) || 5);
@@ -568,20 +645,27 @@ export async function cleanupStaleRunningRuns(): Promise<number> {
   return rows.length;
 }
 
-function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error(`GATHER_TIMEOUT:${label}`)), ms);
-    p.then(
-      (v) => {
-        clearTimeout(t);
-        resolve(v);
-      },
-      (e) => {
-        clearTimeout(t);
-        reject(e);
-      },
-    );
-  });
+async function withTimeout<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  ms: number,
+  label: string,
+  parentSignal?: AbortSignal,
+): Promise<T> {
+  const controller = new AbortController();
+  const timeoutError = new Error(`GATHER_TIMEOUT:${label}`);
+  const timer = setTimeout(() => controller.abort(timeoutError), ms);
+  const signal = parentSignal
+    ? AbortSignal.any([controller.signal, parentSignal])
+    : controller.signal;
+  try {
+    return await operation(signal);
+  } catch (error) {
+    if (controller.signal.aborted) throw timeoutError;
+    if (parentSignal?.aborted) throw parentSignal.reason;
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function sleep(ms: number): Promise<void> {
@@ -590,14 +674,26 @@ async function sleep(ms: number): Promise<void> {
 
 async function main(): Promise<void> {
   let stopped = false;
+  const shutdownController = new AbortController();
   const stop = () => {
     stopped = true;
+    if (!shutdownController.signal.aborted) {
+      shutdownController.abort(new Error("WORKER_SHUTDOWN"));
+    }
   };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
 
   console.log(`[worker] 启动采集循环，间隔 ${POLL_INTERVAL_MS / 1000}s`);
   await markWorkerHeartbeat();
+  let heartbeatRunning = false;
+  const heartbeatTimer = setInterval(() => {
+    if (heartbeatRunning) return;
+    heartbeatRunning = true;
+    markWorkerHeartbeat()
+      .catch((error) => console.warn("[worker] 心跳更新失败:", error))
+      .finally(() => { heartbeatRunning = false; });
+  }, 15_000);
   try {
     const cleaned = await cleanupStaleRunningRuns();
     if (cleaned) console.warn(`[worker] 已清理 ${cleaned} 条中断的运行记录`);
@@ -606,7 +702,7 @@ async function main(): Promise<void> {
   }
   while (!stopped) {
     try {
-      const count = await runOnce();
+      const count = await runOnce(shutdownController.signal);
       await markWorkerHeartbeat();
       console.log(`[worker] 处理 ${count} 个到期监控任务`);
     } catch (err) {
@@ -616,6 +712,7 @@ async function main(): Promise<void> {
     const deadline = Date.now() + POLL_INTERVAL_MS;
     while (Date.now() < deadline && !stopped) await sleep(1000);
   }
+  clearInterval(heartbeatTimer);
   console.log("[worker] 已停止");
 }
 

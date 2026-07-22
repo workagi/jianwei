@@ -1,9 +1,10 @@
-import type { CollectionResult, Connector, NormalizedItem, WebSearchMonitorConfig } from "@/connectors/types";
+import type { CollectContext, CollectionResult, Connector, NormalizedItem, WebSearchMonitorConfig } from "@/connectors/types";
 import { webSearchMonitorSchema } from "@/connectors/types";
 import { canonicalizeUrl } from "@/ingestion/deduplicate";
 import { filterSearchItems } from "./result-filter";
 import { buildSearchQuery } from "./query-builder";
 import { cleanSourceName, sourceNameFromUrl } from "./source-name";
+import { signalWithTimeout } from "@/lib/abort-signal";
 
 interface BraveResult {
   title: string;
@@ -29,7 +30,7 @@ function bravePublishedAt(row: BraveResult): Date {
 export class BraveConnector implements Connector<"web_search"> {
   constructor(private readonly apiKey: string, private readonly fetcher: typeof fetch = fetch) {}
 
-  private async search(config: WebSearchMonitorConfig, count = 10): Promise<NormalizedItem[]> {
+  private async search(config: WebSearchMonitorConfig, count = 10, signal?: AbortSignal): Promise<NormalizedItem[]> {
     const parsed = webSearchMonitorSchema.parse(config);
     if (!this.apiKey) throw new Error("BRAVE_SEARCH_API_KEY 未配置");
     const endpoint = parsed.resultType === "news"
@@ -44,7 +45,7 @@ export class BraveConnector implements Connector<"web_search"> {
 
     const response = await this.fetcher(url, {
       headers: { Accept: "application/json", "X-Subscription-Token": this.apiKey },
-      signal: AbortSignal.timeout(10_000),
+      signal: signalWithTimeout(signal, 10_000),
     });
     if (!response.ok) throw new Error(`BRAVE_${response.status}`);
     const data = await response.json() as BraveResponse | BraveNewsResponse;
@@ -73,8 +74,8 @@ export class BraveConnector implements Connector<"web_search"> {
     return { displayName: webSearchMonitorSchema.parse(config).query, items };
   }
 
-  async collect(config: WebSearchMonitorConfig): Promise<CollectionResult> {
-    const items = await this.search(config, 20);
+  async collect(config: WebSearchMonitorConfig, _cursor: Record<string, unknown>, context?: CollectContext): Promise<CollectionResult> {
+    const items = await this.search(config, 20, context?.signal);
     return { items, cursor: { collectedAt: new Date().toISOString() }, billableUnits: 1 };
   }
 

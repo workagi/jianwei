@@ -70,7 +70,7 @@ export class TrendRadarMcpClient {
     private readonly fetcher: typeof fetch = fetch,
   ) {}
 
-  private async ensureInitialized(): Promise<void> {
+  private async ensureInitialized(signal?: AbortSignal): Promise<void> {
     if (this.initialized) return;
 
     const initResponse = await this.fetcher(this.baseUrl, {
@@ -89,6 +89,7 @@ export class TrendRadarMcpClient {
           clientInfo: { name: "jianwei", version: "0.1.0" },
         } satisfies McpInitializeParams,
       }),
+      signal,
     });
     if (!initResponse.ok) throw new Error(`MCP_INIT_FAILED_${initResponse.status}`);
 
@@ -108,14 +109,19 @@ export class TrendRadarMcpClient {
         jsonrpc: "2.0",
         method: "notifications/initialized",
       }),
+      signal,
     });
 
     this.initialized = true;
   }
 
   /** Call an MCP tool and return the parsed JSON payload from its text content. */
-  async callTool<T = unknown>(name: string, args: Record<string, unknown> = {}): Promise<T> {
-    await this.ensureInitialized();
+  async callTool<T = unknown>(
+    name: string,
+    args: Record<string, unknown> = {},
+    signal?: AbortSignal,
+  ): Promise<T> {
+    await this.ensureInitialized(signal);
 
     const response = await this.fetcher(this.baseUrl, {
       method: "POST",
@@ -130,6 +136,7 @@ export class TrendRadarMcpClient {
         method: "tools/call",
         params: { name, arguments: args },
       }),
+      signal,
     });
     if (!response.ok) throw new Error(`MCP_TOOL_FAILED_${response.status}`);
 

@@ -8,8 +8,8 @@ import { loadApiCredentials, saveApiCredentials } from "@/db/queries";
  * 人与程序使用不同凭据：
  * - 管理员通过 ADMIN_USERNAME + ADMIN_PASSWORD 登录，浏览器只保存派生后的 httpOnly 会话。
  * - 脚本 / CI 仍可使用 ADMIN_API_TOKEN 作为 Bearer token，不在登录界面暴露。
- * - 老部署尚未设置 ADMIN_PASSWORD 时，暂时允许把原 ADMIN_API_TOKEN 当作登录密码，
- *   便于平滑升级；start.sh 会为新部署补齐独立密码。
+ * - 登录密码、会话密钥和程序 API token 各司其职，不能相互回退。
+ * - 未配置凭据时一律拒绝访问，避免部署配置错误导致后台裸奔。
  */
 
 export const ADMIN_COOKIE = "sd_admin_session";
@@ -31,18 +31,18 @@ export function getAdminUsername(): string {
   return configuredValue(process.env.ADMIN_USERNAME) ?? "admin";
 }
 
-/** 浏览器登录密码；兼容旧部署把 API token 临时作为密码。 */
+/** 浏览器登录密码。API token 不能兼任网页登录密码。 */
 export function getAdminPassword(): string | undefined {
-  return configuredValue(process.env.ADMIN_PASSWORD) ?? getAdminToken();
+  return configuredValue(process.env.ADMIN_PASSWORD);
 }
 
 /** 会话签名密钥。单独配置后，改登录密码不会强制所有设备退出。 */
 export function getAdminSessionSecret(): string | undefined {
-  return configuredValue(process.env.ADMIN_SESSION_SECRET) ?? getAdminPassword() ?? getAdminToken();
+  return configuredValue(process.env.ADMIN_SESSION_SECRET) ?? getAdminPassword();
 }
 
 export function isAdminAuthConfigured(): boolean {
-  return Boolean(getAdminPassword() || getAdminToken());
+  return Boolean(getAdminPassword());
 }
 
 function secretsEqual(actual: string, expected: string): boolean {
@@ -133,12 +133,10 @@ function hasValidBearer(req: Request): boolean {
 
 /**
  * 保护写操作。后台页面使用同源 httpOnly 会话；自动化脚本使用 Bearer token。
- * 完全未配置密码和 token 时维持本机开发的放行模式。
+ * 未配置凭据也必须拒绝；本地开发由 start.sh / .env 显式生成凭据。
  */
 export async function requireWriteAuth(req: Request): Promise<NextResponse | null> {
   if (hasValidBearer(req)) return null;
-  const overrides = await adminAuthOverrides();
-  if (!overrides.passwordHash && !isAdminAuthConfigured()) return null;
   if (await hasValidSession(req)) return null;
 
   return NextResponse.json(
@@ -150,10 +148,9 @@ export async function requireWriteAuth(req: Request): Promise<NextResponse | nul
   );
 }
 
-/** 校验管理页会话；完全未配置鉴权时仅用于本机开发并直接放行。 */
+/** 校验管理页会话；未配置鉴权时拒绝访问。 */
 export async function pageCookieOk(session: string | undefined): Promise<boolean> {
   const overrides = await adminAuthOverrides();
-  if (!overrides.passwordHash && !isAdminAuthConfigured()) return true;
   const sessionSecret = overrides.sessionSecret ?? getAdminSessionSecret() ?? overrides.passwordHash;
   if (!sessionSecret || !session) return false;
   return secretsEqual(session, adminSessionCookieValue(sessionSecret));

@@ -55,12 +55,15 @@ export const monitors = pgTable("monitors", {
   cursor: jsonb("cursor").$type<Record<string, unknown>>().notNull().default({}),
   lastSuccessAt: timestamp("last_success_at", { withTimezone: true }),
   nextRunAt: timestamp("next_run_at", { withTimezone: true }).notNull().defaultNow(),
+  leaseOwner: text("lease_owner"),
+  leaseUntil: timestamp("lease_until", { withTimezone: true }),
   failureCount: integer("failure_count").notNull().default(0),
   lastError: text("last_error"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   index("monitors_due_idx").on(table.enabled, table.nextRunAt),
+  index("monitors_lease_idx").on(table.leaseUntil),
   index("monitors_platform_idx").on(table.platform),
 ]);
 
@@ -124,7 +127,10 @@ export const itemMatches = pgTable("item_matches", {
   matchedQuery: text("matched_query"),
   rawPayload: jsonb("raw_payload").$type<Record<string, unknown>>().notNull().default({}),
   firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
-}, (table) => [primaryKey({ columns: [table.itemId, table.monitorId] })]);
+}, (table) => [
+  primaryKey({ columns: [table.itemId, table.monitorId] }),
+  index("item_matches_monitor_seen_idx").on(table.monitorId, table.firstSeenAt),
+]);
 
 // 见微 is currently a single-user workspace. A dedicated join table
 // keeps bookmark state durable across browsers and leaves room for a user_id
@@ -152,7 +158,10 @@ export const collectionRuns = pgTable("collection_runs", {
   summaryFailedCount: integer("summary_failed_count").notNull().default(0),
   summaryErrorCode: text("summary_error_code"),
   summaryErrorMessage: text("summary_error_message"),
-});
+}, (table) => [
+  index("collection_runs_monitor_started_idx").on(table.monitorId, table.startedAt),
+  index("collection_runs_status_started_idx").on(table.status, table.startedAt),
+]);
 
 export const usageLedger = pgTable("usage_ledger", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -162,7 +171,10 @@ export const usageLedger = pgTable("usage_ledger", {
   quantity: integer("quantity").notNull(),
   estimatedCost: numeric("estimated_cost", { precision: 12, scale: 6 }).notNull().default("0"),
   occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, (table) => [
+  index("usage_ledger_connector_time_idx").on(table.connectorId, table.occurredAt),
+  index("usage_ledger_metric_time_idx").on(table.metric, table.occurredAt),
+]);
 
 export const runtimeHealth = pgTable("runtime_health", {
   service: text("service").primaryKey(),

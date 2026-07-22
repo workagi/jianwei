@@ -150,8 +150,19 @@ export interface CollectionResult {
   billableUnits?: number;
 }
 
+export interface CollectContext {
+  /** Cancels every network request that belongs to one worker run. */
+  signal?: AbortSignal;
+  runId?: string;
+  deadline?: Date;
+}
+
 export interface Connector<K extends keyof MonitorConfigMap> {
   validate(config: MonitorConfigMap[K]): Promise<ConnectorPreview>;
-  collect(config: MonitorConfigMap[K], cursor: Record<string, unknown>): Promise<CollectionResult>;
+  collect(
+    config: MonitorConfigMap[K],
+    cursor: Record<string, unknown>,
+    context?: CollectContext,
+  ): Promise<CollectionResult>;
   health(): Promise<{ ok: boolean; message?: string }>;
 }

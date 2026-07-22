@@ -1,5 +1,6 @@
 import type {
   CollectionResult,
+  CollectContext,
   ConnectorPreview,
   NormalizedItem,
   PlatformType,
@@ -23,7 +24,11 @@ export interface SourceProviderDescriptor {
  */
 export interface SourceProvider {
   descriptor: SourceProviderDescriptor;
-  collect(config: Record<string, unknown>, cursor: Record<string, unknown>): Promise<CollectionResult>;
+  collect(
+    config: Record<string, unknown>,
+    cursor: Record<string, unknown>,
+    context?: CollectContext,
+  ): Promise<CollectionResult>;
   validate?(config: Record<string, unknown>): Promise<ConnectorPreview>;
 }
 
@@ -41,8 +46,9 @@ export async function collectFromProvider(
   provider: SourceProvider,
   config: Record<string, unknown>,
   cursor: Record<string, unknown>,
+  context?: CollectContext,
 ): Promise<CollectionResult> {
-  const result = await provider.collect(config, cursor);
+  const result = await provider.collect(config, cursor, context);
   return {
     ...result,
     items: stampItemsWithProvider(provider.descriptor.id, result.items),

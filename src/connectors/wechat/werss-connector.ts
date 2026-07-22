@@ -1,4 +1,5 @@
 import type {
+  CollectContext,
   CollectionResult,
   Connector,
   ConnectorPreview,
@@ -8,6 +9,7 @@ import type {
 import { wechatAccountMonitorSchema } from "@/connectors/types";
 import { resolveWechatFullText, type WechatFullTextResult } from "@/connectors/wechat/full-text-resolver";
 import { wechatStableUpstreamId } from "@/ingestion/deduplicate";
+import { signalWithTimeout } from "@/lib/abort-signal";
 
 /**
  * Real WeRSS (rachelos/we-mp-rss) API contract, verified against main branch:
@@ -160,20 +162,20 @@ export class WeRssConnector implements Connector<"wechat"> {
     return envelope;
   }
 
-  private async fetchFeedDetail(mpId: string): Promise<WeRssFeedDetail> {
+  private async fetchFeedDetail(mpId: string, signal?: AbortSignal): Promise<WeRssFeedDetail> {
     const response = await this.fetcher(`${this.base}/api/v1/wx/mps/${encodeURIComponent(mpId)}`, {
       headers: this.headers(),
-      signal: AbortSignal.timeout(10_000),
+      signal: signalWithTimeout(signal, 10_000),
     });
     const body = await this.readWeRssEnvelope<WeRssFeedDetail>(response, "WERSS_FEED_STATUS_FAILED");
     return body.data ?? {};
   }
 
-  private async assertFeedRecentlySynced(mpId: string): Promise<void> {
+  private async assertFeedRecentlySynced(mpId: string, signal?: AbortSignal): Promise<void> {
     const maxHours = Number(this.fullTextOptions.maxFeedStaleHours);
     if (!Number.isFinite(maxHours) || maxHours <= 0) return;
 
-    const feed = await this.fetchFeedDetail(mpId);
+    const feed = await this.fetchFeedDetail(mpId, signal);
     const syncTime = Number(feed.sync_time);
     if (!Number.isFinite(syncTime) || syncTime <= 0) {
       throw new Error("WERSS_FEED_NEVER_SYNCED");
@@ -292,7 +294,7 @@ export class WeRssConnector implements Connector<"wechat"> {
     return body.data ?? { authenticated: false, has_token: false };
   }
 
-  private async resolveArticle(articleUrl: string): Promise<ResolvedArticle> {
+  private async resolveArticle(articleUrl: string, signal?: AbortSignal): Promise<ResolvedArticle> {
     const url = new URL(`${this.base}/api/v1/wx/mps/by_article`);
     url.searchParams.set("url", articleUrl);
     // NOTE: WeRSS `by_article` internally scrapes the WeChat article page via a
@@ -302,7 +304,7 @@ export class WeRssConnector implements Connector<"wechat"> {
     const response = await this.fetcher(url, {
       method: "POST",
       headers: { ...this.headers(), "Content-Type": "application/json" },
-      signal: AbortSignal.timeout(55_000),
+      signal: signalWithTimeout(signal, 55_000),
     });
     if (!response.ok) throw new Error(`WERSS_RESOLVE_FAILED:${response.status}`);
     const body = await this.readWeRssEnvelope<Record<string, unknown>>(response, "WERSS_RESOLVE_FAILED");
@@ -397,7 +399,7 @@ export class WeRssConnector implements Connector<"wechat"> {
   }
 
   /** Ensure the MP is subscribed in WeRSS (idempotent, best-effort). */
-  async subscribeResolved(feed: ResolvedFeed): Promise<ResolvedFeed> {
+  async subscribeResolved(feed: ResolvedFeed, signal?: AbortSignal): Promise<ResolvedFeed> {
     if (!feed.mpBiz) {
       throw new Error("WERSS_SUBSCRIBE_FAILED:missing_mp_biz");
     }
@@ -415,7 +417,7 @@ export class WeRssConnector implements Connector<"wechat"> {
         avatar: feed.mpCover,
         mp_intro: feed.mpIntro,
       }),
-      signal: AbortSignal.timeout(10_000),
+      signal: signalWithTimeout(signal, 10_000),
     });
     const body = await this.readWeRssEnvelope<{
       id?: string;
@@ -485,30 +487,34 @@ export class WeRssConnector implements Connector<"wechat"> {
     }
   }
 
-  async collect(config: WechatAccountMonitorConfig, cursor: Record<string, unknown> = {}): Promise<CollectionResult> {
+  async collect(
+    config: WechatAccountMonitorConfig,
+    cursor: Record<string, unknown> = {},
+    context?: CollectContext,
+  ): Promise<CollectionResult> {
     const parsed = wechatAccountMonitorSchema.parse(config);
     let mpId = typeof cursor.mpId === "string" ? cursor.mpId : parsed.mpId;
     let fallbackArticle: WeRssArticle | undefined;
     let resolvedFeed: ResolvedFeed | undefined;
     if (!mpId) {
-      const resolved = await this.resolveArticle(parsed.articleUrl);
+      const resolved = await this.resolveArticle(parsed.articleUrl, context?.signal);
       const feed = await this.subscribeResolved({
         mpId: resolved.mpId,
         mpName: resolved.mpName,
         mpBiz: resolved.mpBiz,
         mpCover: resolved.mpCover,
         mpIntro: resolved.mpIntro,
-      });
+      }, context?.signal);
       mpId = feed.mpId;
       resolvedFeed = feed;
       fallbackArticle = resolved.article;
     }
-    if (!resolvedFeed) await this.assertFeedRecentlySynced(mpId);
+    if (!resolvedFeed) await this.assertFeedRecentlySynced(mpId, context?.signal);
     // WeRSS returns articles newest-first; always fetch the latest page from
     // offset 0 so each poll picks up newly published posts. We only persist
     // mpId in the cursor (dedupe happens on upsert by upstreamId upstream).
     const limit = 30;
-    const articles = await this.fetchArticles(mpId, 0, limit);
+    const articles = await this.fetchArticles(mpId, 0, limit, context?.signal);
     const sourceArticles = articles.length ? articles : fallbackArticle ? [fallbackArticle] : [];
     const items = sourceArticles.map((a) => this.toNormalized(a, mpId));
 
@@ -571,12 +577,20 @@ export class WeRssConnector implements Connector<"wechat"> {
     return (await this.fetchFullTextResult(articleUrl)).html;
   }
 
-  private async fetchArticles(mpId: string, offset: number, limit: number): Promise<WeRssArticle[]> {
+  private async fetchArticles(
+    mpId: string,
+    offset: number,
+    limit: number,
+    signal?: AbortSignal,
+  ): Promise<WeRssArticle[]> {
     const url = new URL(`${this.base}/api/v1/wx/articles`);
     url.searchParams.set("mp_id", mpId);
     url.searchParams.set("offset", String(offset));
     url.searchParams.set("limit", String(limit));
-    const response = await this.fetcher(url, { headers: this.headers(), signal: AbortSignal.timeout(15_000) });
+    const response = await this.fetcher(url, {
+      headers: this.headers(),
+      signal: signalWithTimeout(signal, 15_000),
+    });
     const body = await this.readWeRssEnvelope<WeRssArticleList>(response, "WERSS_FETCH_FAILED");
     return body.data?.list ?? [];
   }

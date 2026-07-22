@@ -1,9 +1,10 @@
-import type { CollectionResult, Connector, NormalizedItem, WebSearchMonitorConfig } from "@/connectors/types";
+import type { CollectContext, CollectionResult, Connector, NormalizedItem, WebSearchMonitorConfig } from "@/connectors/types";
 import { webSearchMonitorSchema } from "@/connectors/types";
 import { canonicalizeUrl } from "@/ingestion/deduplicate";
 import { buildSearchQuery } from "./query-builder";
 import { filterSearchItems } from "./result-filter";
 import { sourceNameFromUrl } from "./source-name";
+import { signalWithTimeout } from "@/lib/abort-signal";
 
 interface TavilyResult {
   title?: string;
@@ -23,7 +24,7 @@ interface TavilyResponse {
 export class TavilyConnector implements Connector<"web_search"> {
   constructor(private readonly apiKey: string, private readonly fetcher: typeof fetch = fetch) {}
 
-  private async search(config: WebSearchMonitorConfig, count = 10): Promise<NormalizedItem[]> {
+  private async search(config: WebSearchMonitorConfig, count = 10, signal?: AbortSignal): Promise<NormalizedItem[]> {
     const parsed = webSearchMonitorSchema.parse(config);
     if (!this.apiKey) throw new Error("TAVILY_API_KEY 未配置");
     const response = await this.fetcher("https://api.tavily.com/search", {
@@ -32,7 +33,7 @@ export class TavilyConnector implements Connector<"web_search"> {
         Authorization: `Bearer ${this.apiKey}`,
         "Content-Type": "application/json",
       },
-      signal: AbortSignal.timeout(15_000),
+      signal: signalWithTimeout(signal, 15_000),
       body: JSON.stringify({
         query: buildSearchQuery(parsed),
         search_depth: "basic",
@@ -67,8 +68,8 @@ export class TavilyConnector implements Connector<"web_search"> {
     return { displayName: `${webSearchMonitorSchema.parse(config).query} · Tavily`, items };
   }
 
-  async collect(config: WebSearchMonitorConfig): Promise<CollectionResult> {
-    const items = await this.search(config, 20);
+  async collect(config: WebSearchMonitorConfig, _cursor: Record<string, unknown>, context?: CollectContext): Promise<CollectionResult> {
+    const items = await this.search(config, 20, context?.signal);
     return { items, cursor: { collectedAt: new Date().toISOString(), provider: "tavily" }, billableUnits: 1 };
   }
 

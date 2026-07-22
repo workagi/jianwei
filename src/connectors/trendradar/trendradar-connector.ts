@@ -79,18 +79,20 @@ export class TrendRadarConnector {
    *   每条 rss 含 title/feed_id/feed_name/url/published_at/author/date/fetch_time,
    *   summary 仅在 include_summary=true 时返回。第二个参数对应 days(最近 N 天)。
    */
-  async latestNews(limit = 50): Promise<NormalizedItem[]> {
+  async latestNews(limit = 50, signal?: AbortSignal): Promise<NormalizedItem[]> {
     const result = await this.client.callTool<TrendRadarToolResponse<TrendRadarNewsRow>>(
       "get_latest_news",
       { limit, include_url: true },
+      signal,
     );
     return filterTrendRadarItems((result.data ?? []).slice(0, limit).map((row) => this.normalizeNews(row)));
   }
 
-  async latestRss(limit = 50, days = 1): Promise<NormalizedItem[]> {
+  async latestRss(limit = 50, days = 1, signal?: AbortSignal): Promise<NormalizedItem[]> {
     const result = await this.client.callTool<TrendRadarToolResponse<TrendRadarRssRow>>(
       "get_latest_rss",
       { limit, days, include_summary: true },
+      signal,
     );
     return filterTrendRadarItems((result.data ?? []).slice(0, limit).map((row) => this.normalizeRss(row)));
   }

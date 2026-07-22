@@ -1,9 +1,10 @@
-import type { CollectionResult, Connector, NormalizedItem, WebSearchMonitorConfig } from "@/connectors/types";
+import type { CollectContext, CollectionResult, Connector, NormalizedItem, WebSearchMonitorConfig } from "@/connectors/types";
 import { webSearchMonitorSchema } from "@/connectors/types";
 import { canonicalizeUrl } from "@/ingestion/deduplicate";
 import { buildSearchQuery } from "./query-builder";
 import { filterSearchItems } from "./result-filter";
 import { cleanSourceName, sourceNameFromUrl } from "./source-name";
+import { signalWithTimeout } from "@/lib/abort-signal";
 
 interface SerperResult {
   title?: string;
@@ -21,7 +22,7 @@ interface SerperResponse {
 export class SerperConnector implements Connector<"web_search"> {
   constructor(private readonly apiKey: string, private readonly fetcher: typeof fetch = fetch) {}
 
-  private async search(config: WebSearchMonitorConfig, count = 10): Promise<NormalizedItem[]> {
+  private async search(config: WebSearchMonitorConfig, count = 10, signal?: AbortSignal): Promise<NormalizedItem[]> {
     const parsed = webSearchMonitorSchema.parse(config);
     if (!this.apiKey) throw new Error("SERPER_API_KEY 未配置");
     const endpoint = parsed.resultType === "news" ? "news" : "search";
@@ -31,7 +32,7 @@ export class SerperConnector implements Connector<"web_search"> {
         "X-API-KEY": this.apiKey,
         "Content-Type": "application/json",
       },
-      signal: AbortSignal.timeout(15_000),
+      signal: signalWithTimeout(signal, 15_000),
       body: JSON.stringify({
         q: buildSearchQuery(parsed),
         num: count,
@@ -63,8 +64,8 @@ export class SerperConnector implements Connector<"web_search"> {
     return { displayName: `${webSearchMonitorSchema.parse(config).query} · Serper`, items };
   }
 
-  async collect(config: WebSearchMonitorConfig): Promise<CollectionResult> {
-    const items = await this.search(config, 20);
+  async collect(config: WebSearchMonitorConfig, _cursor: Record<string, unknown>, context?: CollectContext): Promise<CollectionResult> {
+    const items = await this.search(config, 20, context?.signal);
     return { items, cursor: { collectedAt: new Date().toISOString(), provider: "serper" }, billableUnits: 1 };
   }
 

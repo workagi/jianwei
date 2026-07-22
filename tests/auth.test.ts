@@ -56,9 +56,9 @@ describe("管理员账号登录", () => {
     await expect(adminCredentialsMatch("jianwei", PASSWORD)).resolves.toBe(true);
   });
 
-  it("未设置独立密码的旧部署可临时使用 API token 登录", async () => {
+  it("API token 不能兼任网页登录密码", async () => {
     process.env.ADMIN_API_TOKEN = TOKEN;
-    await expect(adminCredentialsMatch("admin", TOKEN)).resolves.toBe(true);
+    await expect(adminCredentialsMatch("admin", TOKEN)).resolves.toBe(false);
   });
 
   it("数据库密码哈希优先于环境变量密码", async () => {
@@ -102,9 +102,10 @@ describe("管理员账号登录", () => {
 });
 
 describe("requireWriteAuth", () => {
-  it("完全未配置鉴权时放行本机开发", async () => {
+  it("完全未配置鉴权时也拒绝写操作", async () => {
     expect(getAdminToken()).toBeUndefined();
-    await expect(requireWriteAuth(req())).resolves.toBeNull();
+    expect((await requireWriteAuth(req()))?.status).toBe(401);
+    await expect(pageCookieOk(undefined)).resolves.toBe(false);
   });
 
   it("配置密码后拒绝未登录的写操作", async () => {

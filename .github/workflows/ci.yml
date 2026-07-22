@@ -18,6 +18,20 @@ jobs:
     name: Audit, test and build
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: monitor
+          POSTGRES_USER: monitor
+          POSTGRES_PASSWORD: monitor
+        ports:
+          - 54329:5432
+        options: >-
+          --health-cmd "pg_isready -U monitor -d monitor"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     env:
       DATABASE_URL: postgres://monitor:monitor@127.0.0.1:54329/monitor
       APP_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
@@ -44,6 +58,9 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Verify database migrations
+        run: pnpm db:migrate && pnpm db:seed
 
       - name: Audit public-release safety
         run: pnpm audit:open-source -- --history

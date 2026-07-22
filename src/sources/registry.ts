@@ -13,6 +13,7 @@ import { TrendRadarConnector } from "@/connectors/trendradar/trendradar-connecto
 import type {
   ConnectorPreview,
   CollectionResult,
+  CollectContext,
   PlatformType,
   WebSearchMonitorConfig,
   WechatAccountMonitorConfig,
@@ -61,22 +62,22 @@ function descriptor(id: SourceProviderId): SourceProviderDescriptor {
 
 type XLike = {
   validate(config: XMonitorConfig): Promise<ConnectorPreview>;
-  collect(config: XMonitorConfig, cursor: Record<string, unknown>): Promise<CollectionResult>;
+  collect(config: XMonitorConfig, cursor: Record<string, unknown>, context?: CollectContext): Promise<CollectionResult>;
 };
 type WechatLike = {
   validate(config: WechatAccountMonitorConfig): Promise<ConnectorPreview>;
-  collect(config: WechatAccountMonitorConfig, cursor: Record<string, unknown>): Promise<CollectionResult>;
+  collect(config: WechatAccountMonitorConfig, cursor: Record<string, unknown>, context?: CollectContext): Promise<CollectionResult>;
 };
 type WebLike = {
   validate(config: WebSearchMonitorConfig): Promise<ConnectorPreview>;
-  collect(config: WebSearchMonitorConfig, cursor?: Record<string, unknown>): Promise<CollectionResult>;
+  collect(config: WebSearchMonitorConfig, cursor?: Record<string, unknown>, context?: CollectContext): Promise<CollectionResult>;
 };
 
 function xProvider(id: Extract<SourceProviderId, `x_${string}`>, connector: XLike): SourceProvider {
   return {
     descriptor: descriptor(id),
     validate: (config) => connector.validate(config as XMonitorConfig),
-    collect: (config, cursor) => connector.collect(config as XMonitorConfig, cursor),
+    collect: (config, cursor, context) => connector.collect(config as XMonitorConfig, cursor, context),
   };
 }
 
@@ -84,7 +85,7 @@ function wechatProvider(connector: WechatLike): SourceProvider {
   return {
     descriptor: descriptor("wechat_werss"),
     validate: (config) => connector.validate(config as WechatAccountMonitorConfig),
-    collect: (config, cursor) => connector.collect(config as WechatAccountMonitorConfig, cursor),
+    collect: (config, cursor, context) => connector.collect(config as WechatAccountMonitorConfig, cursor, context),
   };
 }
 
@@ -92,7 +93,7 @@ function webProvider(id: Extract<SourceProviderId, `web_${string}`>, connector: 
   return {
     descriptor: descriptor(id),
     validate: (config) => connector.validate(config as WebSearchMonitorConfig),
-    collect: (config, cursor) => connector.collect(config as WebSearchMonitorConfig, cursor),
+    collect: (config, cursor, context) => connector.collect(config as WebSearchMonitorConfig, cursor, context),
   };
 }
 
@@ -111,8 +112,11 @@ function trendRadarProvider(): SourceProvider {
   const connector = new TrendRadarConnector(new TrendRadarMcpClient(TRENDRADAR_ENDPOINT));
   return {
     descriptor: descriptor("trendradar"),
-    collect: async () => ({
-      items: [...(await connector.latestNews(50)), ...(await connector.latestRss(50, 2))],
+    collect: async (_config, _cursor, context) => ({
+      items: [
+        ...(await connector.latestNews(50, context?.signal)),
+        ...(await connector.latestRss(50, 2, context?.signal)),
+      ],
       cursor: {},
     }),
   };

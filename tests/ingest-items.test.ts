@@ -167,4 +167,23 @@ describe("ingest", () => {
     await ingest(repo, { items: [makeItem(), makeItem()], monitorId: "m1" });
     expect(repo.itemRows).toHaveLength(1);
   });
+
+  it("treats the same upstream id on another platform as a new item", async () => {
+    class CrossPlatformRepo extends MemRepo {
+      async findExistingSourceKeys() {
+        return new Set(["x|shared-id"]);
+      }
+    }
+    const repo = new CrossPlatformRepo();
+    await ingest(repo, {
+      items: [makeItem({
+        platform: "trendradar",
+        upstreamId: "shared-id",
+        canonicalUrl: "https://example.com/from-trendradar",
+      })],
+      monitorId: "m1",
+    });
+
+    expect(repo.itemRows[0].analysisStatus).toBe("disabled");
+  });
 });

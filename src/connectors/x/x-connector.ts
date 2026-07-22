@@ -1,5 +1,6 @@
-import type { CollectionResult, Connector, NormalizedItem, XMonitorConfig, XQuotedPost } from "@/connectors/types";
+import type { CollectContext, CollectionResult, Connector, NormalizedItem, XMonitorConfig, XQuotedPost } from "@/connectors/types";
 import { encodeXQuotedPost, xMonitorSchema } from "@/connectors/types";
+import { signalWithTimeout } from "@/lib/abort-signal";
 
 interface XUser {
   id: string;
@@ -30,21 +31,25 @@ export class XConnector implements Connector<"x"> {
     private readonly fetcher: typeof fetch = fetch,
   ) {}
 
-  private async request<T>(path: string, params: Record<string, string> = {}): Promise<XResponse<T>> {
+  private async request<T>(
+    path: string,
+    params: Record<string, string> = {},
+    signal?: AbortSignal,
+  ): Promise<XResponse<T>> {
     const url = new URL(`https://api.x.com/2/${path}`);
     Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, value));
     const response = await this.fetcher(url, {
       headers: { Authorization: `Bearer ${this.bearerToken}` },
-      signal: AbortSignal.timeout(10_000),
+      signal: signalWithTimeout(signal, 10_000),
     });
     if (!response.ok) throw new Error(`X_API_${response.status}`);
     return response.json() as Promise<XResponse<T>>;
   }
 
-  private async resolveUser(username: string): Promise<XUser> {
+  private async resolveUser(username: string, signal?: AbortSignal): Promise<XUser> {
     const response = await this.request<XUser>(`users/by/username/${encodeURIComponent(username)}`, {
       "user.fields": "id,name,username,profile_image_url,protected",
-    });
+    }, signal);
     if (!response.data) throw new Error(response.errors?.[0]?.detail ?? "X_USER_NOT_FOUND");
     return response.data;
   }
@@ -100,7 +105,13 @@ export class XConnector implements Connector<"x"> {
     };
   }
 
-  private async timeline(user: XUser, config: XMonitorConfig, maxResults: number, sinceId?: string) {
+  private async timeline(
+    user: XUser,
+    config: XMonitorConfig,
+    maxResults: number,
+    sinceId?: string,
+    signal?: AbortSignal,
+  ) {
     // Official API can exclude replies/retweets server-side, but not quote tweets.
     // Quotes are filtered client-side via matchesScope / includeQuotes.
     const excludes = [!config.includeReplies && "replies", !config.includeReposts && "retweets"]
@@ -114,7 +125,7 @@ export class XConnector implements Connector<"x"> {
     };
     if (excludes) params.exclude = excludes;
     if (sinceId) params.since_id = sinceId;
-    return this.request<XPost[]>(`users/${user.id}/tweets`, params);
+    return this.request<XPost[]>(`users/${user.id}/tweets`, params, signal);
   }
 
   async validate(config: XMonitorConfig) {
@@ -131,14 +142,15 @@ export class XConnector implements Connector<"x"> {
     };
   }
 
-  async collect(config: XMonitorConfig, cursor: Record<string, unknown>): Promise<CollectionResult> {
+  async collect(config: XMonitorConfig, cursor: Record<string, unknown>, context?: CollectContext): Promise<CollectionResult> {
     const parsed = xMonitorSchema.parse(config);
-    const user = await this.resolveUser(parsed.username);
+    const user = await this.resolveUser(parsed.username, context?.signal);
     const response = await this.timeline(
       user,
       parsed,
       100,
       typeof cursor.sinceId === "string" ? cursor.sinceId : undefined,
+      context?.signal,
     );
     const items = (response.data ?? [])
       .filter((post) => this.matchesScope(post, parsed))
