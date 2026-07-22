@@ -173,6 +173,22 @@ function isAutoXName(name: string, config: Record<string, unknown>): boolean {
   return Boolean(username) && (name === `@${username}` || name === username || name === "X / Twitter");
 }
 
+function monitorMatchedQuery(monitor: MonitorRow): string | undefined {
+  if (monitor.platform === "x") {
+    const username = typeof monitor.config.username === "string" ? monitor.config.username.replace(/^@/, "").trim() : "";
+    return username ? `@${username}` : undefined;
+  }
+  if (monitor.platform === "web_search") {
+    return typeof monitor.config.query === "string" ? monitor.config.query.trim() || undefined : undefined;
+  }
+  if (monitor.platform === "wechat") {
+    if (isWechatKeywordRuleConfig(monitor.config)) return monitor.config.query;
+    const name = typeof monitor.config.mpName === "string" ? monitor.config.mpName.trim() : "";
+    return name || monitor.name;
+  }
+  return monitor.name;
+}
+
 function resolvedWechatConfigPatch(cursor: Record<string, unknown>): Record<string, unknown> | null {
   const mpId = typeof cursor.mpId === "string" && cursor.mpId.trim() ? cursor.mpId.trim() : "";
   if (!mpId) return null;
@@ -289,6 +305,7 @@ async function runMonitor(monitor: MonitorRow, shutdownSignal?: AbortSignal): Pr
     const prepared = await prepareIngest(createDrizzleIngestRepository(), {
       items,
       monitorId: monitor.id,
+      matchedQuery: monitorMatchedQuery(monitor),
     });
     const summaryInputTokens = prepared.summary.inputTokens ?? 0;
     const summaryOutputTokens = prepared.summary.outputTokens ?? 0;

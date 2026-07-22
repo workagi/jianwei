@@ -87,6 +87,9 @@ export const items = pgTable("items", {
   contentType: text("content_type"),
   topicTags: jsonb("topic_tags").$type<string[]>().notNull().default([]),
   retentionReason: text("retention_reason"),
+  // Document-level information quality. `relevanceScore` remains during the
+  // compatibility window; monitor-specific relevance lives on item_matches.
+  informationValueScore: integer("information_value_score"),
   relevanceScore: integer("relevance_score"),
   retentionSource: text("retention_source"),
   // Durable per-item state for the unified LLM content route. Rule-derived
@@ -116,20 +119,56 @@ export const items = pgTable("items", {
   index("items_published_idx").on(table.publishedAt),
   index("items_source_provider_idx").on(table.sourceProvider),
   index("items_content_type_idx").on(table.contentType),
+  index("items_information_value_score_idx").on(table.informationValueScore),
   index("items_relevance_score_idx").on(table.relevanceScore),
   index("items_analysis_status_idx").on(table.analysisStatus),
   index("items_content_hash_idx").on(table.contentHash),
 ]);
 
+/**
+ * One observation of a document from one collector/provider. A single item
+ * may be discovered by WeChat, web search and RSS without losing provenance
+ * or forcing one platform identity to overwrite another.
+ */
+export const sourceItems = pgTable("source_items", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  itemId: uuid("item_id").notNull().references(() => items.id, { onDelete: "cascade" }),
+  platform: platformType("platform").notNull(),
+  sourceProvider: text("source_provider").notNull(),
+  upstreamId: text("upstream_id").notNull(),
+  sourceUrl: text("source_url").notNull(),
+  authorId: text("author_id"),
+  authorName: text("author_name"),
+  authorHandle: text("author_handle"),
+  avatarUrl: text("avatar_url"),
+  rawPayload: jsonb("raw_payload").$type<Record<string, unknown>>().notNull().default({}),
+  publishedAt: timestamp("published_at", { withTimezone: true }),
+  firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("source_items_identity_uidx").on(table.platform, table.sourceProvider, table.upstreamId),
+  index("source_items_item_seen_idx").on(table.itemId, table.lastSeenAt),
+  index("source_items_platform_seen_idx").on(table.platform, table.lastSeenAt),
+]);
+
 export const itemMatches = pgTable("item_matches", {
   itemId: uuid("item_id").notNull().references(() => items.id, { onDelete: "cascade" }),
   monitorId: uuid("monitor_id").notNull().references(() => monitors.id, { onDelete: "cascade" }),
+  sourceItemId: uuid("source_item_id").references(() => sourceItems.id, { onDelete: "set null" }),
   matchedQuery: text("matched_query"),
+  relevanceScore: integer("relevance_score"),
+  retentionReason: text("retention_reason"),
+  retentionSource: text("retention_source"),
+  analysisStatus: text("analysis_status"),
+  analysisVersion: text("analysis_version"),
   rawPayload: jsonb("raw_payload").$type<Record<string, unknown>>().notNull().default({}),
   firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   primaryKey({ columns: [table.itemId, table.monitorId] }),
   index("item_matches_monitor_seen_idx").on(table.monitorId, table.firstSeenAt),
+  index("item_matches_source_item_idx").on(table.sourceItemId),
+  index("item_matches_monitor_relevance_idx").on(table.monitorId, table.relevanceScore),
 ]);
 
 // 见微 is currently a single-user workspace. A dedicated join table

@@ -570,16 +570,22 @@ function timestampOf(row: { publishedAt: Date | string }): number {
   return row.publishedAt instanceof Date ? row.publishedAt.getTime() : new Date(row.publishedAt).getTime();
 }
 
-export function capRowsPerPlatformForUnifiedFeed<T extends { platform: PlatformType; publishedAt: Date | string }>(
+export function capRowsPerPlatformForUnifiedFeed<T extends { id: string; platform: PlatformType; publishedAt: Date | string }>(
   rows: T[],
   perPlatformLimit = UNIFIED_FEED_PLATFORM_LIMIT,
 ): T[] {
-  return READER_PLATFORMS.flatMap((platform) =>
+  const balanced = READER_PLATFORMS.flatMap((platform) =>
     rows
       .filter((row) => row.platform === platform)
       .sort((a, b) => timestampOf(b) - timestampOf(a))
       .slice(0, perPlatformLimit),
   ).sort((a, b) => timestampOf(b) - timestampOf(a));
+  const seen = new Set<string>();
+  return balanced.filter((row) => {
+    if (seen.has(row.id)) return false;
+    seen.add(row.id);
+    return true;
+  });
 }
 
 /**
@@ -641,7 +647,7 @@ export async function loadReaderFeed(filter: {
           }),
         ))
       ).flat();
-      const filteredRows = rows.filter((row) =>
+      const filteredRows = capRowsPerPlatformForUnifiedFeed(rows, Number.MAX_SAFE_INTEGER).filter((row) =>
         rowPassesSourceQuality(row) && itemMatchesContentType(row, contentType) && itemMatchesTopic(row, topic),
       );
       const featuredItems = buildFeaturedFeed(filteredRows.map(mapRow), {
@@ -691,7 +697,10 @@ export async function loadReaderFeed(filter: {
     // than a chronological archive: high-volume hotlists must not drown out
     // WeChat and web-search results. Full paginated history is available in
     // each platform tab.
-    const platformCounts = await Promise.all(READER_PLATFORMS.map((platform) => countItems({ ...dbFilter, platform })));
+    const [platformCounts, documentTotal] = await Promise.all([
+      Promise.all(READER_PLATFORMS.map((platform) => countItems({ ...dbFilter, platform }))),
+      countItems(dbFilter),
+    ]);
     const rows = (
       await Promise.all(
         READER_PLATFORMS.map((platform, index) => {
@@ -703,7 +712,7 @@ export async function loadReaderFeed(filter: {
         }),
       )
     ).flat();
-    const filteredRows = rows.filter((row) =>
+    const filteredRows = capRowsPerPlatformForUnifiedFeed(rows, Number.MAX_SAFE_INTEGER).filter((row) =>
       rowPassesSourceQuality(row) && itemMatchesContentType(row, contentType) && itemMatchesTopic(row, topic),
     );
     const visibleRows = capRowsPerPlatformForUnifiedFeed(filteredRows);
@@ -711,7 +720,7 @@ export async function loadReaderFeed(filter: {
     return feedResult({
       items: visibleRows.slice(0, READER_PAGE_SIZE).map(mapRow),
       usingDemo: false,
-      total: hasLocalFilter ? filteredRows.length : platformCounts.reduce((sum, value) => sum + value, 0),
+      total: hasLocalFilter ? filteredRows.length : documentTotal,
       totalIsExact: hasLocalFilter ? platformCounts.every((value) => value <= MAX_LOCAL_FILTER_SCAN) : true,
       page: 1,
       balancedOverview: true,

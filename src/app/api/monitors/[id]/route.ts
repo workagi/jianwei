@@ -157,12 +157,11 @@ export async function DELETE(
 
   await db.execute(sql`
     delete from ${items}
-    where ${items.platform} = ${existing.platform}
-      and not exists (
-        select 1
-        from ${itemMatches}
-        where ${itemMatches.itemId} = ${items.id}
-      )
+    where not exists (
+      select 1
+      from ${itemMatches}
+      where ${itemMatches.itemId} = ${items.id}
+    )
   `);
 
   return NextResponse.json({ ok: true, id: deleted.id, mode: "deleted", historyKept: false });

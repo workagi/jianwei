@@ -6,7 +6,9 @@ import {
   safePublishedAt,
   toItemRows,
   type IngestItemRow,
+  type IngestMatchLink,
   type IngestRepository,
+  type IngestSourceObservation,
 } from "@/ingestion/ingest-items";
 import type { NormalizedItem } from "@/connectors/types";
 
@@ -27,19 +29,32 @@ function makeItem(over: Partial<NormalizedItem> = {}): NormalizedItem {
 
 class MemRepo implements IngestRepository {
   itemRows: IngestItemRow[] = [];
-  matchLinks: Array<{ itemId: string; monitorId: string }> = [];
+  sourceRows: IngestSourceObservation[] = [];
+  matchLinks: IngestMatchLink[] = [];
 
   async upsertItems(rows: IngestItemRow[]) {
     const returned = rows.map((r, i) => ({
       id: `id-${i}`,
       platform: r.platform as NormalizedItem["platform"],
       upstreamId: r.upstreamId,
+      canonicalUrl: r.canonicalUrl,
     }));
     this.itemRows.push(...rows);
     return returned;
   }
 
-  async linkMatches(links: { itemId: string; monitorId: string }[]) {
+  async upsertSourceItems(observations: IngestSourceObservation[]) {
+    this.sourceRows.push(...observations);
+    return observations.map((observation, index) => ({
+      id: `source-${index}`,
+      itemId: observation.itemId,
+      platform: observation.platform,
+      sourceProvider: observation.sourceProvider,
+      upstreamId: observation.upstreamId,
+    }));
+  }
+
+  async linkMatches(links: IngestMatchLink[]) {
     this.matchLinks.push(...links);
     return links.length;
   }
@@ -157,6 +172,7 @@ describe("ingest", () => {
     const result = await commitPreparedIngest(repo, prepared);
     expect(result.itemsUpserted).toBe(1);
     expect(repo.itemRows).toHaveLength(1);
+    expect(repo.sourceRows).toHaveLength(1);
     expect(repo.matchLinks).toHaveLength(1);
   });
 
@@ -170,7 +186,9 @@ describe("ingest", () => {
     expect(result.matchesInserted).toBe(2);
     expect(result.summary.status).toBe("disabled");
     expect(repo.itemRows.every((row) => row.analysisStatus === "disabled")).toBe(true);
+    expect(repo.sourceRows).toHaveLength(2);
     expect(repo.matchLinks.every((m) => m.monitorId === "m1")).toBe(true);
+    expect(repo.matchLinks.every((m) => Boolean(m.sourceItemId))).toBe(true);
   });
 
   it("returns zeros for an empty batch", async () => {
@@ -189,10 +207,39 @@ describe("ingest", () => {
     expect(repo.itemRows).toHaveLength(1);
   });
 
+  it("keeps distinct source observations when providers discover one document", async () => {
+    const repo = new MemRepo();
+    await ingest(repo, {
+      items: [
+        makeItem({
+          platform: "web_search",
+          sourceProvider: "web_brave",
+          upstreamId: "brave-1",
+          canonicalUrl: "https://example.com/shared-article",
+        }),
+        makeItem({
+          platform: "trendradar",
+          sourceProvider: "trendradar",
+          upstreamId: "rss-1",
+          canonicalUrl: "https://example.com/shared-article?utm_source=rss",
+        }),
+      ],
+      monitorId: "m1",
+    });
+
+    expect(repo.itemRows).toHaveLength(1);
+    expect(repo.sourceRows).toHaveLength(2);
+    expect(repo.sourceRows.map((source) => source.sourceProvider)).toEqual([
+      "web_brave",
+      "trendradar",
+    ]);
+    expect(repo.matchLinks).toHaveLength(1);
+  });
+
   it("treats the same upstream id on another platform as a new item", async () => {
     class CrossPlatformRepo extends MemRepo {
       async findExistingSourceKeys() {
-        return new Set(["x|shared-id"]);
+        return new Set(["x|x|shared-id"]);
       }
     }
     const repo = new CrossPlatformRepo();
@@ -206,5 +253,26 @@ describe("ingest", () => {
     });
 
     expect(repo.itemRows[0].analysisStatus).toBe("disabled");
+  });
+
+  it("treats the same upstream id from another provider as a new source", async () => {
+    class CrossProviderRepo extends MemRepo {
+      async findExistingSourceKeys() {
+        return new Set(["web_search|web_brave|shared-id"]);
+      }
+    }
+    const repo = new CrossProviderRepo();
+    await ingest(repo, {
+      items: [makeItem({
+        platform: "web_search",
+        sourceProvider: "web_tavily",
+        upstreamId: "shared-id",
+        canonicalUrl: "https://example.com/from-tavily",
+      })],
+      monitorId: "m1",
+    });
+
+    expect(repo.itemRows[0].analysisStatus).toBe("disabled");
+    expect(repo.sourceRows[0].sourceProvider).toBe("web_tavily");
   });
 });

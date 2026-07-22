@@ -5,6 +5,7 @@ import {
   type IngestItemRow,
   type IngestMatchLink,
   type IngestRepository,
+  type IngestSourceObservation,
 } from "@/ingestion/ingest-items";
 
 const ORIGINAL_FETCH = globalThis.fetch;
@@ -12,6 +13,7 @@ const ORIGINAL_FETCH = globalThis.fetch;
 class WorkflowRepository implements IngestRepository {
   rows: IngestItemRow[] = [];
   links: IngestMatchLink[] = [];
+  sources: IngestSourceObservation[] = [];
 
   async upsertItems(rows: IngestItemRow[]) {
     this.rows.push(...rows);
@@ -19,6 +21,18 @@ class WorkflowRepository implements IngestRepository {
       id: `workflow-${index}`,
       platform: row.platform as NormalizedItem["platform"],
       upstreamId: row.upstreamId,
+      canonicalUrl: row.canonicalUrl,
+    }));
+  }
+
+  async upsertSourceItems(observations: IngestSourceObservation[]) {
+    this.sources.push(...observations);
+    return observations.map((observation, index) => ({
+      id: `workflow-source-${index}`,
+      itemId: observation.itemId,
+      platform: observation.platform,
+      sourceProvider: observation.sourceProvider,
+      upstreamId: observation.upstreamId,
     }));
   }
 

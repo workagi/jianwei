@@ -157,6 +157,17 @@ describe("capRowsPerPlatformForUnifiedFeed", () => {
     expect(capped.some((row) => row.platform === "wechat")).toBe(true);
     expect(capped.some((row) => row.platform === "web_search")).toBe(true);
   });
+
+  it("shows one document once even when multiple platforms discovered it", () => {
+    const publishedAt = new Date(Date.UTC(2026, 6, 15, 1, 30));
+    const capped = capRowsPerPlatformForUnifiedFeed([
+      { id: "shared", platform: "web_search" as PlatformType, publishedAt },
+      { id: "shared", platform: "trendradar" as PlatformType, publishedAt },
+    ], 3);
+
+    expect(capped).toHaveLength(1);
+    expect(capped[0].id).toBe("shared");
+  });
 });
 
 describe("normalizeReaderPage", () => {

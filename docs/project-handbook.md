@@ -239,8 +239,9 @@ flowchart TD
 | `connectors` | 平台连接器及健康状态 |
 | `connector_credentials` | 连接器加密凭据 |
 | `monitors` | 用户监控任务、配置、游标、频率和错误状态 |
-| `items` | 统一内容及模型处理结果 |
-| `item_matches` | 内容与监控任务的多对多命中关系 |
+| `items` | 去重后的内容实体及模型处理结果；同一文章只保留一份正文 |
+| `source_items` | 各采集平台对内容的独立来源观察、作者信息和原始载荷 |
+| `item_matches` | 内容与监控任务的命中关系、实际来源及监控级分析快照 |
 | `bookmarks` | 单用户收藏 |
 | `collection_runs` | 每次计划采集的幂等键、尝试次数、数量、状态、模型处理和错误信息 |
 | `usage_ledger` | 按采集轮次去重的 API、模型请求和估算成本 |
@@ -250,6 +251,8 @@ flowchart TD
 | `api_credentials` | 后台保存的加密平台密钥和管理配置 |
 
 数据库结构以 `src/db/schema.ts` 为准，迁移文件位于 `drizzle/`。
+
+内容、来源和监控判断采用三层结构：`items` 回答“内容是什么”，`source_items` 回答“从哪里发现”，`item_matches` 回答“由哪条监控命中、当时如何判断”。因此同一篇文章被搜索、RSS 和公众号重复发现时，只展示一份正文，但不会丢失任何来源归属。
 
 ## 11. Web 页面与 API
 

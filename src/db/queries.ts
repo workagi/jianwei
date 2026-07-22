@@ -1,5 +1,5 @@
 import { db } from "./index";
-import { items, itemMatches, monitors, connectors, apiCredentials, bookmarks, collectionRuns } from "./schema";
+import { items, itemMatches, sourceItems, monitors, connectors, apiCredentials, bookmarks, collectionRuns } from "./schema";
 import { desc, eq, and, gte, inArray, sql, type SQL } from "drizzle-orm";
 import type { PlatformType } from "@/connectors/types";
 import { decryptCredential, encryptCredential, isEncryptedCredential } from "@/lib/credential-crypto";
@@ -22,8 +22,26 @@ function itemConditions(filter: ItemFilter): SQL[] {
       where ${itemMatches.itemId} = ${items.id}
     )`,
   ];
-  if (filter.platform) conditions.push(eq(items.platform, filter.platform));
-  if (filter.monitorId) {
+  if (filter.platform && filter.monitorId) {
+    // Both filters must describe the same observation. Checking them in two
+    // independent EXISTS clauses would let a web-search monitor match one
+    // source while the platform filter matched a different RSS source of the
+    // same canonical document.
+    conditions.push(sql`exists (
+      select 1
+      from ${itemMatches}
+      inner join ${sourceItems} on ${sourceItems.id} = ${itemMatches.sourceItemId}
+      where ${itemMatches.itemId} = ${items.id}
+        and ${itemMatches.monitorId} = ${filter.monitorId}
+        and ${sourceItems.platform} = ${filter.platform}
+    )`);
+  } else if (filter.platform) {
+    conditions.push(sql`exists (
+      select 1 from ${sourceItems}
+      where ${sourceItems.itemId} = ${items.id}
+        and ${sourceItems.platform} = ${filter.platform}
+    )`);
+  } else if (filter.monitorId) {
     conditions.push(sql`exists (
       select 1
       from ${itemMatches}
@@ -53,18 +71,52 @@ function itemConditions(filter: ItemFilter): SQL[] {
  */
 export async function getItems(filter: ItemFilter = {}) {
   const conditions = itemConditions(filter);
+  const selectedSourceId = sql`(
+    select si.id
+    from source_items si
+    where si.item_id = ${items.id}
+      ${filter.platform ? sql`and si.platform = ${filter.platform}` : sql``}
+      ${filter.monitorId ? sql`and exists (
+        select 1 from item_matches selected_match
+        where selected_match.source_item_id = si.id
+          and selected_match.monitor_id = ${filter.monitorId}
+      )` : sql``}
+    order by
+      case when si.platform = ${items.platform} and si.upstream_id = ${items.upstreamId} then 0 else 1 end,
+      si.first_seen_at asc
+    limit 1
+  )`;
 
   return db
     .select({
       id: items.id,
-      platform: items.platform,
-      sourceProvider: items.sourceProvider,
-      upstreamId: items.upstreamId,
+      platform: sql<PlatformType>`coalesce(
+        (select selected_source.platform from source_items selected_source where selected_source.id = ${selectedSourceId}),
+        ${items.platform}
+      )`,
+      sourceProvider: sql<string | null>`coalesce(
+        (select selected_source.source_provider from source_items selected_source where selected_source.id = ${selectedSourceId}),
+        ${items.sourceProvider}
+      )`,
+      upstreamId: sql<string>`coalesce(
+        (select selected_source.upstream_id from source_items selected_source where selected_source.id = ${selectedSourceId}),
+        ${items.upstreamId}
+      )`,
       canonicalUrl: items.canonicalUrl,
-      authorId: items.authorId,
-      authorName: items.authorName,
-      authorHandle: items.authorHandle,
+      authorId: sql<string | null>`coalesce(
+        (select selected_source.author_id from source_items selected_source where selected_source.id = ${selectedSourceId}),
+        ${items.authorId}
+      )`,
+      authorName: sql<string | null>`coalesce(
+        (select selected_source.author_name from source_items selected_source where selected_source.id = ${selectedSourceId}),
+        ${items.authorName}
+      )`,
+      authorHandle: sql<string | null>`coalesce(
+        (select selected_source.author_handle from source_items selected_source where selected_source.id = ${selectedSourceId}),
+        ${items.authorHandle}
+      )`,
       avatarUrl: sql<string | null>`coalesce(
+        (select selected_source.avatar_url from source_items selected_source where selected_source.id = ${selectedSourceId}),
         ${items.avatarUrl},
         (
           select recent_avatar.avatar_url
@@ -82,9 +134,34 @@ export async function getItems(filter: ItemFilter = {}) {
       aiSummary: items.aiSummary,
       contentType: items.contentType,
       topicTags: items.topicTags,
-      retentionReason: items.retentionReason,
-      relevanceScore: items.relevanceScore,
-      retentionSource: items.retentionSource,
+      retentionReason: sql<string | null>`coalesce(
+        ${filter.monitorId ? sql`(
+          select selected_match.retention_reason from item_matches selected_match
+          where selected_match.item_id = ${items.id}
+            and selected_match.monitor_id = ${filter.monitorId}
+          limit 1
+        )` : sql`null`},
+        ${items.retentionReason}
+      )`,
+      relevanceScore: sql<number | null>`coalesce(
+        ${filter.monitorId ? sql`(
+          select selected_match.relevance_score from item_matches selected_match
+          where selected_match.item_id = ${items.id}
+            and selected_match.monitor_id = ${filter.monitorId}
+          limit 1
+        )` : sql`null`},
+        ${items.informationValueScore},
+        ${items.relevanceScore}
+      )`,
+      retentionSource: sql<string | null>`coalesce(
+        ${filter.monitorId ? sql`(
+          select selected_match.retention_source from item_matches selected_match
+          where selected_match.item_id = ${items.id}
+            and selected_match.monitor_id = ${filter.monitorId}
+          limit 1
+        )` : sql`null`},
+        ${items.retentionSource}
+      )`,
       contentHtml: items.contentHtml,
       contentProvider: items.contentProvider,
       contentFetchStatus: items.contentFetchStatus,
@@ -266,20 +343,21 @@ export async function getContentPipelineStats() {
   const [platforms, newItemsRows, runRows] = await Promise.all([
     db
       .select({
-        platform: items.platform,
-        total: sql<number>`count(*)::int`,
-        withSummary: sql<number>`coalesce(sum(case when nullif(btrim(${items.aiSummary}), '') is not null then 1 else 0 end), 0)::int`,
-        structured: sql<number>`coalesce(sum(case when nullif(btrim(${items.contentType}), '') is not null and jsonb_array_length(${items.topicTags}) > 0 then 1 else 0 end), 0)::int`,
-        analysisReady: sql<number>`coalesce(sum(case when ${items.analysisStatus} in ('success', 'partial') then 1 else 0 end), 0)::int`,
-        analysisFailed: sql<number>`coalesce(sum(case when ${items.analysisStatus} = 'failed' then 1 else 0 end), 0)::int`,
-        explained: sql<number>`coalesce(sum(case when ${items.retentionSource} = 'model' and nullif(btrim(${items.retentionReason}), '') is not null and ${items.relevanceScore} is not null then 1 else 0 end), 0)::int`,
-        withFullText: sql<number>`coalesce(sum(case when nullif(btrim(${items.contentHtml}), '') is not null then 1 else 0 end), 0)::int`,
-        fallbackFullText: sql<number>`coalesce(sum(case when nullif(btrim(${items.contentHtml}), '') is not null and ${items.contentProvider} in ('direct', 'wechat_download_api') then 1 else 0 end), 0)::int`,
-        fullTextFailed: sql<number>`coalesce(sum(case when ${items.contentFetchStatus} = 'failed' then 1 else 0 end), 0)::int`,
+        platform: sourceItems.platform,
+        total: sql<number>`count(distinct ${items.id})::int`,
+        withSummary: sql<number>`count(distinct case when nullif(btrim(${items.aiSummary}), '') is not null then ${items.id} end)::int`,
+        structured: sql<number>`count(distinct case when nullif(btrim(${items.contentType}), '') is not null and jsonb_array_length(${items.topicTags}) > 0 then ${items.id} end)::int`,
+        analysisReady: sql<number>`count(distinct case when ${items.analysisStatus} in ('success', 'partial') then ${items.id} end)::int`,
+        analysisFailed: sql<number>`count(distinct case when ${items.analysisStatus} = 'failed' then ${items.id} end)::int`,
+        explained: sql<number>`count(distinct case when ${items.retentionSource} = 'model' and nullif(btrim(${items.retentionReason}), '') is not null and ${items.informationValueScore} is not null then ${items.id} end)::int`,
+        withFullText: sql<number>`count(distinct case when nullif(btrim(${items.contentHtml}), '') is not null then ${items.id} end)::int`,
+        fallbackFullText: sql<number>`count(distinct case when nullif(btrim(${items.contentHtml}), '') is not null and ${items.contentProvider} in ('direct', 'wechat_download_api') then ${items.id} end)::int`,
+        fullTextFailed: sql<number>`count(distinct case when ${items.contentFetchStatus} = 'failed' then ${items.id} end)::int`,
       })
-      .from(items)
+      .from(sourceItems)
+      .innerJoin(items, eq(sourceItems.itemId, items.id))
       .where(activeItem)
-      .groupBy(items.platform),
+      .groupBy(sourceItems.platform),
     db
       .select({
         count: sql<number>`count(*)::int`,

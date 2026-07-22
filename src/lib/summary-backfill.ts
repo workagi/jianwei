@@ -1,6 +1,6 @@
 import { and, desc, eq, isNull, lt, or, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { items } from "@/db/schema";
+import { itemMatches, items } from "@/db/schema";
 import { loadApiCredentials } from "@/db/queries";
 import type { NormalizedItem } from "@/connectors/types";
 import { createRuntimeWeRssConnector } from "@/connectors/factory";
@@ -360,6 +360,7 @@ export async function backfillMissingSummaries(
         contentType: outcome.contentType,
         topicTags: outcome.topicTags,
         retentionReason: outcome.retentionReason || null,
+        informationValueScore: outcome.relevanceScore,
         relevanceScore: outcome.relevanceScore,
         retentionSource: outcome.retentionSource,
         analysisStatus: outcome.status,
@@ -373,6 +374,17 @@ export async function backfillMissingSummaries(
         updatedAt: new Date(),
       })
       .where(eq(items.id, row.id));
+    await db
+      .update(itemMatches)
+      .set({
+        relevanceScore: outcome.relevanceScore,
+        retentionReason: outcome.retentionReason || null,
+        retentionSource: outcome.retentionSource,
+        analysisStatus: outcome.status,
+        analysisVersion: outcome.version,
+        lastSeenAt: new Date(),
+      })
+      .where(eq(itemMatches.itemId, row.id));
     processed += 1;
     if (outcome.summary) updated += 1;
   }

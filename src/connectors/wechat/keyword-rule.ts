@@ -1,6 +1,6 @@
-import { desc, eq, inArray, sql } from "drizzle-orm";
+import { desc, inArray, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { itemMatches, items } from "@/db/schema";
+import { itemMatches, items, sourceItems } from "@/db/schema";
 import type { ConnectorPreview, NormalizedItem, WechatKeywordMonitorConfig } from "@/connectors/types";
 import { wechatKeywordMonitorSchema } from "@/connectors/types";
 
@@ -63,7 +63,11 @@ export async function collectWechatKeywordRule(
   limit = 80,
 ): Promise<NormalizedItem[]> {
   const config = wechatKeywordMonitorSchema.parse(rawConfig);
-  const conditions = [eq(items.platform, "wechat")];
+  const conditions = [sql`exists (
+    select 1 from ${sourceItems}
+    where ${sourceItems.itemId} = ${items.id}
+      and ${sourceItems.platform} = 'wechat'
+  )`];
   if (config.sourceMonitorIds.length > 0) {
     conditions.push(sql`exists (
       select 1

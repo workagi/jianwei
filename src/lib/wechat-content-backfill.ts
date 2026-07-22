@@ -2,7 +2,7 @@ import { and, desc, eq, sql } from "drizzle-orm";
 import { createRuntimeWeRssConnector } from "@/connectors/factory";
 import { isWithinFullTextCooldown, wechatFullTextRetryHours } from "@/connectors/wechat/full-text-resolver";
 import { db } from "@/db";
-import { itemMatches, items } from "@/db/schema";
+import { itemMatches, items, sourceItems } from "@/db/schema";
 
 export interface WechatContentBackfillResult {
   candidates: number;
@@ -33,7 +33,11 @@ export async function backfillWechatFullText(rawLimit: unknown): Promise<WechatC
     .from(items)
     .where(
       and(
-        eq(items.platform, "wechat"),
+        sql`exists (
+          select 1 from ${sourceItems}
+          where ${sourceItems.itemId} = ${items.id}
+            and ${sourceItems.platform} = 'wechat'
+        )`,
         sql`(${items.contentHtml} is null or btrim(${items.contentHtml}) = '')`,
         sql`exists (select 1 from ${itemMatches} where ${itemMatches.itemId} = ${items.id})`,
       ),
