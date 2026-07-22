@@ -11,7 +11,7 @@
 
 [快速开始](#快速开始) · [支持的信息源](#支持的信息源) · [它怎样工作](#它怎样工作) · [完整项目手册](docs/project-handbook.md) · [生产部署](docs/production-deploy.md) · [参与贡献](CONTRIBUTING.md)
 
-> 见微主程序采用 [Apache License 2.0](LICENSE)。当前代码处于首次公开发布候选阶段；第三方采集服务仍适用各自许可证和平台规则。
+> 见微主程序采用 [Apache License 2.0](LICENSE) 开源；第三方采集服务仍适用各自许可证和平台规则。
 
 ---
 
@@ -283,4 +283,4 @@ docker compose config
 
 见微主程序按照 [Apache License 2.0](LICENSE) 提供。Hermes Agent 改编代码、WeRSS、TrendRadar 和 wechat-download-api 等第三方组件的归属与边界见 [第三方声明](THIRD_PARTY_NOTICES.md)。
 
-项目已经具备完整的单用户自托管闭环，但仍依赖可能变化的第三方平台和开源采集器。当前正在完成首次公开发布前的最终验证，状态和剩余人工检查见 [开源准备报告](docs/open-source-readiness.md)。
+项目已经公开并具备完整的单用户自托管闭环，但仍依赖可能变化的第三方平台和开源采集器。当前验证状态和仍需人工完成的检查见 [开源准备报告](docs/open-source-readiness.md)。
