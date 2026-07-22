@@ -16,7 +16,8 @@
 | Git 历史凭据扫描 | 通过 | 当前全部提交的文本补丁未发现常见真实凭据格式 |
 | Git 提交邮箱隐私 | 通过 | 公开历史统一使用 GitHub `noreply` 邮箱，不暴露个人 Gmail 地址 |
 | 本地文件追踪 | 通过 | `.env`、数据库、私钥、构建目录和本地数据未被追踪 |
-| Node.js 依赖许可证 | 通过 | 433 个已安装包未发现未知许可证 |
+| Node.js 依赖许可证 | 通过 | 442 个已安装包未发现未知许可证 |
+| 高危依赖告警 | 通过 | `brace-expansion` 升级至 1.1.16，`sharp` 升级至 0.35.3；GitHub 报告的 2 个高危告警已有修复版本覆盖 |
 | 公开安装镜像 | 已修复 | 默认 WeRSS 从本机镜像改为上游公开镜像 |
 | 社区治理 | 通过 | 已添加贡献、安全、支持、行为准则和 Issue/PR 模板 |
 | 自动化门禁 | 已添加 | CI 执行开源审计、lint、test、build 与 Compose 校验 |
@@ -59,7 +60,7 @@ pnpm audit:open-source -- --history
 | TrendRadar | GPL-3.0 | 独立 Docker/MCP Sidecar | 不复制源码，不链接进主程序 |
 | wechat-download-api | AGPL-3.0 | 可选 Docker profile | 不复制源码，只调用兼容 HTTP 接口 |
 
-`pnpm-lock.yaml` 固定 Node.js 依赖版本。当前安装树共检查 433 个包，许可证包括 MIT、Apache-2.0、BSD、ISC、MPL-2.0、LGPL-3.0-or-later、CC、Python-2.0 和 Unlicense，未发现 `UNKNOWN` 或 `UNLICENSED`。
+`pnpm-lock.yaml` 固定 Node.js 依赖版本。当前安装树共检查 442 个包，许可证包括 MIT、Apache-2.0、BSD、ISC、MPL-2.0、LGPL-3.0-or-later、CC、Python-2.0 和 Unlicense，未发现 `UNKNOWN` 或 `UNLICENSED`。
 
 ## 4. 已处理的公开安装阻塞
 
