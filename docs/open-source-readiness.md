@@ -1,7 +1,7 @@
 # 见微开源准备报告
 
 > 检查日期：2026-07-22
-> 目标：让仓库具备安全公开条件，但在所有者最终确认前保持 Private  
+> 目标：记录仓库从开源准备到正式公开的安全检查与发布状态
 > 许可证：Apache License 2.0
 
 这份报告记录可重复验证的技术检查，不构成法律意见。平台条款和许可证发生变化时需要重新核对。
@@ -25,7 +25,8 @@
 | 依赖漏洞提醒 | 已启用 | GitHub vulnerability alerts 已在私有阶段开启 |
 | 全新机器安装 | 待人工确认 | 发布前仍需在干净环境运行一次 `./start.sh` |
 | GitHub 仓库归属 | 通过 | 已迁移至 `workagi/jianwei`，提交、标签与协作记录保留 |
-| GitHub 可见性 | 待最终切换 | 发布门禁通过后由仓库所有者批准切换为 Public；随后启用私有漏洞报告 |
+| GitHub 可见性 | 已公开 | `workagi/jianwei` 已切换为 Public，并验证公开仓库设置生效 |
+| 私密漏洞报告 | 已启用 | 外部安全问题可以通过 GitHub Private vulnerability reporting 私下提交 |
 
 ## 2. 敏感信息审计
 
@@ -95,7 +96,7 @@ docker compose config
 
 - [ ] 在一个全新目录或另一台没有本项目镜像和 volumes 的机器运行 `./start.sh`。
 - [x] README 当前未嵌入信息流截图或真实演示数据，不含真实账号内容。
-- [ ] 仓库切换为 Public 后立即启用 Private vulnerability reporting。
+- [x] 仓库切换为 Public 后立即启用 Private vulnerability reporting。
 - [x] `NOTICE` 使用 `skymao2021` 作为当前权利人标识。
 - [x] 公众号与 X 功能说明明确标注第三方边界、账号风险与非永久稳定性。
 - [ ] 创建公开 Release，并说明实验性采集路径和已知限制。
@@ -105,7 +106,7 @@ docker compose config
 
 1. 再次运行所有 CI 检查与历史审计。
 2. 确认默认分支为 `main`，分支保护要求 CI 通过。
-3. 将仓库可见性切换为 Public。
-4. 立即启用 Private vulnerability reporting，并检查安全通知接收设置。
+3. [已完成] 将仓库可见性切换为 Public。
+4. [已完成] 立即启用 Private vulnerability reporting，并检查安全通知接收设置。
 5. 创建首个公开 Release，不直接复用未经说明的私有标签。
 6. 发布公众号文章时以用户价值和真实限制为主，不把非官方采集包装成平台承诺。
