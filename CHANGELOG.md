@@ -35,6 +35,11 @@
 - 内容类型规则加入强证据权重，避免带 LLM 的论文被误判为模型发布、多模态模型发布被误判为普通产品动态。
 - 信息流按北京时间真实分日，跨零点内容会显示新的日期标题，不再混入上一组。
 - 采集失败统一分类为授权、限流、额度、超时、配置、网络和上游异常；后台显示可操作说明，技术原文仅留在日志中。
+- 相关性迁移完成：retentionReason、relevanceScore、retentionSource 只写入 item_matches；
+  items 表保留 informationValueScore 作为文档级质量分；读者 COALESCE 默认走 match 层。
+- 第三方镜像固定版本（trendradar:6.10.0 / trendradar-mcp:4.1.0 / wechat-download-api:1.7.0）。
+- 会话 Cookie 升级为带时间戳的签名载荷（iat/exp/sid），向后兼容旧格式。
+- 登录限流从进程内存迁移到 PostgreSQL（login_attempts 表），重启和多副本安全共享。
 
 ## [0.1.0]
 

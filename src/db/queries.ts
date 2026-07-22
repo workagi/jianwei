@@ -1,5 +1,6 @@
 import { db } from "./index";
 import { items, itemMatches, sourceItems, monitors, connectors, apiCredentials, bookmarks, collectionRuns } from "./schema";
+import { loginAttempts } from "./schema";
 import { desc, eq, and, gte, inArray, sql, type SQL } from "drizzle-orm";
 import type { PlatformType } from "@/connectors/types";
 import { decryptCredential, encryptCredential, isEncryptedCredential } from "@/lib/credential-crypto";
@@ -429,4 +430,64 @@ export async function saveApiCredentials(rows: { key: string; value: string }[])
 export async function deleteApiCredentials(keys: string[]): Promise<void> {
   if (keys.length === 0) return;
   await db.delete(apiCredentials).where(inArray(apiCredentials.key, keys));
+}
+
+// ── Login rate limiting ────────────────────────────────────────────────
+
+const LOGIN_ATTEMPT_WINDOW_MS = 10 * 60 * 1000;
+const LOGIN_MAX_ATTEMPTS = 8;
+
+export async function checkLoginRateLimit(key: string): Promise<number | null> {
+  const now = new Date();
+  const [row] = await db
+    .select({
+      blockedUntil: loginAttempts.blockedUntil,
+      attemptCount: loginAttempts.attemptCount,
+      windowStartedAt: loginAttempts.windowStartedAt,
+    })
+    .from(loginAttempts)
+    .where(eq(loginAttempts.attemptKey, key));
+  if (!row) return null;
+  if (row.blockedUntil && new Date(row.blockedUntil) > now) {
+    return Math.ceil((new Date(row.blockedUntil).getTime() - now.getTime()) / 1000);
+  }
+  if (new Date(row.windowStartedAt).getTime() + LOGIN_ATTEMPT_WINDOW_MS <= now.getTime()) {
+    return null;
+  }
+  return row.attemptCount >= LOGIN_MAX_ATTEMPTS
+    ? Math.ceil((new Date(row.windowStartedAt).getTime() + LOGIN_ATTEMPT_WINDOW_MS - now.getTime()) / 1000)
+    : null;
+}
+
+export async function recordLoginAttempt(key: string): Promise<void> {
+  const now = new Date();
+  await db
+    .insert(loginAttempts)
+    .values({ attemptKey: key, windowStartedAt: now, attemptCount: 1 })
+    .onConflictDoUpdate({
+      target: loginAttempts.attemptKey,
+      setWhere: sql`${loginAttempts.windowStartedAt} + interval '10 minutes' > ${now.toISOString()}`,
+      set: {
+        attemptCount: sql`${loginAttempts.attemptCount} + 1`,
+        updatedAt: now,
+      },
+    });
+
+  const [row] = await db
+    .select({ attemptCount: loginAttempts.attemptCount, windowStartedAt: loginAttempts.windowStartedAt })
+    .from(loginAttempts)
+    .where(eq(loginAttempts.attemptKey, key));
+  if (row && row.attemptCount >= LOGIN_MAX_ATTEMPTS) {
+    await db
+      .update(loginAttempts)
+      .set({
+        blockedUntil: new Date(new Date(row.windowStartedAt).getTime() + LOGIN_ATTEMPT_WINDOW_MS),
+        updatedAt: now,
+      })
+      .where(eq(loginAttempts.attemptKey, key));
+  }
+}
+
+export async function clearLoginAttempts(key: string): Promise<void> {
+  await db.delete(loginAttempts).where(eq(loginAttempts.attemptKey, key));
 }

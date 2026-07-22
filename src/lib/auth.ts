@@ -51,11 +51,79 @@ function secretsEqual(actual: string, expected: string): boolean {
   return actualBytes.length === expectedBytes.length && timingSafeEqual(actualBytes, expectedBytes);
 }
 
-/** Cookie 只保存签名后的会话值，不保存账号、密码或 API token。 */
+const ADMIN_SESSION_VERSION_KEY = "ADMIN_SESSION_VERSION";
+const SESSION_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+
+/** Signed session payload: base64url(payload):base64url(signature).
+ *  Payload: "username:iat:exp:sid:version". Timestamps are epoch seconds. */
 export function adminSessionCookieValue(secret: string, username = getAdminUsername()): string {
-  return createHmac("sha256", secret)
-    .update(`jianwei-admin-session-v2:${username}`)
-    .digest("base64url");
+  const now = Math.floor(Date.now() / 1000);
+  const payload = [
+    username,
+    now,
+    now + Math.floor(SESSION_TTL_MS / 1000),
+    randomBytes(12).toString("base64url"),
+    "v3", // Discriminator for format evolution
+  ].join(":");
+  const sig = createHmac("sha256", secret).update(payload).digest("base64url");
+  return `${Buffer.from(payload).toString("base64url")}:${sig}`;
+}
+
+/** Parse and verify a session cookie. Returns the username if valid. */
+export async function verifySessionCookie(value: string): Promise<string | null> {
+  // Backward-compat: old HMAC-only format
+  if (!value.includes(":")) {
+    const secret = await effectiveAdminSessionSecret();
+    if (!secret) return null;
+    const expected = createHmac("sha256", secret)
+      .update(`jianwei-admin-session-v2:${getAdminUsername()}`)
+      .digest("base64url");
+    return secretsEqual(value, expected) ? getAdminUsername() : null;
+  }
+
+  const [payloadB64, sigB64] = value.split(":");
+  if (!payloadB64 || !sigB64) return null;
+
+  let payload: string;
+  try {
+    payload = Buffer.from(payloadB64, "base64url").toString("utf8");
+  } catch {
+    return null;
+  }
+
+  const parts = payload.split(":");
+  if (parts.length < 2) return null;
+  const [username, iatStr, expStr] = parts;
+
+  const now = Math.floor(Date.now() / 1000);
+  const iat = Number(iatStr);
+  if (Number.isFinite(iat) && iat > now + 300) return null; // clock skew guard
+  const exp = Number(expStr);
+  if (!Number.isFinite(exp) || exp < now) return null;
+
+  const secret = await effectiveAdminSessionSecret();
+  if (!secret) return null;
+
+  const expectedSig = createHmac("sha256", secret).update(payload).digest("base64url");
+  if (!secretsEqual(sigB64, expectedSig)) return null;
+
+  return username;
+}
+
+export async function adminSessionVersion(): Promise<number> {
+  try {
+    const rows = await loadApiCredentials();
+    const row = rows.find((r) => r.key === ADMIN_SESSION_VERSION_KEY);
+    const version = row ? Number(row.value) : 1;
+    return Number.isFinite(version) && version > 0 ? version : 1;
+  } catch {
+    return 1;
+  }
+}
+
+export async function bumpAdminSessionVersion(): Promise<void> {
+  const next = (await adminSessionVersion()) + 1;
+  await saveApiCredentials([{ key: ADMIN_SESSION_VERSION_KEY, value: String(next) }]);
 }
 
 export function hashAdminPassword(password: string, salt = randomBytes(16)): string {
@@ -114,13 +182,9 @@ function cookieValue(req: Request): string | undefined {
 }
 
 async function hasValidSession(req: Request): Promise<boolean> {
-  const sessionSecret = await effectiveAdminSessionSecret();
   const value = cookieValue(req);
-  return Boolean(
-    sessionSecret
-      && value
-      && secretsEqual(value, adminSessionCookieValue(sessionSecret)),
-  );
+  if (!value) return false;
+  return Boolean(await verifySessionCookie(value));
 }
 
 function hasValidBearer(req: Request): boolean {
@@ -150,8 +214,6 @@ export async function requireWriteAuth(req: Request): Promise<NextResponse | nul
 
 /** 校验管理页会话；未配置鉴权时拒绝访问。 */
 export async function pageCookieOk(session: string | undefined): Promise<boolean> {
-  const overrides = await adminAuthOverrides();
-  const sessionSecret = overrides.sessionSecret ?? getAdminSessionSecret() ?? overrides.passwordHash;
-  if (!sessionSecret || !session) return false;
-  return secretsEqual(session, adminSessionCookieValue(sessionSecret));
+  if (!session) return false;
+  return Boolean(await verifySessionCookie(session));
 }

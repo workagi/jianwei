@@ -358,12 +358,9 @@ export async function backfillMissingSummaries(
         ...(outcome.summary ? { aiSummary: outcome.summary } : {}),
         ...(outcome.translatedTitle ? { translatedTitle: outcome.translatedTitle } : {}),
         contentType: outcome.contentType,
-        topicTags: outcome.topicTags,
-        retentionReason: outcome.retentionReason || null,
-        informationValueScore: outcome.relevanceScore,
-        relevanceScore: outcome.relevanceScore,
-        retentionSource: outcome.retentionSource,
-        analysisStatus: outcome.status,
+       topicTags: outcome.topicTags,
+       informationValueScore: outcome.relevanceScore,
+       analysisStatus: outcome.status,
         analysisProvider: outcome.provider ?? null,
         analysisModel: outcome.model ?? null,
         analysisVersion: outcome.version,
@@ -374,12 +371,12 @@ export async function backfillMissingSummaries(
         updatedAt: new Date(),
       })
       .where(eq(items.id, row.id));
-    await db
-      .update(itemMatches)
-      .set({
-        relevanceScore: outcome.relevanceScore,
-        retentionReason: outcome.retentionReason || null,
-        retentionSource: outcome.retentionSource,
+   await db
+     .update(itemMatches)
+     .set({
+       relevanceScore: outcome.relevanceScore,
+       retentionReason: outcome.retentionReason || null,
+       retentionSource: outcome.retentionSource,
         analysisStatus: outcome.status,
         analysisVersion: outcome.version,
         lastSeenAt: new Date(),

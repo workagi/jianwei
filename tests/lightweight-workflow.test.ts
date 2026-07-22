@@ -152,7 +152,11 @@ describe("lightweight model workflow simulation", () => {
     });
     expect(repo.rows).toHaveLength(3);
     expect(repo.rows.every((row) => row.analysisStatus === "success")).toBe(true);
-    expect(repo.rows.every((row) => row.retentionSource === "model" && Boolean(row.retentionReason))).toBe(true);
+    // retentionSource / retentionReason moved to item_matches (repo.links)
+    expect(repo.links.length).toBeGreaterThanOrEqual(3);
+    // Model outcomes flow through summary backfill -> item_matches; links keep
+    // informationValueScore from the document row as the base relevance signal.
+    expect(repo.links.every((link) => (link.relevanceScore ?? 0) >= 50)).toBe(true);
     expect(repo.rows.find((row) => row.platform === "x")?.translatedTitle).toContain("新能力");
     expect(repo.rows.some((row) => /content_type|topic_tags|我现在需要处理/i.test(row.aiSummary ?? ""))).toBe(false);
   });

@@ -118,7 +118,9 @@ describe("toItemRows", () => {
     expect(rows[0].contentType).toBe("tutorial");
     expect(rows[0].topicTags).toEqual(expect.arrayContaining(["Agent", "MCP", "Prompt"]));
     expect(rows[0].retentionReason).toBeNull();
-    expect(rows[0].retentionSource).toBe("rules");
+    // retentionSource moved to item_matches; items only carries informationValueScore
+    expect(rows[0].retentionSource).toBeUndefined();
+    expect(rows[0].informationValueScore).toBeGreaterThanOrEqual(50);
   });
 
   it("persists WeChat full-text provenance separately from the article body", () => {

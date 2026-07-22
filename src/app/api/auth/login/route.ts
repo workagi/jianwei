@@ -6,12 +6,9 @@ import {
   effectiveAdminSessionSecret,
   isAdminAuthConfigured,
 } from "@/lib/auth";
+import { checkLoginRateLimit, clearLoginAttempts, recordLoginAttempt } from "@/db/queries";
 
 export const dynamic = "force-dynamic";
-
-const ATTEMPT_WINDOW_MS = 10 * 60 * 1000;
-const MAX_ATTEMPTS = 8;
-const attempts = new Map<string, { count: number; resetAt: number }>();
 
 function clientKey(req: Request): string {
   return req.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
@@ -19,25 +16,6 @@ function clientKey(req: Request): string {
     || "local";
 }
 
-function failedTooOften(key: string): number | null {
-  const now = Date.now();
-  const state = attempts.get(key);
-  if (!state || state.resetAt <= now) {
-    attempts.delete(key);
-    return null;
-  }
-  return state.count >= MAX_ATTEMPTS ? Math.ceil((state.resetAt - now) / 1000) : null;
-}
-
-function recordFailure(key: string) {
-  const now = Date.now();
-  const state = attempts.get(key);
-  if (!state || state.resetAt <= now) {
-    attempts.set(key, { count: 1, resetAt: now + ATTEMPT_WINDOW_MS });
-    return;
-  }
-  state.count += 1;
-}
 
 /** 账号密码换取 httpOnly 管理会话；API token 继续只供程序调用。 */
 export async function POST(req: Request) {
@@ -49,7 +27,7 @@ export async function POST(req: Request) {
   }
 
   const key = clientKey(req);
-  const retryAfter = failedTooOften(key);
+  const retryAfter = await checkLoginRateLimit(key);
   if (retryAfter) {
     return NextResponse.json(
       { ok: false, error: "尝试次数过多，请稍后再试" },
@@ -69,11 +47,11 @@ export async function POST(req: Request) {
     || typeof body.password !== "string"
     || !(await adminCredentialsMatch(body.username, body.password))
   ) {
-    recordFailure(key);
+    await recordLoginAttempt(key);
     return NextResponse.json({ ok: false, error: "账号或密码错误" }, { status: 401 });
   }
 
-  attempts.delete(key);
+  await clearLoginAttempts(key);
   const sessionSecret = await effectiveAdminSessionSecret();
   if (!sessionSecret) {
     return NextResponse.json({ ok: false, error: "后台会话配置不完整" }, { status: 503 });

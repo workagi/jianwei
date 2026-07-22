@@ -182,9 +182,9 @@ services:
 
   # Optional. Its login UI is bound to server loopback only; use an SSH tunnel
   # for the one-time scan instead of exposing this unauthenticated API publicly.
-  wechat-fallback:
+ wechat-fallback:
     profiles: ["wechat-fallback"]
-    image: tmwgsicp/wechat-download-api:latest
+    image: tmwgsicp/wechat-download-api:1.7.0
     environment:
       TZ: Asia/Shanghai
       SITE_URL: ${WECHAT_FALLBACK_PUBLIC_URL:-http://localhost:5000}
@@ -206,7 +206,7 @@ services:
     restart: unless-stopped
 
   trendradar:
-    image: wantcat/trendradar:latest
+    image: wantcat/trendradar:6.10.0
     environment:
       TZ: Asia/Shanghai
       WEBSERVER_PORT: 8080
@@ -228,7 +228,7 @@ services:
     restart: unless-stopped
 
   trendradar-mcp:
-    image: wantcat/trendradar-mcp:latest
+    image: wantcat/trendradar-mcp:4.1.0
     environment:
       TZ: Asia/Shanghai
       MCP_PORT: 3333
@@ -243,7 +243,7 @@ services:
     restart: unless-stopped
 
   trendradar-refresh:
-    image: wantcat/trendradar:latest
+    image: wantcat/trendradar:6.10.0
     environment:
       TZ: Asia/Shanghai
       RUN_MODE: control

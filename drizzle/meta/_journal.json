@@ -113,6 +113,13 @@
       "when": 1784704325336,
       "tag": "0015_neat_rawhide_kid",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1784709903652,
+      "tag": "0016_foamy_shaman",
+      "breakpoints": true
     }
   ]
 }

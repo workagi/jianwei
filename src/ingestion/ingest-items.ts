@@ -81,12 +81,10 @@ export function toItemRows(input: NormalizedItem[]): IngestItemRow[] {
       contentType: classification.contentType,
       topicTags: classification.topicTags,
       // A generic rule fallback must not be displayed as if it were a
-      // model-authored recommendation reason.
-      retentionReason: null,
-      informationValueScore: retention.relevanceScore,
-      relevanceScore: retention.relevanceScore,
-      retentionSource: retention.source,
-      analysisStatus: "pending",
+     // model-authored recommendation reason.
+     retentionReason: null,
+     informationValueScore: retention.relevanceScore,
+     analysisStatus: "pending",
       // X quote payload reuses contentHtml as a JSON envelope (type=x_quote).
       // WeChat full-text HTML continues to use the same column with HTML markup.
       contentHtml: item.contentHtml ?? null,
@@ -268,13 +266,10 @@ export async function prepareIngest(
         if (!outcome) continue;
         if (outcome.summary) row.aiSummary = outcome.summary;
         if (outcome.translatedTitle) row.translatedTitle = outcome.translatedTitle;
-        row.contentType = outcome.contentType;
-        row.topicTags = outcome.topicTags;
-        row.retentionReason = outcome.retentionReason || null;
-        row.informationValueScore = outcome.relevanceScore;
-        row.relevanceScore = outcome.relevanceScore;
-        row.retentionSource = outcome.retentionSource;
-        row.analysisStatus = outcome.status;
+       row.contentType = outcome.contentType;
+       row.topicTags = outcome.topicTags;
+       row.informationValueScore = outcome.relevanceScore;
+       row.analysisStatus = outcome.status;
         row.analysisProvider = outcome.provider ?? null;
         row.analysisModel = outcome.model ?? null;
         row.analysisVersion = outcome.version;
@@ -356,15 +351,17 @@ export async function commitPreparedIngest(
     if (linksByItem.has(itemId)) continue;
     const row = rowByUrl.get(observation.sourceUrl)
       ?? rowByUpstream.get(sourceKey(observation.platform, observation.upstreamId));
-    linksByItem.set(itemId, {
-      itemId,
-      monitorId: input.monitorId,
-      sourceItemId: storedSource?.id,
-      matchedQuery: input.matchedQuery,
-      relevanceScore: row?.informationValueScore ?? row?.relevanceScore ?? undefined,
-      retentionReason: row?.retentionReason ?? undefined,
-      retentionSource: row?.retentionSource ?? undefined,
-      analysisStatus: row?.analysisStatus ?? undefined,
+   linksByItem.set(itemId, {
+     itemId,
+     monitorId: input.monitorId,
+     sourceItemId: storedSource?.id,
+     matchedQuery: input.matchedQuery,
+      relevanceScore: row?.informationValueScore ?? undefined,
+      // Per-monitor retention fields are populated by subsequent model
+      // analysis runs or backfill; they do not live on the document row.
+      retentionReason: undefined,
+      retentionSource: undefined,
+     analysisStatus: row?.analysisStatus ?? undefined,
       analysisVersion: row?.analysisVersion ?? undefined,
       rawPayload: observation.rawPayload,
     });

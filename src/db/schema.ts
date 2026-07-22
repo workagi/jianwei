@@ -37,6 +37,16 @@ export const connectors = pgTable("connectors", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+/** Login rate-limiting persisted in PostgreSQL so restarts and multi-replica
+ *  deployments share the same window counters. */
+export const loginAttempts = pgTable("login_attempts", {
+  attemptKey: text("attempt_key").primaryKey(),
+  windowStartedAt: timestamp("window_started_at", { withTimezone: true }).notNull(),
+  attemptCount: integer("attempt_count").notNull().default(0),
+  blockedUntil: timestamp("blocked_until", { withTimezone: true }),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const connectorCredentials = pgTable("connector_credentials", {
   id: uuid("id").primaryKey().defaultRandom(),
   connectorId: uuid("connector_id").notNull().references(() => connectors.id, { onDelete: "cascade" }),
