@@ -15,6 +15,20 @@
 
 ---
 
+## 界面预览
+
+### 一条统一的信息流
+
+![见微精选信息流](docs/images/jianwei-feed.jpg)
+
+### 在后台添加和管理监控任务
+
+![见微监控任务](docs/images/jianwei-monitors.jpg)
+
+### 查看采集通道与内容处理状态
+
+![见微平台连接与处理状态](docs/images/jianwei-connectors.jpg)
+
 ## 为什么需要见微？
 
 真正麻烦的不是“网上没有信息”，而是信息太散、太杂，也太难持续追踪：
@@ -276,6 +290,19 @@ docker compose config
 | [贡献指南](CONTRIBUTING.md) | 开发、测试、提交与许可证要求 |
 | [安全策略](SECURITY.md) | 私下报告漏洞和安全边界 |
 | `docs/plans/` | 历史设计和实施计划，不代表所有内容仍是当前行为 |
+
+## 致谢
+
+见微不是从零造出所有采集能力，而是站在这些优秀开源项目的肩膀上完成整合。特别感谢：
+
+| 开源项目 | 为见微提供的能力 |
+| --- | --- |
+| [WeRSS / we-mp-rss](https://github.com/rachelos/we-mp-rss) | 微信公众号识别、订阅与文章列表采集，是公众号监控的主要通道 |
+| [wechat-download-api](https://github.com/tmwgsicp/wechat-download-api) | 在主通道缺少文章正文时，提供可选的公众号全文增强能力 |
+| [TrendRadar](https://github.com/SANSAN0/TrendRadar) | 提供热门榜单、新闻站与 RSS 的采集能力，让见微不必重复维护整套榜单适配器 |
+| [Hermes Agent](https://github.com/NousResearch/hermes-agent) | 为 xAI device-code OAuth 接入流程提供了重要参考与可复用实现 |
+
+感谢这些项目的作者和贡献者把工作公开出来，见微才有机会把分散的信息源整合成一条更容易阅读的信息流。各项目的许可证、代码边界和使用方式见 [第三方声明](THIRD_PARTY_NOTICES.md)。
 
 ## 开源许可与当前状态
 
