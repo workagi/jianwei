@@ -33,7 +33,8 @@ done
 RED='\033[31m'; GREEN='\033[32m'; YELLOW='\033[33m'; RESET='\033[0m'
 info()  { echo -e "${GREEN}[INFO]${RESET} $1"; }
 warn()  { echo -e "${YELLOW}[WARN]${RESET} $1"; }
-err()   { echo -e "${RED}[ERR]${RESET}  $1"; }
+err()   { echo -e "[ERR]  "; }
+ok()    { echo -e "[OK]   "; }
 
 confirm() {
   if $YES; then return 0; fi
