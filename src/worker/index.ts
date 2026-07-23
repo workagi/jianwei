@@ -280,6 +280,7 @@ async function runMonitor(claimed: ClaimedMonitor, claimedEpoch: number, shutdow
   });
 
   if (alreadySucceeded) {
+    await markRunProgress(runId, "skipped");
     await db.update(monitors).set({
       nextRunAt,
       leaseOwner: null,
@@ -328,13 +329,16 @@ async function runMonitor(claimed: ClaimedMonitor, claimedEpoch: number, shutdow
       shutdownSignal,
     );
     // Provider and model work stays outside a database transaction. Only the
+    await markRunProgress(runId, "collecting");
     // final durable state is committed atomically below.
+    await markRunProgress(runId, "ingesting");
     const prepared = await prepareIngest(createDrizzleIngestRepository(), {
       items,
       monitorId: claimed.monitorId,
       matchedQuery: monitorMatchedQuery(claimed),
     });
     const summaryInputTokens = prepared.summary.inputTokens ?? 0;
+    await markRunProgress(runId, "gathering");
     const summaryOutputTokens = prepared.summary.outputTokens ?? 0;
     const summaryCost = summaryEstimatedCostUsd(summaryInputTokens, summaryOutputTokens);
 
@@ -367,6 +371,7 @@ async function runMonitor(claimed: ClaimedMonitor, claimedEpoch: number, shutdow
 
     const result = await db.transaction(async (tx) => {
       const committed = await commitPreparedIngest(createDrizzleIngestRepository(tx), prepared);
+      await markRunProgress(runId, "committing");
 
       // Usage rows share the run's idempotency key. A retried commit can never
       // count the same provider/model metric twice.
@@ -932,21 +937,42 @@ async function maybeRetryFailedContentAnalysis(now = Date.now()): Promise<void> 
     workerLog.warn("analysis.retry.failed", { error });
   }
 }
+const RUN_PROGRESS_STALE_MS = 10 * 60_000;
 
 export async function cleanupStaleRunningRuns(): Promise<number> {
-  const staleAfterMs = Math.max(GATHER_TIMEOUT_MS, WECHAT_GATHER_TIMEOUT_MS) + 60_000;
-  const cutoff = new Date(Date.now() - staleAfterMs);
+  const progressCutoff = new Date(Date.now() - RUN_PROGRESS_STALE_MS);
+  const leaseCutoff = new Date(Date.now() - MONITOR_LEASE_MS - 60_000);
   const rows = await db
     .update(collectionRuns)
     .set({
       status: "failed",
       finishedAt: new Date(),
       errorCode: "RUN_INTERRUPTED",
-      errorMessage: "Worker restarted or stopped before this run finished.",
+      errorMessage: "Abandoned: no progress for 10+ min and monitor lease expired.",
     })
-    .where(and(eq(collectionRuns.status, "running"), lte(collectionRuns.startedAt, cutoff)))
+    .where(and(
+      eq(collectionRuns.status, "running"),
+      lte(collectionRuns.lastProgressAt, progressCutoff),
+      sql`exists (
+        select 1 from ${monitors}
+        where ${monitors.id} = ${collectionRuns.monitorId}
+          and (
+            ${monitors.leaseOwner} is distinct from ${WORKER_ID}
+            or ${monitors.leaseUntil} is null
+            or ${monitors.leaseUntil} < ${leaseCutoff.toISOString()}
+          )
+      )`,
+    ))
     .returning({ id: collectionRuns.id });
   return rows.length;
+}
+
+async function markRunProgress(runId: string, stage: string): Promise<void> {
+  await db
+    .update(collectionRuns)
+    .set({ currentStage: stage, lastProgressAt: new Date() })
+    .where(eq(collectionRuns.id, runId))
+    .catch((error) => workerLog.warn("run.progress.update_failed", { runId, stage, error }));
 }
 
 async function withTimeout<T>(

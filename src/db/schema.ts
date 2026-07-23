@@ -199,6 +199,8 @@ export const collectionRuns = pgTable("collection_runs", {
   attempt: integer("attempt").notNull().default(1),
   attemptToken: text("attempt_token").notNull().default(""),
   status: runStatus("status").notNull().default("running"),
+  currentStage: text("current_stage"),
+  lastProgressAt: timestamp("last_progress_at", { withTimezone: true }).notNull().defaultNow(),
   startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
   finishedAt: timestamp("finished_at", { withTimezone: true }),
   fetchedCount: integer("fetched_count").notNull().default(0),

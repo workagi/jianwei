@@ -49,6 +49,8 @@
 - lease_epoch fencing token：claimMonitor 原子递增 epoch，提交时验证，旧 lease 持有者无法覆盖。
 - collection_runs attemptToken：每次重试生成新 token，旧 attempt 不能更改当前 attempt 的状态。
 - claimMonitor 返回数据库最新行，runMonitor 不再使用 due 查询旧快照；claim 与执行之间管理员修改的配置立即生效。
+- stale run 清理改用 lastProgressAt + currentStage + monitor lease 交叉验证；
+  采集完成等待模型限流期间不会被误杀。
 ## [0.1.0]
 
 - 完成单用户自托管信息流闭环。
