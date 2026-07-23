@@ -810,19 +810,39 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
   // Provider-level bulkhead: prevent a single slow provider (e.g. WeChat)
   // from consuming all concurrency slots and starving other monitors.
   const providerConcurrency: Record<string, number> = {
+    // WeChat: both werss and fallback share a browser/network resource
     werss: 1,
     wechat: 1,
+    wechat_fallback: 1,
+    // X: API rate limits are tight
     x: 1,
+    x_grok: 1,
+    x_official: 1,
+    // Web search providers
     brave: 2,
     tavily: 2,
     serper: 2,
+    // TrendRadar
     trendradar: 2,
+    // Default for unrecognized providers
+    default: 2,
   };
   const providerActive = new Map<string, number>();
 
   function providerKey(monitor: typeof due[number]): string {
-    // Use connectorId first, fall back to platform
-    return monitor.connectorId || monitor.platform || "default";
+    // Derive concurrency bucket from platform and provider config.
+    // connectorId is a UUID — use platform (e.g. "wechat", "x", "web_search")
+    // with provider override from config when available.
+    const cfg = monitor.config as Record<string, unknown> | null;
+    const provider = typeof cfg?.provider === "string" ? cfg.provider : null;
+    // web_search platform has per-provider limits (brave/tavily/serper)
+    if (monitor.platform === "web_search" && provider) return provider;
+    // wechat: distinguish werss vs wechat_fallback
+    if (monitor.platform === "wechat" && provider) return provider;
+    // x: distinguish x_grok vs x_official
+    if (monitor.platform === "x" && provider) return provider;
+    // Fall back to platform name
+    return monitor.platform || "default";
   }
 
   function providerAtCapacity(key: string): boolean {
