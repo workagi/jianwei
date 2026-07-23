@@ -1,0 +1,74 @@
+# Minimal deployment: postgres + web + worker only.
+# No WeRSS, TrendRadar, or other sidecars. Suitable for environments
+# where ghcr.io is unreachable (e.g. mainland China) or for quick eval.
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: monitor
+      POSTGRES_USER: monitor
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-monitor}
+    ports:
+      - "127.0.0.1:54329:5432"
+    volumes:
+      - monitor-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U monitor -d monitor"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  migrate:
+    build:
+      context: .
+      target: tools
+    environment:
+      DATABASE_URL: postgres://monitor:${POSTGRES_PASSWORD:-monitor}@postgres:5432/monitor
+    command: ["sh", "-c", "pnpm db:migrate && pnpm db:seed"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  web:
+    build:
+      context: .
+      target: runner
+    environment:
+      DATABASE_URL: postgres://monitor:${POSTGRES_PASSWORD:-monitor}@postgres:5432/monitor
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      ADMIN_API_TOKEN: ${ADMIN_API_TOKEN}
+      ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET}
+      NODE_ENV: production
+      PORT: 3000
+      HOSTNAME: 0.0.0.0
+    ports:
+      - "3000:3000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      target: tools
+    environment:
+      DATABASE_URL: postgres://monitor:${POSTGRES_PASSWORD:-monitor}@postgres:5432/monitor
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY}
+      WORKER_MONITOR_LEASE_SECONDS: ${WORKER_MONITOR_LEASE_SECONDS:-1800}
+    command: ["pnpm", "worker"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  monitor-postgres:

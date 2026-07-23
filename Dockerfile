@@ -1,18 +1,25 @@
 FROM node:22-alpine AS base
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
-RUN corepack enable && corepack prepare pnpm@10.28.1 --activate
+# Use registry mirror for China network; npm install -g works around corepack hardcoding npmjs.org
+RUN npm config set registry https://registry.npmmirror.com && \
+    npm install -g pnpm@10.28.1 && \
+    pnpm config set registry https://registry.npmmirror.com
 
 FROM base AS deps
 WORKDIR /app
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 RUN pnpm install --frozen-lockfile
 
 FROM base AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
+# esbuild is a transitive dependency; pnpm's isolated linker won't expose its bin.
+# Link it manually so build:worker can find it.
+RUN ESBUILD_BIN=$(find /app/node_modules/.pnpm -name esbuild -type f -path '*/bin/esbuild' 2>/dev/null | head -1) && \
+    if [ -n "$ESBUILD_BIN" ]; then ln -sf "$ESBUILD_BIN" /usr/local/bin/esbuild; fi
 COPY . .
-RUN pnpm build && pnpm build:worker
+RUN mkdir -p public && pnpm build && pnpm build:worker
 
 FROM node:22-alpine AS runner
 WORKDIR /app
@@ -31,6 +38,7 @@ FROM base AS tools
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=builder /app/drizzle ./drizzle
+COPY --from=builder /app/drizzle.config.ts ./drizzle.config.ts
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/tsconfig.json ./tsconfig.json
 COPY --from=builder /app/dist ./dist
