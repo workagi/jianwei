@@ -205,6 +205,29 @@ export const monitorMatchObservations = pgTable("monitor_match_observations", {
   uniqueIndex("match_observations_run_match_source_uidx").on(
     table.matchItemId, table.matchMonitorId, table.sourceItemId, table.collectionRunId,
   ),
+  uniqueIndex("match_observations_run_match_source_uidx").on(
+    table.matchItemId, table.matchMonitorId, table.sourceItemId, table.collectionRunId,
+  ),
+]);
+
+/**
+ * Lightweight claim table that prevents concurrent workers from
+ * calling the model for the same canonical document. The first worker
+ * to insert wins; other workers skip the model and reuse the result
+ * once it becomes available.
+ */
+export const documentAnalysisClaims = pgTable("document_analysis_claims", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  canonicalUrlHash: text("canonical_url_hash").notNull(),
+  analysisVersion: text("analysis_version").notNull(),
+  ownerWorkerId: text("owner_worker_id").notNull(),
+  status: text("status").notNull().default("claimed"),
+  claimedAt: timestamp("claimed_at", { withTimezone: true }).notNull().defaultNow(),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+}, (table) => [
+  uniqueIndex("doc_analysis_claim_uidx").on(table.canonicalUrlHash, table.analysisVersion),
+  index("doc_analysis_claim_expires_idx").on(table.expiresAt),
 ]);
 
 // 见微 is currently a single-user workspace. A dedicated join table

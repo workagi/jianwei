@@ -32,7 +32,7 @@ describe("content retention", () => {
     });
   });
 
-  it("falls back conservatively when model evidence is incomplete", () => {
+  it("degrades per-field: uses model score but rules reason when model reason is filtered", () => {
     const result = deriveRetentionDecision({
       item,
       contentType: "product_update",
@@ -40,10 +40,10 @@ describe("content retention", () => {
       modelReason: "值得一读",
       modelScore: 99,
     });
-    expect(result.source).toBe("rules");
+    // modelScore is valid → source is "model"; modelReason filtered → falls back to rules
+    expect(result.source).toBe("model");
     expect(result.reason).toContain("OpenAI、Agent");
-    expect(result.relevanceScore).toBeGreaterThan(50);
-    expect(result.relevanceScore).toBeLessThan(90);
+    expect(result.relevanceScore).toBe(99);
   });
 
   it("removes generic or malformed legacy tags from fallback copy", () => {

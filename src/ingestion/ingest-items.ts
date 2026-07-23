@@ -1,11 +1,14 @@
 import type { NormalizedItem } from "@/connectors/types";
 import { canonicalizeUrl, contentFingerprint, dedupeKey } from "./deduplicate";
 import { db } from "@/db";
-import { items, itemMatches, monitorMatchObservations, sourceItems } from "@/db/schema";
+import { items, itemMatches, monitorMatchObservations, sourceItems, documentAnalysisClaims } from "@/db/schema";
+import { createHash } from "node:crypto";
 import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { type SummaryRunStats } from "@/lib/summarizer";
-import { routeContentItems } from "@/lib/content-router";
+import { routeContentItems, CONTENT_ANALYSIS_VERSION } from "@/lib/content-router";
 import { deriveItemClassification } from "@/lib/item-tags";
+
+const WORKER_ID_FOR_CLAIM = process.env.WORKER_ID?.trim() || "ingest-" + Math.random().toString(36).slice(2, 8);
 import { deriveRetentionDecision, type MonitorRules, deriveMonitorRetention } from "@/lib/content-retention";
 import { createStructuredLogger } from "@/lib/structured-log";
 
@@ -161,6 +164,13 @@ export interface IngestRepository {
   ): Promise<Set<string>>;
   /** Return canonical URLs that already exist so model routing can skip them. */
   findExistingCanonicalUrls?(canonicalUrls: string[]): Promise<Set<string>>;
+  /** Try to claim document analysis for a canonical URL. Returns true if claimed. */
+  claimDocumentAnalysis?(input: {
+    canonicalUrlHash: string;
+    analysisVersion: string;
+    ownerWorkerId: string;
+    leaseMinutes: number;
+  }): Promise<boolean>;
 }
 
 export interface IngestResult {
@@ -230,6 +240,33 @@ async function findExistingCanonicalUrls(repo: IngestRepository, urls: string[])
 }
 
 /** Analyse and normalize a batch without writing it. */
+function canonicalUrlHash(url: string): string {
+  return createHash("sha256").update(url).digest("base64url").slice(0, 32);
+}
+
+async function claimDocumentAnalyses(
+  repo: IngestRepository,
+  newItems: NormalizedItem[],
+): Promise<NormalizedItem[]> {
+  if (!repo.claimDocumentAnalysis) return newItems;
+  const claimed: NormalizedItem[] = [];
+  for (const item of newItems) {
+    try {
+      const url = safeCanonicalUrl(item.canonicalUrl, item.platform, item.upstreamId);
+      const ok = await repo.claimDocumentAnalysis({
+        canonicalUrlHash: canonicalUrlHash(url),
+        analysisVersion: CONTENT_ANALYSIS_VERSION,
+        ownerWorkerId: WORKER_ID_FOR_CLAIM,
+        leaseMinutes: 5,
+      });
+      if (ok) claimed.push(item);
+    } catch {
+      claimed.push(item);
+    }
+  }
+  return claimed;
+}
+
 export async function prepareIngest(
   repo: IngestRepository,
   input: IngestInput,
@@ -265,7 +302,10 @@ export async function prepareIngest(
       return true;
     });
     if (newItems.length) {
-      const routed = await routeContentItems(newItems);
+      const claimableNewItems = await claimDocumentAnalyses(repo, newItems);
+      const routed = claimableNewItems.length > 0
+        ? await routeContentItems(claimableNewItems)
+        : { outcomes: new Map(), stats: defaultSummaryStats("not_applicable") };
       summary = routed.stats;
       for (const row of rows) {
         const outcome = routed.outcomes.get(`${row.platform}|${row.upstreamId}`);
@@ -740,6 +780,21 @@ export function createDrizzleIngestRepository(database: IngestDatabase = db): In
       });
 
       return result.length;
+    },
+
+    async claimDocumentAnalysis(input) {
+      const result = await database
+        .insert(documentAnalysisClaims)
+        .values({
+          canonicalUrlHash: input.canonicalUrlHash,
+          analysisVersion: input.analysisVersion,
+          ownerWorkerId: input.ownerWorkerId,
+          status: "claimed",
+          expiresAt: new Date(Date.now() + input.leaseMinutes * 60_000),
+        })
+        .onConflictDoNothing()
+        .returning({ id: documentAnalysisClaims.id });
+      return result.length > 0;
     },
   };
 }

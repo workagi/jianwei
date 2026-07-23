@@ -42,6 +42,7 @@ const X_OFFICIAL_MAX_BILLABLE_UNITS = 101;
 const MONTHLY_BUDGET_USD = Number(process.env.X_BRAVE_MONTHLY_BUDGET_USD);
 const BUDGET_ENABLED = Number.isFinite(MONTHLY_BUDGET_USD) && MONTHLY_BUDGET_USD > 0;
 const MONITOR_DISABLE_AFTER_FAILURES = Number(process.env.WORKER_DISABLE_MONITOR_AFTER_FAILURES ?? "5") || 0;
+const WORKER_CONCURRENCY = Math.max(1, Number(process.env.WORKER_CONCURRENCY ?? "4") || 0);
 const WORKER_HEARTBEAT_FILE = process.env.WORKER_HEARTBEAT_FILE ?? "/tmp/jianwei-worker-heartbeat";
 const WORKER_ID = process.env.WORKER_ID?.trim() || `${process.pid}-${randomUUID()}`;
 const workerLog = createStructuredLogger({ service: "worker", workerId: WORKER_ID });
@@ -353,9 +354,10 @@ async function runMonitor(claimed: ClaimedMonitor, claimedEpoch: number, shutdow
       shutdownSignal,
     );
     // Provider and model work stays outside a database transaction. Only the
-    await markRunProgress(runId, "collecting");
-    // final durable state is committed atomically below.
-    await markRunProgress(runId, "ingesting");
+    // Connector finished.
+    await markRunProgress(runId, "gathering");
+    // Analyse (model calls happen inside prepareIngest).
+    await markRunProgress(runId, "analyzing");
     const prepared = await prepareIngest(createDrizzleIngestRepository(), {
       items,
       monitorId: claimed.monitorId,
@@ -364,7 +366,8 @@ async function runMonitor(claimed: ClaimedMonitor, claimedEpoch: number, shutdow
       monitorRules: extractMonitorRules(claimed),
     });
     const summaryInputTokens = prepared.summary.inputTokens ?? 0;
-    await markRunProgress(runId, "gathering");
+    // Analysis complete, ready to commit.
+    await markRunProgress(runId, "ingesting");
     const summaryOutputTokens = prepared.summary.outputTokens ?? 0;
     const summaryCost = summaryEstimatedCostUsd(summaryInputTokens, summaryOutputTokens);
 
@@ -886,8 +889,21 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
     .limit(20);
 
   let claimedCount = 0;
+  // Process monitors in concurrent batches to prevent a slow connector
+  // from blocking all other monitors. Per-platform semaphores are not
+  // yet implemented; the global concurrency limit is the first step.
+  const running = new Set<Promise<void>>();
   for (const monitor of due) {
     if (shutdownSignal?.aborted) break;
+    // Wait for a slot if we are at the concurrency limit
+    while (running.size >= WORKER_CONCURRENCY) {
+      await Promise.race(running);
+      // Purge settled promises
+      for (const p of running) {
+        const done = await Promise.race([p.then(() => "done"), Promise.resolve("pending")]);
+        if (done === "done") running.delete(p);
+      }
+    }
     const claimed = await claimMonitor(monitor);
     if (!claimed) continue;
     claimedCount += 1;
@@ -945,7 +961,7 @@ export async function markWorkerHeartbeat(now = new Date()): Promise<void> {
   await Promise.all([
     writeFile(WORKER_HEARTBEAT_FILE, now.toISOString(), "utf8"),
     db.insert(runtimeHealth).values({
-      service: "worker",
+      service: "worker:" + WORKER_ID,
       status: "ok",
       lastHeartbeatAt: now,
       detail: { pid: process.pid, workerId: WORKER_ID },

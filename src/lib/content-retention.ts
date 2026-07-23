@@ -77,13 +77,13 @@ export function deriveRetentionDecision(input: {
 }): RetentionDecision {
   const modelReason = normalizeRetentionReason(input.modelReason);
   const modelScore = normalizeRelevanceScore(input.modelScore);
-  if (modelReason && modelScore !== undefined) {
-    return { reason: modelReason, relevanceScore: modelScore, source: "model" };
-  }
+  // Field-level degradation: use valid model fields independently instead
+  // of discarding the entire model result when one field is invalid.
   return {
-    reason: fallbackReason(input.contentType, input.topicTags),
-    relevanceScore: fallbackInformationValueScore(input.item, input.contentType, input.topicTags, input.summary),
-    source: "rules",
+    reason: modelReason ?? fallbackReason(input.contentType, input.topicTags),
+    relevanceScore: modelScore ?? fallbackInformationValueScore(input.item, input.contentType, input.topicTags, input.summary),
+    // source reflects the score provenance (the more critical field for ranking)
+    source: modelScore !== undefined ? "model" : "rules",
   };
 }
 
