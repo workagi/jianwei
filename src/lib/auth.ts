@@ -3,6 +3,27 @@ import { createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypt
 import { loadApiCredentials, saveApiCredentials } from "@/db/queries";
 import { sql } from "drizzle-orm";
 
+let _legacyCookieCount = 0;
+let _legacyCookieFirstSeen = 0;
+
+/** Track legacy cookie usage so operators can confirm the migration is complete. */
+function legacyCookieAccepted(): void {
+  _legacyCookieCount += 1;
+  if (_legacyCookieFirstSeen === 0) _legacyCookieFirstSeen = Date.now();
+  if (_legacyCookieCount % 10 === 1 || _legacyCookieCount <= 3) {
+    console.warn("[auth] legacy session cookie accepted", {
+      count: _legacyCookieCount,
+      firstSeenAgo: _legacyCookieFirstSeen ? Math.round((Date.now() - _legacyCookieFirstSeen) / 1000) + "s" : "unknown",
+      deadline: "2026-09-01",
+    });
+  }
+}
+
+/** Exported for health/debug endpoints. */
+export function legacyCookieStats(): { count: number; firstSeenAt: number | null } {
+  return { count: _legacyCookieCount, firstSeenAt: _legacyCookieFirstSeen || null };
+}
+
 /**
  * 管理后台鉴权。
  *
@@ -87,6 +108,7 @@ export async function verifySessionCookie(value: string): Promise<string | null>
   if (!value.includes(":")) {
     // Legacy cookies accepted until 2026-09-01; after that, require re-login.
     if (Date.now() > Date.UTC(2026, 8, 1)) return null;
+    legacyCookieAccepted();
     const secret = await effectiveAdminSessionSecret();
     if (!secret) return null;
     const expected = createHmac("sha256", secret)

@@ -12,7 +12,7 @@ FROM base AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-RUN pnpm build
+RUN pnpm build && pnpm build:worker
 
 FROM node:22-alpine AS runner
 WORKDIR /app
@@ -34,7 +34,12 @@ CMD ["node", "server.js"]
 FROM base AS tools
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
-COPY . .
+# Copy only what the worker + migrate need at runtime:
+# compiled worker, drizzle migrations, pruned source config
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/drizzle ./drizzle
+COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/tsconfig.json ./tsconfig.json
 ENV NODE_ENV=production
 RUN addgroup --system --gid 1001 nodejs \
   && adduser --system --uid 1001 nextjs \

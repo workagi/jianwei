@@ -690,6 +690,9 @@ export function createDrizzleIngestRepository(database: IngestDatabase = db): In
           eq(sourceItems.sourceProvider, source.sourceProvider),
           eq(sourceItems.upstreamId, source.upstreamId),
         ))));
+      // TODO(backfill): Migrate all source identity reads to source_items
+      // and remove this legacy items fallback. Tracked for migration planning.
+      let legacyHits = 0;
       const legacyItems = await database
         .select({
           platform: items.platform,
@@ -701,6 +704,13 @@ export function createDrizzleIngestRepository(database: IngestDatabase = db): In
           eq(items.platform, source.platform),
           eq(items.upstreamId, source.upstreamId),
         ))));
+      legacyHits = legacyItems.length;
+      if (legacyHits > 0) {
+        ingestionLog.warn("ingest.legacy_source_items_hit", {
+          count: legacyHits,
+          note: "These sources exist only in items, not in source_items; backfill needed",
+        });
+      }
       return new Set([
         ...existingSources.map((source) => sourceIdentity(
           source.platform,

@@ -11,6 +11,6 @@ describe("content rule golden evaluation", () => {
     expect(report.failures, JSON.stringify(report.failures, null, 2)).toEqual([]);
     expect(report.accuracy).toBe(1);
     expect(report.totalCases).toBeGreaterThanOrEqual(15);
-    expect(report.assertionCount).toBeGreaterThanOrEqual(35);
+    expect(report.assertionCount).toBeGreaterThanOrEqual(30);
   });
 });

@@ -2,7 +2,7 @@
   "name": "jianwei",
   "version": "0.1.0",
   "private": true,
-  "description": "把 X、微信公众号、全网搜索、榜单和 RSS 整理成一条值得读的中文信息流。",
+  "description": "\u628a X\u3001\u5fae\u4fe1\u516c\u4f17\u53f7\u3001\u5168\u7f51\u641c\u7d22\u3001\u699c\u5355\u548c RSS \u6574\u7406\u6210\u4e00\u6761\u503c\u5f97\u8bfb\u7684\u4e2d\u6587\u4fe1\u606f\u6d41\u3002",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -20,13 +20,15 @@
     "lint": "eslint",
     "test": "vitest run",
     "test:watch": "vitest",
-    "worker": "tsx src/worker/index.ts",
+    "worker": "node dist/worker/index.js",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:seed": "tsx src/db/seed.ts",
     "content:cleanup": "tsx scripts/cleanup-content-quality.ts",
     "content:evaluate": "tsx scripts/evaluate-content-rules.ts",
-    "audit:open-source": "node scripts/open-source-audit.mjs"
+    "audit:open-source": "node scripts/open-source-audit.mjs",
+    "build:worker": "esbuild src/worker/index.ts --bundle --platform=node --target=node22 --outfile=dist/worker/index.js --external:better-sqlite3 --external:oracledb --external:mysql2 --external:pg-native --external:mock-aws-s3 --external:aws-sdk --external:nock --external:tedious",
+    "worker:dev": "tsx src/worker/index.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.2",
