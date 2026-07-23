@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { loadApiCredentials, saveApiCredentials } from "@/db/queries";
+import { sql } from "drizzle-orm";
 
 /**
  * 管理后台鉴权。
@@ -36,9 +37,18 @@ export function getAdminPassword(): string | undefined {
   return configuredValue(process.env.ADMIN_PASSWORD);
 }
 
-/** 会话签名密钥。单独配置后，改登录密码不会强制所有设备退出。 */
+/** 会话签名密钥。生产环境必须独立配置，不得回退到登录密码。 */
 export function getAdminSessionSecret(): string | undefined {
-  return configuredValue(process.env.ADMIN_SESSION_SECRET) ?? getAdminPassword();
+  const configured = configuredValue(process.env.ADMIN_SESSION_SECRET);
+  if (configured) return configured;
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(
+      "ADMIN_SESSION_SECRET is required in production. " +
+      "It must be a random 32+ byte value, different from ADMIN_PASSWORD and ADMIN_API_TOKEN."
+    );
+  }
+  // Development fallback: use admin password for convenience
+  return getAdminPassword();
 }
 
 export function isAdminAuthConfigured(): boolean {
@@ -134,8 +144,14 @@ export async function adminSessionVersion(): Promise<number> {
 }
 
 export async function bumpAdminSessionVersion(): Promise<void> {
-  const next = (await adminSessionVersion()) + 1;
-  await saveApiCredentials([{ key: ADMIN_SESSION_VERSION_KEY, value: String(next) }]);
+  const { db } = await import("@/db");
+  await db.execute(sql`
+    INSERT INTO api_credentials (key, value, updated_at)
+    VALUES ('${ADMIN_SESSION_VERSION_KEY}', '2', now())
+    ON CONFLICT (key) DO UPDATE
+    SET value = (api_credentials.value::int + 1)::text,
+        updated_at = now()
+  `);
 }
 
 export function hashAdminPassword(password: string, salt = randomBytes(16)): string {

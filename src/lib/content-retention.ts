@@ -56,7 +56,8 @@ function fallbackReason(contentType: ContentTypeId, topicTags: string[]): string
   return `包含可核对的${label}信息`;
 }
 
-function fallbackScore(item: NormalizedItem, contentType: ContentTypeId, topicTags: string[], summary?: string): number {
+/** Estimate how information-rich the content is — NOT how relevant it is to any specific monitor. */
+function fallbackInformationValueScore(item: NormalizedItem, contentType: ContentTypeId, topicTags: string[], summary?: string): number {
   let score = 45;
   if (summary && summary.trim().length >= 24) score += 12;
   score += Math.min(16, topicTags.length * 4);
@@ -81,7 +82,7 @@ export function deriveRetentionDecision(input: {
   }
   return {
     reason: fallbackReason(input.contentType, input.topicTags),
-    relevanceScore: fallbackScore(input.item, input.contentType, input.topicTags, input.summary),
+    relevanceScore: fallbackInformationValueScore(input.item, input.contentType, input.topicTags, input.summary),
     source: "rules",
   };
 }
