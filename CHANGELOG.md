@@ -51,6 +51,9 @@
 - claimMonitor 返回数据库最新行，runMonitor 不再使用 due 查询旧快照；claim 与执行之间管理员修改的配置立即生效。
 - stale run 清理改用 lastProgressAt + currentStage + monitor lease 交叉验证；
   采集完成等待模型限流期间不会被误杀。
+- sourceItem upsert 批量化（消除 N+1）；冲突时自动更新 itemId 处理重新 canonical 归属。
+- match upsert 改为 onConflictDoUpdate 单次写入，移除逐条 update 循环。
+- 新增 monitor_match_observations 表，每次发现事件独立记录，不覆盖历史证据。
 ## [0.1.0]
 
 - 完成单用户自托管信息流闭环。

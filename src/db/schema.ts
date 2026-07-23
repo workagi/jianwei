@@ -183,6 +183,27 @@ export const itemMatches = pgTable("item_matches", {
   index("item_matches_monitor_relevance_idx").on(table.monitorId, table.relevanceScore),
 ]);
 
+/**
+ * Each discovery event for a monitor-document edge. A single match may have
+ * multiple observations from different collection runs, providers, or
+ * keywords. Observations preserve the full evidence chain without overwriting
+ * the match-level aggregated relevance/retention judgment.
+ */
+export const monitorMatchObservations = pgTable("monitor_match_observations", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  matchItemId: uuid("match_item_id").notNull(),
+  matchMonitorId: uuid("match_monitor_id").notNull(),
+  sourceItemId: uuid("source_item_id").references(() => sourceItems.id, { onDelete: "set null" }),
+  collectionRunId: uuid("collection_run_id").references(() => collectionRuns.id, { onDelete: "set null" }),
+  matchedQuery: text("matched_query"),
+  rawPayload: jsonb("raw_payload").$type<Record<string, unknown>>().notNull().default({}),
+  observedAt: timestamp("observed_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("match_observations_match_idx").on(table.matchItemId, table.matchMonitorId),
+  index("match_observations_source_idx").on(table.sourceItemId),
+  index("match_observations_run_idx").on(table.collectionRunId),
+]);
+
 // 见微 is currently a single-user workspace. A dedicated join table
 // keeps bookmark state durable across browsers and leaves room for a user_id
 // column if multi-user accounts are introduced later.

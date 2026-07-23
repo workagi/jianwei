@@ -141,6 +141,13 @@
       "when": 1784778951227,
       "tag": "0019_numerous_shocker",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1784779356466,
+      "tag": "0020_redundant_ogun",
+      "breakpoints": true
     }
   ]
 }

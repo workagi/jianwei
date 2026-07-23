@@ -336,6 +336,7 @@ async function runMonitor(claimed: ClaimedMonitor, claimedEpoch: number, shutdow
       items,
       monitorId: claimed.monitorId,
       matchedQuery: monitorMatchedQuery(claimed),
+      runId,
     });
     const summaryInputTokens = prepared.summary.inputTokens ?? 0;
     await markRunProgress(runId, "gathering");

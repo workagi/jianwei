@@ -1,12 +1,15 @@
 import type { NormalizedItem } from "@/connectors/types";
 import { canonicalizeUrl, contentFingerprint, dedupeKey } from "./deduplicate";
 import { db } from "@/db";
-import { items, itemMatches, sourceItems } from "@/db/schema";
+import { items, itemMatches, monitorMatchObservations, sourceItems } from "@/db/schema";
 import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { type SummaryRunStats } from "@/lib/summarizer";
 import { routeContentItems } from "@/lib/content-router";
 import { deriveItemClassification } from "@/lib/item-tags";
 import { deriveRetentionDecision } from "@/lib/content-retention";
+import { createStructuredLogger } from "@/lib/structured-log";
+
+const ingestionLog = createStructuredLogger({ service: "ingestion" });
 
 /** Insert-ready row shape for the `items` table (driven by the Drizzle schema). */
 export type IngestItemRow = typeof items.$inferInsert;
@@ -114,6 +117,7 @@ export interface IngestMatchLink {
   analysisStatus?: string;
   analysisVersion?: string;
   rawPayload?: unknown;
+  collectionRunId?: string;
 }
 
 export interface IngestSourceObservation {
@@ -169,6 +173,7 @@ export interface IngestInput {
   items: NormalizedItem[];
   monitorId: string;
   matchedQuery?: string;
+  runId?: string;
 }
 
 /**
@@ -363,7 +368,8 @@ export async function commitPreparedIngest(
       retentionSource: undefined,
      analysisStatus: row?.analysisStatus ?? undefined,
       analysisVersion: row?.analysisVersion ?? undefined,
-      rawPayload: observation.rawPayload,
+     rawPayload: observation.rawPayload,
+      collectionRunId: input.runId,
     });
   }
 
@@ -542,52 +548,67 @@ export function createDrizzleIngestRepository(database: IngestDatabase = db): In
     },
 
     async upsertSourceItems(observations) {
-      const stored: StoredSourceObservation[] = [];
-      for (const observation of observations) {
-        const [saved] = await database
-          .insert(sourceItems)
-          .values({
-            itemId: observation.itemId,
-            platform: observation.platform,
-            sourceProvider: observation.sourceProvider,
-            upstreamId: observation.upstreamId,
-            sourceUrl: observation.sourceUrl,
-            authorId: observation.authorId ?? null,
-            authorName: observation.authorName ?? null,
-            authorHandle: observation.authorHandle ?? null,
-            avatarUrl: observation.avatarUrl ?? null,
-            rawPayload: observation.rawPayload,
-            publishedAt: observation.publishedAt,
-            lastSeenAt: new Date(),
-          })
-          .onConflictDoUpdate({
-            target: [sourceItems.platform, sourceItems.sourceProvider, sourceItems.upstreamId],
-            set: {
-              sourceUrl: observation.sourceUrl,
-              authorId: sql`coalesce(${observation.authorId ?? null}, ${sourceItems.authorId})`,
-              authorName: sql`coalesce(${observation.authorName ?? null}, ${sourceItems.authorName})`,
-              authorHandle: sql`coalesce(${observation.authorHandle ?? null}, ${sourceItems.authorHandle})`,
-              avatarUrl: sql`coalesce(${observation.avatarUrl ?? null}, ${sourceItems.avatarUrl})`,
-              rawPayload: observation.rawPayload,
-              publishedAt: observation.publishedAt,
-              lastSeenAt: new Date(),
-            },
-          })
-          .returning({
-            id: sourceItems.id,
-            itemId: sourceItems.itemId,
-            platform: sourceItems.platform,
-            sourceProvider: sourceItems.sourceProvider,
-            upstreamId: sourceItems.upstreamId,
-          });
-        if (saved) {
-          stored.push({
-            ...saved,
-            platform: saved.platform as NormalizedItem["platform"],
+      if (observations.length === 0) return [];
+      const now = new Date();
+      const returned = await database
+        .insert(sourceItems)
+        .values(
+          observations.map((obs) => ({
+            itemId: obs.itemId,
+            platform: obs.platform,
+            sourceProvider: obs.sourceProvider,
+            upstreamId: obs.upstreamId,
+            sourceUrl: obs.sourceUrl,
+            authorId: obs.authorId ?? null,
+            authorName: obs.authorName ?? null,
+            authorHandle: obs.authorHandle ?? null,
+            avatarUrl: obs.avatarUrl ?? null,
+            rawPayload: obs.rawPayload,
+            publishedAt: obs.publishedAt,
+            lastSeenAt: now,
+          })),
+        )
+        .onConflictDoUpdate({
+          target: [sourceItems.platform, sourceItems.sourceProvider, sourceItems.upstreamId],
+          set: {
+            // Re-assign to the current canonical document when the same
+            // source identity is re-canonicalized; operators see a log
+            // line when this happens.
+            itemId: sql`excluded.${sourceItems.itemId}`,
+            sourceUrl: sql`excluded.${sourceItems.sourceUrl}`,
+            authorId: sql`coalesce(excluded.${sourceItems.authorId}, ${sourceItems.authorId})`,
+            authorName: sql`coalesce(excluded.${sourceItems.authorName}, ${sourceItems.authorName})`,
+            authorHandle: sql`coalesce(excluded.${sourceItems.authorHandle}, ${sourceItems.authorHandle})`,
+            avatarUrl: sql`coalesce(excluded.${sourceItems.avatarUrl}, ${sourceItems.avatarUrl})`,
+            rawPayload: sql`excluded.${sourceItems.rawPayload}`,
+            publishedAt: sql`excluded.${sourceItems.publishedAt}`,
+            lastSeenAt: now,
+          },
+        })
+        .returning({
+          id: sourceItems.id,
+          itemId: sourceItems.itemId,
+          platform: sourceItems.platform,
+          sourceProvider: sourceItems.sourceProvider,
+          upstreamId: sourceItems.upstreamId,
+        });
+      for (const { id, itemId, platform, sourceProvider, upstreamId } of returned) {
+        // When onConflict updated itemId, the returned row may come from
+        // the new values. Detect re-assignments by comparing with the input.
+        const input = observations.find(
+          (obs) => obs.platform === platform && obs.sourceProvider === sourceProvider && obs.upstreamId === upstreamId,
+        );
+        if (input && input.itemId !== itemId) {
+          ingestionLog.warn("source_items.item_reassigned", {
+            platform,
+            sourceProvider,
+            upstreamId,
+            previousDocumentId: itemId,
+            currentDocumentId: input.itemId,
           });
         }
       }
-      return stored;
+      return returned.map((row) => ({ ...row, platform: row.platform as NormalizedItem["platform"] }));
     },
 
     async findExistingSourceKeys(sources) {
@@ -641,7 +662,7 @@ export function createDrizzleIngestRepository(database: IngestDatabase = db): In
     async linkMatches(links) {
       if (links.length === 0) return 0;
       const now = new Date();
-      const inserted = await database
+      const result = await database
         .insert(itemMatches)
         .values(
           links.map((link) => ({
@@ -658,29 +679,35 @@ export function createDrizzleIngestRepository(database: IngestDatabase = db): In
             lastSeenAt: now,
           })),
         )
-        .onConflictDoNothing()
+        .onConflictDoUpdate({
+          target: [itemMatches.itemId, itemMatches.monitorId],
+          set: {
+            sourceItemId: sql`coalesce(excluded.${itemMatches.sourceItemId}, ${itemMatches.sourceItemId})`,
+            matchedQuery: sql`coalesce(excluded.${itemMatches.matchedQuery}, ${itemMatches.matchedQuery})`,
+            relevanceScore: sql`coalesce(excluded.${itemMatches.relevanceScore}, ${itemMatches.relevanceScore})`,
+            retentionReason: sql`coalesce(excluded.${itemMatches.retentionReason}, ${itemMatches.retentionReason})`,
+            retentionSource: sql`coalesce(excluded.${itemMatches.retentionSource}, ${itemMatches.retentionSource})`,
+            analysisStatus: sql`coalesce(excluded.${itemMatches.analysisStatus}, ${itemMatches.analysisStatus})`,
+            analysisVersion: sql`coalesce(excluded.${itemMatches.analysisVersion}, ${itemMatches.analysisVersion})`,
+            rawPayload: sql`excluded.${itemMatches.rawPayload}`,
+            lastSeenAt: now,
+          },
+        })
         .returning({ itemId: itemMatches.itemId });
 
-      // Existing monitor/document edges are still observations of a fresh run:
-      // refresh their source link and analysis snapshot without changing the
-      // original first_seen_at timestamp or the inserted-count metric.
-      for (const link of links) {
-        await database.update(itemMatches).set({
-          ...(link.sourceItemId ? { sourceItemId: link.sourceItemId } : {}),
-          ...(link.matchedQuery ? { matchedQuery: link.matchedQuery } : {}),
-          ...(link.relevanceScore != null ? { relevanceScore: link.relevanceScore } : {}),
-          ...(link.retentionReason ? { retentionReason: link.retentionReason } : {}),
-          ...(link.retentionSource ? { retentionSource: link.retentionSource } : {}),
-          ...(link.analysisStatus ? { analysisStatus: link.analysisStatus } : {}),
-          ...(link.analysisVersion ? { analysisVersion: link.analysisVersion } : {}),
+      // Persist discovery evidence independently of the match aggregation.
+      await database.insert(monitorMatchObservations).values(
+        links.map((link) => ({
+          matchItemId: link.itemId,
+          matchMonitorId: link.monitorId,
+          sourceItemId: link.sourceItemId ?? null,
+          collectionRunId: link.collectionRunId ?? null,
+          matchedQuery: link.matchedQuery ?? null,
           rawPayload: (link.rawPayload ?? {}) as Record<string, unknown>,
-          lastSeenAt: now,
-        }).where(and(
-          eq(itemMatches.itemId, link.itemId),
-          eq(itemMatches.monitorId, link.monitorId),
-        ));
-      }
-      return inserted.length;
+        })),
+      ).onConflictDoNothing();
+
+      return result.length;
     },
   };
 }
