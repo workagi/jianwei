@@ -85,3 +85,80 @@ export function deriveRetentionDecision(input: {
     source: "rules",
   };
 }
+
+export interface MonitorRules {
+  keywords?: string[];
+  excludeKeywords?: string[];
+  contentTypeFilters?: string[];
+  topicFilters?: string[];
+}
+
+/**
+ * Derive a per-monitor relevance score and retention reason based on how well
+ * the document's extracted facts match the monitor's rules. This runs after
+ * document-level analysis and is specific to each monitor → document edge.
+ */
+export function deriveMonitorRetention(monitor: MonitorRules, doc: {
+  contentType: string;
+  topicTags: string[];
+  summary?: string;
+  informationValueScore?: number;
+  title?: string;
+  bodyText?: string;
+}): { relevanceScore: number; retentionReason: string } {
+  const baseScore = doc.informationValueScore ?? 45;
+
+  // Keyword hit bonus: each monitor keyword matched in the document signals
+  // stronger relevance. Missing keywords don't penalize the base score.
+  const keywords = monitor.keywords ?? [];
+  const haystack = [doc.title, doc.summary, doc.bodyText].filter(Boolean).join(" ").toLowerCase();
+  const keywordHits = keywords.filter((kw) => {
+    const pattern = kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(pattern, "i").test(haystack);
+  }).length;
+  const matchRatio = keywords.length > 0 ? keywordHits / keywords.length : 0;
+  const keywordBonus = Math.round(matchRatio * 20);
+
+  // Exclusion penalty: if an excluded keyword appears, reduce relevance.
+  const excludeKeywords = monitor.excludeKeywords ?? [];
+  const exclusionHits = excludeKeywords.filter((kw) => {
+    const pattern = kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(pattern, "i").test(haystack);
+  }).length;
+  const exclusionPenalty = exclusionHits > 0 ? 25 : 0;
+
+  // Content type match bonus: if the monitor targets specific content types
+  // and the document matches, boost relevance.
+  const ctFilters = monitor.contentTypeFilters ?? [];
+  const ctBonus = ctFilters.length > 0 && ctFilters.includes(doc.contentType) ? 15 : 0;
+
+  // Topic tag overlap bonus.
+  const topicFilters = (monitor.topicFilters ?? []).map((t) => t.toLowerCase());
+  const topicHits = doc.topicTags.filter((t) => topicFilters.includes(t.toLowerCase())).length;
+  const topicBonus = Math.min(15, topicHits * 8);
+
+  const score = Math.max(0, Math.min(100, baseScore + keywordBonus - exclusionPenalty + ctBonus + topicBonus));
+
+  // Build a concrete retention reason. Prefer model-authored reasons over
+  // generated ones, but derive one from monitor rules when unavailable.
+  const reasonParts: string[] = [];
+  if (keywordHits > 0) {
+    reasonParts.push(`命中 ${keywordHits} 个监控关键词`);
+  }
+  if (ctBonus > 0 && ctFilters.length > 0) {
+    const label = getContentTypeLabel(doc.contentType) ?? doc.contentType;
+    reasonParts.push(`匹配内容类型「${label}」`);
+  }
+  if (topicHits > 0) {
+    reasonParts.push(`相关主题${topicHits}个`);
+  }
+  if (exclusionHits > 0) {
+    reasonParts.push(`含${exclusionHits}个排除词`);
+  }
+
+  const reason = reasonParts.length > 0
+    ? reasonParts.join("，")
+    : `基于${getContentTypeLabel(doc.contentType) ?? doc.contentType}类型的信息参考`;
+
+  return { relevanceScore: score, retentionReason: reason };
+}

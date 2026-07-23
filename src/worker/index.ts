@@ -15,6 +15,7 @@ import type {
   CollectContext,
   WebSearchMonitorConfig,
 } from "@/connectors/types";
+import type { MonitorRules } from "@/lib/content-retention";
 import { isWechatKeywordRuleConfig } from "@/connectors/types";
 import { createWorkerSourceProvider } from "@/sources/registry";
 import { collectFromProvider } from "@/sources/types";
@@ -174,6 +175,26 @@ function isAutoWechatName(name: string): boolean {
 function isAutoXName(name: string, config: Record<string, unknown>): boolean {
   const username = typeof config.username === "string" ? config.username.replace(/^@/, "") : "";
   return Boolean(username) && (name === `@${username}` || name === username || name === "X / Twitter");
+}
+
+function extractMonitorRules(monitor: MonitorRow): MonitorRules | undefined {
+  const config = monitor.config as Record<string, unknown>;
+  const keywords = Array.isArray(config.keywords)
+    ? config.keywords.filter((k): k is string => typeof k === "string")
+    : [];
+  const excludeKeywords = Array.isArray(config.excludeKeywords)
+    ? config.excludeKeywords.filter((k): k is string => typeof k === "string")
+    : [];
+  const contentTypeFilters = Array.isArray(config.contentTypeFilters)
+    ? config.contentTypeFilters.filter((k): k is string => typeof k === "string")
+    : [];
+  const topicFilters = Array.isArray(config.topicFilters)
+    ? config.topicFilters.filter((k): k is string => typeof k === "string")
+    : [];
+  if (!keywords.length && !excludeKeywords.length && !contentTypeFilters.length && !topicFilters.length) {
+    return undefined;
+  }
+  return { keywords, excludeKeywords, contentTypeFilters, topicFilters };
 }
 
 function monitorMatchedQuery(monitor: MonitorRow): string | undefined {
@@ -337,6 +358,7 @@ async function runMonitor(claimed: ClaimedMonitor, claimedEpoch: number, shutdow
       monitorId: claimed.monitorId,
       matchedQuery: monitorMatchedQuery(claimed),
       runId,
+      monitorRules: extractMonitorRules(claimed),
     });
     const summaryInputTokens = prepared.summary.inputTokens ?? 0;
     await markRunProgress(runId, "gathering");

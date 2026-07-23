@@ -6,7 +6,7 @@ import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { type SummaryRunStats } from "@/lib/summarizer";
 import { routeContentItems } from "@/lib/content-router";
 import { deriveItemClassification } from "@/lib/item-tags";
-import { deriveRetentionDecision } from "@/lib/content-retention";
+import { deriveRetentionDecision, type MonitorRules, deriveMonitorRetention } from "@/lib/content-retention";
 import { createStructuredLogger } from "@/lib/structured-log";
 
 const ingestionLog = createStructuredLogger({ service: "ingestion" });
@@ -174,6 +174,7 @@ export interface IngestInput {
   monitorId: string;
   matchedQuery?: string;
   runId?: string;
+  monitorRules?: MonitorRules;
 }
 
 /**
@@ -356,16 +357,30 @@ export async function commitPreparedIngest(
     if (linksByItem.has(itemId)) continue;
     const row = rowByUrl.get(observation.sourceUrl)
       ?? rowByUpstream.get(sourceKey(observation.platform, observation.upstreamId));
+
+    // Derive per-monitor relevance and retention from document analysis +
+    // monitor rules. This is the MonitorMatchAnalysis layer: each monitor
+    // evaluates the same document differently based on its keywords, content
+    // type filters and topic preferences.
+    const monitorRetention = input.monitorRules
+      ? deriveMonitorRetention(input.monitorRules, {
+          contentType: row?.contentType ?? "opinion",
+          topicTags: row?.topicTags ?? [],
+          summary: row?.aiSummary ?? undefined,
+          informationValueScore: row?.informationValueScore ?? undefined,
+          title: row?.title ?? undefined,
+          bodyText: row?.bodyText ?? undefined,
+        })
+      : { relevanceScore: row?.informationValueScore ?? undefined, retentionReason: undefined as string | undefined };
+
    linksByItem.set(itemId, {
      itemId,
      monitorId: input.monitorId,
      sourceItemId: storedSource?.id,
      matchedQuery: input.matchedQuery,
-      relevanceScore: row?.informationValueScore ?? undefined,
-      // Per-monitor retention fields are populated by subsequent model
-      // analysis runs or backfill; they do not live on the document row.
-      retentionReason: undefined,
-      retentionSource: undefined,
+      relevanceScore: monitorRetention.relevanceScore,
+      retentionReason: monitorRetention.retentionReason ?? undefined,
+      retentionSource: monitorRetention.retentionReason ? ("rules" as const) : undefined,
      analysisStatus: row?.analysisStatus ?? undefined,
       analysisVersion: row?.analysisVersion ?? undefined,
      rawPayload: observation.rawPayload,
