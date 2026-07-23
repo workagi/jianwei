@@ -204,19 +204,20 @@ function resolvedWechatConfigPatch(cursor: Record<string, unknown>): Record<stri
   };
 }
 
-async function startCollectionRun(monitor: MonitorRow): Promise<{
+async function startCollectionRun(monitor: { id?: string; monitorId?: string; nextRunAt: Date }): Promise<{
   runId: string;
   runKey: string;
   attemptToken: string;
   alreadySucceeded: boolean;
 }> {
   const scheduledFor = monitor.nextRunAt;
-  const runKey = collectionRunIdempotencyKey(monitor.id, scheduledFor);
+  const mid = (monitor as { id?: string; monitorId?: string }).id ?? (monitor as { monitorId: string }).monitorId;
+  const runKey = collectionRunIdempotencyKey(mid, scheduledFor);
   const attemptToken = randomUUID();
   const [created] = await db
     .insert(collectionRuns)
     .values({
-      monitorId: monitor.id,
+      monitorId: mid,
       scheduledFor,
       idempotencyKey: runKey,
       attemptToken,
@@ -255,26 +256,26 @@ async function startCollectionRun(monitor: MonitorRow): Promise<{
   return { runId: existing.id, runKey, attemptToken, alreadySucceeded: false };
 }
 
-async function runMonitor(monitor: MonitorRow, claimedEpoch: number, shutdownSignal?: AbortSignal): Promise<void> {
+async function runMonitor(claimed: ClaimedMonitor, claimedEpoch: number, shutdownSignal?: AbortSignal): Promise<void> {
   const startedAt = Date.now();
-  const { runId, runKey, attemptToken, alreadySucceeded } = await startCollectionRun(monitor);
+  const { runId, runKey, attemptToken, alreadySucceeded } = await startCollectionRun(claimed);
   const runLog = workerLog.child({
     runId,
     runKey,
     attemptToken,
-    monitorId: monitor.id,
-    connectorId: monitor.connectorId,
-    platform: monitor.platform,
-    provider: typeof monitor.config.provider === "string" ? monitor.config.provider : undefined,
+    monitorId: claimed.monitorId,
+    connectorId: claimed.connectorId,
+    platform: claimed.platform,
+    provider: typeof claimed.config.provider === "string" ? claimed.config.provider : undefined,
   });
   const staggerKey = monitorStaggerKey({
-    id: monitor.id,
-    platform: monitor.platform,
-    name: monitor.name,
-    config: monitor.config,
+    id: claimed.monitorId,
+    platform: claimed.platform,
+    name: claimed.name,
+    config: claimed.config,
   });
   let nextRunAt = nextStaggeredRunAt({
-    intervalMinutes: monitor.pollIntervalMinutes,
+    intervalMinutes: claimed.pollIntervalMinutes,
     staggerKey,
   });
 
@@ -283,7 +284,7 @@ async function runMonitor(monitor: MonitorRow, claimedEpoch: number, shutdownSig
       nextRunAt,
       leaseOwner: null,
       leaseUntil: null,
-    }).where(and(eq(monitors.id, monitor.id), eq(monitors.leaseOwner, WORKER_ID), eq(monitors.leaseEpoch, claimedEpoch)));
+    }).where(and(eq(monitors.id, claimed.id), eq(monitors.leaseOwner, WORKER_ID), eq(monitors.leaseEpoch, claimedEpoch)));
     runLog.info("collection.skipped", {
       reason: "already_succeeded",
       durationMs: Date.now() - startedAt,
@@ -295,12 +296,12 @@ async function runMonitor(monitor: MonitorRow, claimedEpoch: number, shutdownSig
   let budgetReservationKey: string | undefined;
   try {
     runLog.info("collection.started", {
-      scheduledFor: monitor.nextRunAt,
-      pollIntervalMinutes: monitor.pollIntervalMinutes,
+      scheduledFor: claimed.nextRunAt,
+      pollIntervalMinutes: claimed.pollIntervalMinutes,
     });
     // Reserve provider budget before the external call. The database lock in
     // reserveUsageBudget makes concurrent workers participate in one budget.
-    const budgetReservation = budgetReservationForMonitor(monitor, runKey);
+    const budgetReservation = budgetReservationForMonitor(claimed, runKey);
     if (budgetReservation) {
       budgetReservationKey = budgetReservation.idempotencyKey;
       const reservationStatus = await reserveUsageBudget(budgetReservation);
@@ -311,27 +312,27 @@ async function runMonitor(monitor: MonitorRow, claimedEpoch: number, shutdownSig
 
     // 微信在「包含全文摘要」模式下会逐篇抓正文（by_article 约 15–30s/篇），
     // 用更宽松的超时预算，避免被通用 60s 一刀切中断。
-    const gatherTimeout = monitor.platform === "wechat"
+    const gatherTimeout = claimed.platform === "wechat"
       ? WECHAT_GATHER_TIMEOUT_MS
-      : monitor.platform === "x" && monitor.config.provider === "x_grok"
+      : claimed.platform === "x" && claimed.config.provider === "x_grok"
         ? X_GATHER_TIMEOUT_MS
         : GATHER_TIMEOUT_MS;
     const { items, cursor, billableUnits } = await withTimeout(
       (signal) => gather({
-        platform: monitor.platform,
-        config: monitor.config,
-        cursor: monitor.cursor,
+        platform: claimed.platform,
+        config: claimed.config,
+        cursor: claimed.cursor,
       }, { signal, runId, deadline: new Date(Date.now() + gatherTimeout) }),
       gatherTimeout,
-      monitor.platform,
+      claimed.platform,
       shutdownSignal,
     );
     // Provider and model work stays outside a database transaction. Only the
     // final durable state is committed atomically below.
     const prepared = await prepareIngest(createDrizzleIngestRepository(), {
       items,
-      monitorId: monitor.id,
-      matchedQuery: monitorMatchedQuery(monitor),
+      monitorId: claimed.monitorId,
+      matchedQuery: monitorMatchedQuery(claimed),
     });
     const summaryInputTokens = prepared.summary.inputTokens ?? 0;
     const summaryOutputTokens = prepared.summary.outputTokens ?? 0;
@@ -346,22 +347,22 @@ async function runMonitor(monitor: MonitorRow, claimedEpoch: number, shutdownSig
       leaseOwner: null,
       leaseUntil: null,
     };
-    if (monitor.platform === "wechat" && !isWechatKeywordRuleConfig(monitor.config)) {
+    if (claimed.platform === "wechat" && !isWechatKeywordRuleConfig(claimed.config)) {
       const patch = resolvedWechatConfigPatch(cursor);
       const mpName = usefulWechatName(patch?.mpName);
       if (patch) {
         monitorUpdate.config = {
-          ...(monitor.config ?? {}),
+          ...(claimed.config ?? {}),
           ...patch,
         };
       }
-      if (mpName && isAutoWechatName(monitor.name)) {
+      if (mpName && isAutoWechatName(claimed.name)) {
         monitorUpdate.name = mpName;
       }
     }
-    if (monitor.platform === "x") {
+    if (claimed.platform === "x") {
       const profileName = typeof cursor.profileName === "string" ? cursor.profileName.trim() : "";
-      if (profileName && isAutoXName(monitor.name, monitor.config)) monitorUpdate.name = profileName;
+      if (profileName && isAutoXName(claimed.name, claimed.config)) monitorUpdate.name = profileName;
     }
 
     const result = await db.transaction(async (tx) => {
@@ -369,26 +370,26 @@ async function runMonitor(monitor: MonitorRow, claimedEpoch: number, shutdownSig
 
       // Usage rows share the run's idempotency key. A retried commit can never
       // count the same provider/model metric twice.
-      if (monitor.platform === "x") {
+      if (claimed.platform === "x") {
         const units = billableUnits ?? 1;
-        const grokSubscription = monitor.config.provider === "x_grok";
+        const grokSubscription = claimed.config.provider === "x_grok";
         await recordUsage(
           tx,
           runKey,
-          monitor.connectorId,
-          monitor.id,
+          claimed.connectorId,
+          claimed.monitorId,
           grokSubscription ? "x_grok_searches" : "x_billable_units",
           units,
           grokSubscription ? 0 : (units / 1000) * X_COST_PER_1K_UNITS,
         );
         await settleUsageReservation(tx, budgetReservationKey);
-      } else if (monitor.platform === "web_search") {
-        const provider = ((monitor.config as WebSearchMonitorConfig).provider ?? "brave");
+      } else if (claimed.platform === "web_search") {
+        const provider = ((claimed.config as WebSearchMonitorConfig).provider ?? "brave");
         await recordUsage(
           tx,
           runKey,
-          monitor.connectorId,
-          monitor.id,
+          claimed.connectorId,
+          claimed.monitorId,
           `${provider}_queries`,
           billableUnits ?? 1,
           provider === "brave" ? BRAVE_COST_PER_1K / 1000 : 0,
@@ -399,24 +400,24 @@ async function runMonitor(monitor: MonitorRow, claimedEpoch: number, shutdownSig
         await recordUsage(
           tx,
           runKey,
-          monitor.connectorId,
-          monitor.id,
+          claimed.connectorId,
+          claimed.monitorId,
           "model_requests",
           committed.summary.attempted,
           summaryCost,
         );
         if (summaryInputTokens > 0) {
-          await recordUsage(tx, runKey, monitor.connectorId, monitor.id, "model_input_tokens", summaryInputTokens, 0);
+          await recordUsage(tx, runKey, claimed.connectorId, claimed.monitorId, "model_input_tokens", summaryInputTokens, 0);
         }
         if (summaryOutputTokens > 0) {
-          await recordUsage(tx, runKey, monitor.connectorId, monitor.id, "model_output_tokens", summaryOutputTokens, 0);
+          await recordUsage(tx, runKey, claimed.connectorId, claimed.monitorId, "model_output_tokens", summaryOutputTokens, 0);
         }
       }
 
       await tx
         .update(monitors)
         .set(monitorUpdate)
-        .where(and(eq(monitors.id, monitor.id), eq(monitors.leaseOwner, WORKER_ID), eq(monitors.leaseEpoch, claimedEpoch)));
+        .where(and(eq(monitors.id, claimed.id), eq(monitors.leaseOwner, WORKER_ID), eq(monitors.leaseEpoch, claimedEpoch)));
 
       await tx
         .update(collectionRuns)
@@ -459,7 +460,7 @@ async function runMonitor(monitor: MonitorRow, claimedEpoch: number, shutdownSig
       await db.transaction(async (tx) => {
         await releaseUsageReservation(tx, budgetReservationKey);
         await tx.update(monitors).set({ leaseOwner: null, leaseUntil: null }).where(and(
-          eq(monitors.id, monitor.id),
+          eq(monitors.id, claimed.id),
           eq(monitors.leaseOwner, WORKER_ID),
         ));
         await tx.update(collectionRuns).set({
@@ -475,7 +476,7 @@ async function runMonitor(monitor: MonitorRow, claimedEpoch: number, shutdownSig
     }
     const budgetRetryAt = nextBudgetRetryAt(message);
     const failure = classifyMonitorFailure(message);
-    const failureCount = budgetRetryAt ? monitor.failureCount : monitor.failureCount + 1;
+    const failureCount = budgetRetryAt ? claimed.failureCount : claimed.failureCount + 1;
     if (budgetRetryAt) {
       nextRunAt = budgetRetryAt;
     } else if (failure.retryAfterMinutes) {
@@ -495,7 +496,7 @@ async function runMonitor(monitor: MonitorRow, claimedEpoch: number, shutdownSig
           leaseUntil: null,
           ...(shouldDisable ? { enabled: false } : {}),
         })
-        .where(and(eq(monitors.id, monitor.id), eq(monitors.leaseOwner, WORKER_ID), eq(monitors.leaseEpoch, claimedEpoch)));
+        .where(and(eq(monitors.id, claimed.id), eq(monitors.leaseOwner, WORKER_ID), eq(monitors.leaseEpoch, claimedEpoch)));
 
       await tx
         .update(collectionRuns)
@@ -709,7 +710,26 @@ async function maybeEnsureWeRssCollectionTask(now = Date.now()): Promise<void> {
   }
 }
 
-type ClaimedMonitor = { monitorId: string; leaseEpoch: number };
+type ClaimedMonitor = {
+  id: string;
+  monitorId: string;
+  leaseEpoch: number;
+  platform: MonitorRow["platform"];
+  connectorId: string;
+  name: string;
+  config: Record<string, unknown>;
+  pollIntervalMinutes: number;
+  nextRunAt: Date;
+  cursor: Record<string, unknown>;
+  failureCount: number;
+  lastError: string | null;
+  enabled: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+  lastSuccessAt: Date | null;
+  leaseOwner: string | null;
+  leaseUntil: Date | null;
+};
 
 async function claimMonitor(monitor: MonitorRow, now = new Date()): Promise<ClaimedMonitor | null> {
   const [claimed] = await db
@@ -725,7 +745,25 @@ async function claimMonitor(monitor: MonitorRow, now = new Date()): Promise<Clai
       lte(monitors.nextRunAt, now),
       or(isNull(monitors.leaseUntil), lte(monitors.leaseUntil, now)),
     ))
-    .returning({ id: monitors.id, leaseEpoch: monitors.leaseEpoch });
+    .returning({
+      id: monitors.id,
+      leaseEpoch: monitors.leaseEpoch,
+      platform: monitors.platform,
+      connectorId: monitors.connectorId,
+      name: monitors.name,
+      config: monitors.config,
+      pollIntervalMinutes: monitors.pollIntervalMinutes,
+      nextRunAt: monitors.nextRunAt,
+      cursor: monitors.cursor,
+      failureCount: monitors.failureCount,
+      lastError: monitors.lastError,
+      enabled: monitors.enabled,
+      createdAt: monitors.createdAt,
+      updatedAt: monitors.updatedAt,
+      lastSuccessAt: monitors.lastSuccessAt,
+      leaseOwner: monitors.leaseOwner,
+      leaseUntil: monitors.leaseUntil,
+    });
 
   // If no row was updated the lease was already taken by another worker or the
   // monitor was disabled / rescheduled between query and claim.
@@ -737,7 +775,26 @@ async function claimMonitor(monitor: MonitorRow, now = new Date()): Promise<Clai
     });
     return null;
   }
-  return { monitorId: claimed.id, leaseEpoch: claimed.leaseEpoch };
+  return {
+    id: claimed.id,
+    monitorId: claimed.id,
+    leaseEpoch: claimed.leaseEpoch,
+    platform: claimed.platform,
+    connectorId: claimed.connectorId,
+    name: claimed.name,
+    config: claimed.config as Record<string, unknown>,
+    pollIntervalMinutes: claimed.pollIntervalMinutes,
+    nextRunAt: claimed.nextRunAt,
+    cursor: claimed.cursor as Record<string, unknown>,
+    failureCount: claimed.failureCount,
+    lastError: claimed.lastError,
+    enabled: claimed.enabled,
+    createdAt: claimed.createdAt,
+    updatedAt: claimed.updatedAt,
+    lastSuccessAt: claimed.lastSuccessAt,
+    leaseOwner: claimed.leaseOwner,
+    leaseUntil: claimed.leaseUntil,
+  };
 }
 
 export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
@@ -784,20 +841,20 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
       .then((rows) => {
         if (rows.length === 0) {
           workerLog.error("monitor.lease_renewal.lost", {
-            monitorId: monitor.id,
-            platform: monitor.platform,
+            monitorId: claimed.monitorId,
+            platform: claimed.platform,
           });
         }
       })
       .catch((error) => workerLog.warn("monitor.lease_renewal.failed", {
-        monitorId: monitor.id,
-        platform: monitor.platform,
+        monitorId: claimed.monitorId,
+        platform: claimed.platform,
         error,
       }))
         .finally(() => { leaseRenewalRunning = false; });
     }, Math.min(60_000, Math.max(5_000, Math.floor(MONITOR_LEASE_MS / 3))));
     try {
-      await runMonitor(monitor, claimedEpoch, shutdownSignal);
+      await runMonitor(claimed, claimedEpoch, shutdownSignal);
     } finally {
       clearInterval(leaseRenewalTimer);
       // Also releases a lease if creating the collection_run itself failed.
