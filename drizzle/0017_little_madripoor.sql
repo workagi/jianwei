@@ -1,0 +1,1 @@
+ALTER TABLE "monitors" ADD COLUMN "lease_epoch" bigint DEFAULT 0 NOT NULL;

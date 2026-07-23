@@ -46,6 +46,8 @@
 - 旧 HMAC Cookie 设置 2026-09-01 兼容截止时间。
 - claimMonitor 检查 RETURNING 行数，claim 丢失记录 warning 日志。
 - due monitor 查询加 ORDER BY nextRunAt + LIMIT 20，lease 续约检查 affected rows。
+- lease_epoch fencing token：claimMonitor 原子递增 epoch，提交时验证，旧 lease 持有者无法覆盖。
+- collection_runs attemptToken：每次重试生成新 token，旧 attempt 不能更改当前 attempt 的状态。
 ## [0.1.0]
 
 - 完成单用户自托管信息流闭环。

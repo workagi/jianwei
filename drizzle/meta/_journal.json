@@ -120,6 +120,20 @@
       "when": 1784709903652,
       "tag": "0016_foamy_shaman",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1784778138165,
+      "tag": "0017_little_madripoor",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1784778250464,
+      "tag": "0018_true_the_call",
+      "breakpoints": true
     }
   ]
 }

@@ -207,33 +207,37 @@ function resolvedWechatConfigPatch(cursor: Record<string, unknown>): Record<stri
 async function startCollectionRun(monitor: MonitorRow): Promise<{
   runId: string;
   runKey: string;
+  attemptToken: string;
   alreadySucceeded: boolean;
 }> {
   const scheduledFor = monitor.nextRunAt;
   const runKey = collectionRunIdempotencyKey(monitor.id, scheduledFor);
+  const attemptToken = randomUUID();
   const [created] = await db
     .insert(collectionRuns)
     .values({
       monitorId: monitor.id,
       scheduledFor,
       idempotencyKey: runKey,
+      attemptToken,
       status: "running",
     })
     .onConflictDoNothing({ target: collectionRuns.idempotencyKey })
     .returning({ id: collectionRuns.id });
-  if (created) return { runId: created.id, runKey, alreadySucceeded: false };
+  if (created) return { runId: created.id, runKey, attemptToken, alreadySucceeded: false };
 
   const [existing] = await db
     .select({
       id: collectionRuns.id,
       status: collectionRuns.status,
+      attemptToken: collectionRuns.attemptToken,
     })
     .from(collectionRuns)
     .where(eq(collectionRuns.idempotencyKey, runKey))
     .limit(1);
   if (!existing) throw new Error("COLLECTION_RUN_IDEMPOTENCY_CONFLICT");
   if (existing.status === "success") {
-    return { runId: existing.id, runKey, alreadySucceeded: true };
+    return { runId: existing.id, runKey, attemptToken: existing.attemptToken, alreadySucceeded: true };
   }
 
   await db
@@ -244,18 +248,20 @@ async function startCollectionRun(monitor: MonitorRow): Promise<{
       finishedAt: null,
       errorCode: null,
       errorMessage: null,
+      attemptToken,
       attempt: sql`${collectionRuns.attempt} + 1`,
     })
     .where(eq(collectionRuns.id, existing.id));
-  return { runId: existing.id, runKey, alreadySucceeded: false };
+  return { runId: existing.id, runKey, attemptToken, alreadySucceeded: false };
 }
 
-async function runMonitor(monitor: MonitorRow, shutdownSignal?: AbortSignal): Promise<void> {
+async function runMonitor(monitor: MonitorRow, claimedEpoch: number, shutdownSignal?: AbortSignal): Promise<void> {
   const startedAt = Date.now();
-  const { runId, runKey, alreadySucceeded } = await startCollectionRun(monitor);
+  const { runId, runKey, attemptToken, alreadySucceeded } = await startCollectionRun(monitor);
   const runLog = workerLog.child({
     runId,
     runKey,
+    attemptToken,
     monitorId: monitor.id,
     connectorId: monitor.connectorId,
     platform: monitor.platform,
@@ -277,7 +283,7 @@ async function runMonitor(monitor: MonitorRow, shutdownSignal?: AbortSignal): Pr
       nextRunAt,
       leaseOwner: null,
       leaseUntil: null,
-    }).where(and(eq(monitors.id, monitor.id), eq(monitors.leaseOwner, WORKER_ID)));
+    }).where(and(eq(monitors.id, monitor.id), eq(monitors.leaseOwner, WORKER_ID), eq(monitors.leaseEpoch, claimedEpoch)));
     runLog.info("collection.skipped", {
       reason: "already_succeeded",
       durationMs: Date.now() - startedAt,
@@ -410,7 +416,7 @@ async function runMonitor(monitor: MonitorRow, shutdownSignal?: AbortSignal): Pr
       await tx
         .update(monitors)
         .set(monitorUpdate)
-        .where(and(eq(monitors.id, monitor.id), eq(monitors.leaseOwner, WORKER_ID)));
+        .where(and(eq(monitors.id, monitor.id), eq(monitors.leaseOwner, WORKER_ID), eq(monitors.leaseEpoch, claimedEpoch)));
 
       await tx
         .update(collectionRuns)
@@ -428,7 +434,7 @@ async function runMonitor(monitor: MonitorRow, shutdownSignal?: AbortSignal): Pr
           summaryErrorMessage: committed.summary.errorMessage ?? null,
           providerCost: String(summaryCost),
         })
-        .where(eq(collectionRuns.id, runId));
+        .where(and(eq(collectionRuns.id, runId), eq(collectionRuns.attemptToken, attemptToken)));
       return committed;
     });
 
@@ -461,7 +467,7 @@ async function runMonitor(monitor: MonitorRow, shutdownSignal?: AbortSignal): Pr
           finishedAt: new Date(),
           errorCode: "RUN_INTERRUPTED",
           errorMessage: "Worker stopped before this run finished.",
-        }).where(eq(collectionRuns.id, runId));
+        }).where(and(eq(collectionRuns.id, runId), eq(collectionRuns.attemptToken, attemptToken)));
       });
       throw shutdownSignal.reason instanceof Error
         ? shutdownSignal.reason
@@ -489,7 +495,7 @@ async function runMonitor(monitor: MonitorRow, shutdownSignal?: AbortSignal): Pr
           leaseUntil: null,
           ...(shouldDisable ? { enabled: false } : {}),
         })
-        .where(and(eq(monitors.id, monitor.id), eq(monitors.leaseOwner, WORKER_ID)));
+        .where(and(eq(monitors.id, monitor.id), eq(monitors.leaseOwner, WORKER_ID), eq(monitors.leaseEpoch, claimedEpoch)));
 
       await tx
         .update(collectionRuns)
@@ -499,7 +505,7 @@ async function runMonitor(monitor: MonitorRow, shutdownSignal?: AbortSignal): Pr
           errorCode,
           errorMessage: message,
         })
-        .where(eq(collectionRuns.id, runId));
+        .where(and(eq(collectionRuns.id, runId), eq(collectionRuns.attemptToken, attemptToken)));
     });
 
     runLog.warn("collection.failed", {
@@ -703,12 +709,15 @@ async function maybeEnsureWeRssCollectionTask(now = Date.now()): Promise<void> {
   }
 }
 
-async function claimMonitor(monitor: MonitorRow, now = new Date()): Promise<boolean> {
+type ClaimedMonitor = { monitorId: string; leaseEpoch: number };
+
+async function claimMonitor(monitor: MonitorRow, now = new Date()): Promise<ClaimedMonitor | null> {
   const [claimed] = await db
     .update(monitors)
     .set({
       leaseOwner: WORKER_ID,
       leaseUntil: new Date(now.getTime() + MONITOR_LEASE_MS),
+      leaseEpoch: sql`${monitors.leaseEpoch} + 1`,
     })
     .where(and(
       eq(monitors.id, monitor.id),
@@ -716,20 +725,19 @@ async function claimMonitor(monitor: MonitorRow, now = new Date()): Promise<bool
       lte(monitors.nextRunAt, now),
       or(isNull(monitors.leaseUntil), lte(monitors.leaseUntil, now)),
     ))
-    .returning({ id: monitors.id });
+    .returning({ id: monitors.id, leaseEpoch: monitors.leaseEpoch });
 
-  // If no row was updated the lease was already taken by another worker or
-  // the monitor was disabled / rescheduled between query and claim. A logged
-  // warning here tells the operator whether the lost claim was a race or a
-  // stale snapshot.
+  // If no row was updated the lease was already taken by another worker or the
+  // monitor was disabled / rescheduled between query and claim.
   if (!claimed) {
     workerLog.warn("monitor.claim.lost", {
       monitorId: monitor.id,
       platform: monitor.platform,
       nextRunAt: monitor.nextRunAt,
     });
+    return null;
   }
-  return Boolean(claimed);
+  return { monitorId: claimed.id, leaseEpoch: claimed.leaseEpoch };
 }
 
 export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
@@ -756,8 +764,10 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
   let claimedCount = 0;
   for (const monitor of due) {
     if (shutdownSignal?.aborted) break;
-    if (!(await claimMonitor(monitor))) continue;
+    const claimed = await claimMonitor(monitor);
+    if (!claimed) continue;
     claimedCount += 1;
+    const claimedEpoch = claimed.leaseEpoch;
     let leaseRenewalRunning = false;
     const leaseRenewalTimer = setInterval(() => {
       if (leaseRenewalRunning) return;
@@ -787,7 +797,7 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
         .finally(() => { leaseRenewalRunning = false; });
     }, Math.min(60_000, Math.max(5_000, Math.floor(MONITOR_LEASE_MS / 3))));
     try {
-      await runMonitor(monitor, shutdownSignal);
+      await runMonitor(monitor, claimedEpoch, shutdownSignal);
     } finally {
       clearInterval(leaseRenewalTimer);
       // Also releases a lease if creating the collection_run itself failed.

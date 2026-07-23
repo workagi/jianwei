@@ -1,4 +1,5 @@
 import {
+  bigint,
   boolean,
   index,
   integer,
@@ -67,6 +68,7 @@ export const monitors = pgTable("monitors", {
   nextRunAt: timestamp("next_run_at", { withTimezone: true }).notNull().defaultNow(),
   leaseOwner: text("lease_owner"),
   leaseUntil: timestamp("lease_until", { withTimezone: true }),
+  leaseEpoch: bigint("lease_epoch", { mode: "number" }).notNull().default(0),
   failureCount: integer("failure_count").notNull().default(0),
   lastError: text("last_error"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -195,6 +197,7 @@ export const collectionRuns = pgTable("collection_runs", {
   scheduledFor: timestamp("scheduled_for", { withTimezone: true }).notNull(),
   idempotencyKey: text("idempotency_key").notNull(),
   attempt: integer("attempt").notNull().default(1),
+  attemptToken: text("attempt_token").notNull().default(""),
   status: runStatus("status").notNull().default("running"),
   startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
   finishedAt: timestamp("finished_at", { withTimezone: true }),

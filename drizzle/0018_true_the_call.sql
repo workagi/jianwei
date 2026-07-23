@@ -1,0 +1,1 @@
+ALTER TABLE "collection_runs" ADD COLUMN "attempt_token" text DEFAULT '' NOT NULL;
