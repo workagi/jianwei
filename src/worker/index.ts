@@ -418,7 +418,7 @@ async function runMonitor(claimed: ClaimedMonitor, claimedEpoch: number, shutdow
       }
 
       const committed = await commitPreparedIngest(createDrizzleIngestRepository(tx), prepared);
-      await markRunProgress(runId, attemptToken, "committing");
+      await markRunProgress(runId, attemptToken, "committing", tx);
 
       // Usage rows share the run's idempotency key. A retried commit can never
       // count the same provider/model metric twice.
@@ -807,18 +807,48 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
   let claimedCount = 0;
   let activeCount = 0;
 
+  // Provider-level bulkhead: prevent a single slow provider (e.g. WeChat)
+  // from consuming all concurrency slots and starving other monitors.
+  const providerConcurrency: Record<string, number> = {
+    werss: 1,
+    wechat: 1,
+    x: 1,
+    brave: 2,
+    tavily: 2,
+    serper: 2,
+    trendradar: 2,
+  };
+  const providerActive = new Map<string, number>();
+
+  function providerKey(monitor: typeof due[number]): string {
+    // Use connectorId first, fall back to platform
+    return monitor.connectorId || monitor.platform || "default";
+  }
+
+  function providerAtCapacity(key: string): boolean {
+    const limit = providerConcurrency[key] ?? providerConcurrency["default"] ?? 2;
+    return (providerActive.get(key) ?? 0) >= limit;
+  }
+
   for (const monitor of due) {
     if (shutdownSignal?.aborted) break;
+
+    const pKey = providerKey(monitor);
 
     // Wait for a free concurrency slot before claiming the next monitor.
     while (activeCount >= WORKER_CONCURRENCY) {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
 
+    // Skip if this provider is already at its concurrency limit.
+    // The monitor stays unclaimed and will be retried next poll cycle.
+    if (providerAtCapacity(pKey)) continue;
+
     const claimed = await claimMonitor(monitor);
     if (!claimed) continue;
     claimedCount += 1;
     activeCount += 1;
+    providerActive.set(pKey, (providerActive.get(pKey) ?? 0) + 1);
     const claimedEpoch = claimed.leaseEpoch;
 
     // Fire and forget — each monitor runs independently. The counter
@@ -877,12 +907,20 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
         platform: monitor.platform,
         error,
       });
-    }).finally(() => { activeCount -= 1; });
+    }).finally(() => {
+      activeCount -= 1;
+      providerActive.set(pKey, Math.max(0, (providerActive.get(pKey) ?? 1) - 1));
+    });
   }
 
-  // Wait for all running monitors before exiting this cycle.
-  while (activeCount > 0) {
+  // Graceful shutdown: wait for running monitors, but with a hard deadline.
+  // If a provider ignores AbortSignal, we must not block the poll cycle forever.
+  const waitDeadline = Date.now() + 30_000;
+  while (activeCount > 0 && Date.now() < waitDeadline) {
     await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  if (activeCount > 0) {
+    workerLog.warn("worker.shutdown.forced", { pendingTasks: activeCount });
   }
 
   if (!shutdownSignal?.aborted) await maybeRetryFailedContentAnalysis();
@@ -955,8 +993,15 @@ async function maybeRetryFailedContentAnalysis(now = Date.now()): Promise<void> 
 }
 const RUN_PROGRESS_STALE_MS = 10 * 60_000;
 
-async function markRunProgress(runId: string, attemptToken: string, stage: string): Promise<void> {
-  await db
+type DbExecutor = Pick<typeof db, "update">;
+
+async function markRunProgress(
+  runId: string,
+  attemptToken: string,
+  stage: string,
+  executor: DbExecutor = db,
+): Promise<void> {
+  await executor
     .update(collectionRuns)
     .set({ currentStage: stage, lastProgressAt: new Date() })
     .where(and(
@@ -1044,7 +1089,7 @@ async function main(): Promise<void> {
 
 // Only run the loop when invoked directly (e.g. `pnpm worker`). When imported
 // by unit tests, this must not execute.
-if (process.argv[1] && /worker\/index\.ts$/.test(process.argv[1])) {
+if (process.argv[1] && /worker\/index\.(?:ts|js)$/.test(process.argv[1])) {
   main().catch((err) => {
     workerLog.error("worker.fatal", { error: err });
     process.exit(1);
