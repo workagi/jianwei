@@ -122,6 +122,7 @@ export function createDrizzleIngestRepository(
         publishedAt: Date;
         contentType: string | null;
         topicTags: string[] | null;
+        informationValueScore: number | null;
       };
       const existingByUrl = new Map<string, ExistingRow>();
       if (urls.length) {
@@ -134,6 +135,7 @@ export function createDrizzleIngestRepository(
             publishedAt: items.publishedAt,
             contentType: items.contentType,
             topicTags: items.topicTags,
+            informationValueScore: items.informationValueScore,
           })
           .from(items)
           .where(inArray(items.canonicalUrl, urls));
@@ -146,6 +148,7 @@ export function createDrizzleIngestRepository(
             publishedAt: row.publishedAt,
             contentType: row.contentType,
             topicTags: row.topicTags,
+            informationValueScore: row.informationValueScore,
           });
         }
       }
@@ -187,7 +190,10 @@ export function createDrizzleIngestRepository(
           patch.topicTags = row.topicTags;
         }
         // retentionReason/relevanceScore/retentionSource now live in item_matches exclusively
-        if (row.informationValueScore != null)
+        // Only set informationValueScore if no value exists yet.
+        // Once a model analysis produces a score, subsequent rule-only
+        // re-observations of the same canonical URL must not downgrade it.
+        if (row.informationValueScore != null && hit.informationValueScore == null)
           patch.informationValueScore = row.informationValueScore;
 
         await database.update(items).set(patch).where(eq(items.id, hit.id));
@@ -260,6 +266,7 @@ export function createDrizzleIngestRepository(
             publishedAt: items.publishedAt,
             contentType: items.contentType,
             topicTags: items.topicTags,
+            informationValueScore: items.informationValueScore,
           })
           .from(items)
           .where(or(...allConditions));
@@ -397,8 +404,9 @@ export function createDrizzleIngestRepository(
         );
       return new Set(
         existingSources.map((s) =>
-          sourceKey(
+          sourceIdentity(
             s.platform as NormalizedItem["platform"],
+            s.sourceProvider,
             s.upstreamId,
           ),
         ),

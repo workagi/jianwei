@@ -352,7 +352,7 @@ export async function commitPreparedIngest(
      monitorId: input.monitorId,
      sourceItemId: storedSource?.id,
      matchedQuery: input.matchedQuery,
-      relevanceScore: gateBlocked ? (monitorRetention.relevanceScore ?? 0) : monitorRetention.relevanceScore,
+      relevanceScore: gateBlocked ? -1 : (monitorRetention.relevanceScore ?? undefined),
       retentionReason: monitorRetention.retentionReason ?? undefined,
       retentionSource: monitorRetention.retentionReason ? ("rules" as const) : undefined,
      analysisStatus: row?.analysisStatus ?? undefined,

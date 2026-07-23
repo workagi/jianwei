@@ -46,8 +46,7 @@ const BUDGET_ENABLED = Number.isFinite(MONTHLY_BUDGET_USD) && MONTHLY_BUDGET_USD
 const MONITOR_DISABLE_AFTER_FAILURES = Number(process.env.WORKER_DISABLE_MONITOR_AFTER_FAILURES ?? "5") || 0;
 const WORKER_CONCURRENCY = Math.max(1, Number(process.env.WORKER_CONCURRENCY ?? "4") || 0);
 const WORKER_HEARTBEAT_FILE = process.env.WORKER_HEARTBEAT_FILE ?? "/tmp/jianwei-worker-heartbeat";
-const WORKER_ID = process.env.WORKER_ID?.trim() || `${process.pid}-${randomUUID()}`;
-const workerLog = createStructuredLogger({ service: "worker", workerId: WORKER_ID });
+const workerLog = createStructuredLogger({ service: "worker", workerId: getLeaseWorkerId() });
 
 interface GatherInput {
   platform: PlatformType;
@@ -312,7 +311,7 @@ async function runMonitor(claimed: ClaimedMonitor, claimedEpoch: number, shutdow
       nextRunAt,
       leaseOwner: null,
       leaseUntil: null,
-    }).where(and(eq(monitors.id, claimed.id), eq(monitors.leaseOwner, WORKER_ID), eq(monitors.leaseEpoch, claimedEpoch)));
+    }).where(and(eq(monitors.id, claimed.id), eq(monitors.leaseOwner, getLeaseWorkerId()), eq(monitors.leaseEpoch, claimedEpoch)));
     runLog.info("collection.skipped", {
       reason: "already_succeeded",
       durationMs: Date.now() - startedAt,
@@ -409,7 +408,7 @@ async function runMonitor(claimed: ClaimedMonitor, claimedEpoch: number, shutdow
         .set({ leaseUntil: new Date(Date.now() + MONITOR_LEASE_MS) })
         .where(and(
           eq(monitors.id, claimed.id),
-          eq(monitors.leaseOwner, WORKER_ID),
+          eq(monitors.leaseOwner, getLeaseWorkerId()),
           eq(monitors.leaseEpoch, claimedEpoch),
         ))
         .returning({ id: monitors.id });
@@ -469,7 +468,7 @@ async function runMonitor(claimed: ClaimedMonitor, claimedEpoch: number, shutdow
       const [monitorUpdated] = await tx
         .update(monitors)
         .set(monitorUpdate)
-        .where(and(eq(monitors.id, claimed.id), eq(monitors.leaseOwner, WORKER_ID), eq(monitors.leaseEpoch, claimedEpoch)))
+        .where(and(eq(monitors.id, claimed.id), eq(monitors.leaseOwner, getLeaseWorkerId()), eq(monitors.leaseEpoch, claimedEpoch)))
         .returning({ id: monitors.id });
       if (!monitorUpdated) {
         throw new Error("LEASE_LOST: Monitor update affected 0 rows — lease expired mid-commit");
@@ -521,7 +520,7 @@ async function runMonitor(claimed: ClaimedMonitor, claimedEpoch: number, shutdow
         await releaseUsageReservation(tx, budgetReservationKey);
         await tx.update(monitors).set({ leaseOwner: null, leaseUntil: null }).where(and(
           eq(monitors.id, claimed.id),
-          eq(monitors.leaseOwner, WORKER_ID),
+          eq(monitors.leaseOwner, getLeaseWorkerId()),
         ));
         await tx.update(collectionRuns).set({
           status: "failed",
@@ -561,7 +560,7 @@ async function runMonitor(claimed: ClaimedMonitor, claimedEpoch: number, shutdow
           leaseOwner: null,
           leaseUntil: null,
         })
-        .where(and(eq(monitors.id, claimed.id), eq(monitors.leaseOwner, WORKER_ID), eq(monitors.leaseEpoch, claimedEpoch)));
+        .where(and(eq(monitors.id, claimed.id), eq(monitors.leaseOwner, getLeaseWorkerId()), eq(monitors.leaseEpoch, claimedEpoch)));
 
       await tx
         .update(collectionRuns)
@@ -885,7 +884,7 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
       })
       .where(and(
         eq(monitors.id, monitor.id),
-        eq(monitors.leaseOwner, WORKER_ID),
+        eq(monitors.leaseOwner, getLeaseWorkerId()),
         eq(monitors.leaseEpoch, claimedEpoch),
       ))
       .returning({ id: monitors.id })
@@ -917,7 +916,7 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
       // that has already been taken by another worker.
       await db.update(monitors).set({ leaseOwner: null, leaseUntil: null }).where(and(
         eq(monitors.id, monitor.id),
-        eq(monitors.leaseOwner, WORKER_ID),
+        eq(monitors.leaseOwner, getLeaseWorkerId()),
         eq(monitors.leaseEpoch, claimedEpoch),
       ));
     }
@@ -933,14 +932,22 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
     });
   }
 
-  // Graceful shutdown: wait for running monitors, but with a hard deadline.
-  // If a provider ignores AbortSignal, we must not block the poll cycle forever.
-  const waitDeadline = Date.now() + 30_000;
-  while (activeCount > 0 && Date.now() < waitDeadline) {
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  if (activeCount > 0) {
-    workerLog.warn("worker.shutdown.forced", { pendingTasks: activeCount });
+  if (shutdownSignal?.aborted) {
+    // Graceful shutdown: wait for running monitors with a hard deadline.
+    // If a provider ignores AbortSignal, force-exit after 30s.
+    const waitDeadline = Date.now() + 30_000;
+    while (activeCount > 0 && Date.now() < waitDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (activeCount > 0) {
+      workerLog.warn("worker.shutdown.forced", { pendingTasks: activeCount });
+    }
+  } else {
+    // Normal poll: wait for all tasks from this batch to complete.
+    // Provider-level bulkhead prevents over-subscription across batches.
+    while (activeCount > 0) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
   }
 
   if (!shutdownSignal?.aborted) await maybeRetryFailedContentAnalysis();
@@ -951,13 +958,13 @@ export async function markWorkerHeartbeat(now = new Date()): Promise<void> {
   await Promise.all([
     writeFile(WORKER_HEARTBEAT_FILE, now.toISOString(), "utf8"),
     db.insert(runtimeHealth).values({
-      service: "worker:" + WORKER_ID,
+      service: "worker:" + getLeaseWorkerId(),
       status: "ok",
       lastHeartbeatAt: now,
-      detail: { pid: process.pid, workerId: WORKER_ID },
+      detail: { pid: process.pid, workerId: getLeaseWorkerId() },
     }).onConflictDoUpdate({
       target: runtimeHealth.service,
-      set: { status: "ok", lastHeartbeatAt: now, detail: { pid: process.pid, workerId: WORKER_ID } },
+      set: { status: "ok", lastHeartbeatAt: now, detail: { pid: process.pid, workerId: getLeaseWorkerId() } },
     }),
   ]);
 }
