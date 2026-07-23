@@ -40,6 +40,6 @@ COPY --from=builder /app/tsconfig.json ./tsconfig.json
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/src ./src
 ENV NODE_ENV=production
-RUN addgroup --system --gid 1001 nodejs   && adduser --system --uid 1001 nextjs   && chown -R nextjs:nodejs /app   && mkdir -p /home/nextjs/.cache/node   && cp -R /root/.cache/node/corepack /home/nextjs/.cache/node/corepack   && chown -R nextjs:nodejs /home/nextjs/.cache
+RUN addgroup --system --gid 1001 nodejs   && adduser --system --uid 1001 nextjs   && chown -R nextjs:nodejs /app   && mkdir -p /home/nextjs/.cache/node   && ( [ -d /root/.cache/node/corepack ] && cp -R /root/.cache/node/corepack /home/nextjs/.cache/node/corepack || true )   && chown -R nextjs:nodejs /home/nextjs/.cache
 USER nextjs
 CMD ["pnpm", "worker"]

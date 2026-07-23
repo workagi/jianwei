@@ -167,6 +167,7 @@ services:
     restart: unless-stopped
 
   # --- WeRSS sidecar (WeChat Official Account RSS) -----------------------
+  werss:
     # Public installs use the official upstream image. Advanced users can
     # override WERSS_IMAGE with a reviewed custom build.
     image: ${WERSS_IMAGE:-jianwei-werss:local}
