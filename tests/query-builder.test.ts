@@ -9,6 +9,7 @@ describe("buildSearchQuery", () => {
       excludedTerms: ["招聘"],
       includeDomains: ["openai.com"],
       excludeDomains: ["example.com"],
+      provider: "brave",
       resultType: "both",
     })).toBe('AI agent "Claude Code" -招聘 site:openai.com -site:example.com');
   });

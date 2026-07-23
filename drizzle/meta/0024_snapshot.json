@@ -1,6 +1,6 @@
 {
-  "id": "c9cc4be1-0000-4000-8000-000000000022",
-  "prevId": "b8bb3ad0-0000-4000-8000-000000000021",
+  "id": "e1ee6d03-0000-4000-8000-000000000024",
+  "prevId": "d0dd5cf2-0000-4000-8000-000000000023",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -885,27 +885,6 @@
         }
       },
       "indexes": {
-        "items_platform_upstream_uidx": {
-          "name": "items_platform_upstream_uidx",
-          "columns": [
-            {
-              "expression": "platform",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "upstream_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "items_canonical_url_uidx": {
           "name": "items_canonical_url_uidx",
           "columns": [
@@ -936,21 +915,6 @@
           "method": "btree",
           "with": {}
         },
-        "items_source_provider_idx": {
-          "name": "items_source_provider_idx",
-          "columns": [
-            {
-              "expression": "source_provider",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "items_content_type_idx": {
           "name": "items_content_type_idx",
           "columns": [
@@ -971,21 +935,6 @@
           "columns": [
             {
               "expression": "information_value_score",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "items_relevance_score_idx": {
-          "name": "items_relevance_score_idx",
-          "columns": [
-            {
-              "expression": "relevance_score",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -1186,6 +1135,40 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "match_observations_run_match_source_uidx": {
+          "name": "match_observations_run_match_source_uidx",
+          "columns": [
+            {
+              "expression": "match_item_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "match_monitor_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "source_item_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "collection_run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "nullsNotDistinct": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -1214,21 +1197,25 @@
           ],
           "onDelete": "set null",
           "onUpdate": "no action"
+        },
+        "match_observations_match_fk": {
+          "name": "match_observations_match_fk",
+          "tableFrom": "monitor_match_observations",
+          "tableTo": "item_matches",
+          "columnsFrom": [
+            "match_item_id",
+            "match_monitor_id"
+          ],
+          "columnsTo": [
+            "item_id",
+            "monitor_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "match_observations_run_match_source_uidx": {
-          "name": "match_observations_run_match_source_uidx",
-          "nullsNotDistinct": false,
-          "columns": [
-            "match_item_id",
-            "match_monitor_id",
-            "source_item_id",
-            "collection_run_id"
-          ]
-        }
-      },
+      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false

@@ -79,9 +79,11 @@ describe("summarizer providers", () => {
     const summary = await generateSummary(item());
 
     expect(summary).toBe("中文摘要");
-    const [url, init] = fetchMock.mock.calls[0];
+    const [url, init] = // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fetchMock as any).mock.calls[0];
     expect(String(url)).toBe("https://api.deepseek.com/chat/completions");
-    const body = JSON.parse(String(init?.body));
+    const body = JSON.parse(String(// eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (init as any)?.body));
     expect(body.model).toBe("deepseek-v4-flash");
     expect(body.response_format).toEqual({ type: "json_object" });
   });
@@ -99,9 +101,11 @@ describe("summarizer providers", () => {
     const summary = await generateSummary(item());
 
     expect(summary).toBe("方舟摘要");
-    const [url, init] = fetchMock.mock.calls[0];
+    const [url, init] = // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fetchMock as any).mock.calls[0];
     expect(String(url)).toBe("https://ark.cn-beijing.volces.com/api/v3/chat/completions");
-    expect(JSON.parse(String(init?.body)).model).toBe("ep-demo");
+    expect(JSON.parse(String(// eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (init as any)?.body)).model).toBe("ep-demo");
   });
 
   it("uses custom OpenAI-compatible base URL without duplicating chat/completions", async () => {
@@ -118,7 +122,8 @@ describe("summarizer providers", () => {
     const summary = await generateSummary(item());
 
     expect(summary).toBe("自定义摘要");
-    expect(String(fetchMock.mock.calls[0][0])).toBe("https://example.com/v1/chat/completions");
+    expect(String(// eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fetchMock as any).mock.calls[0][0])).toBe("https://example.com/v1/chat/completions");
   });
 
   it("uses StepFun 2603 low reasoning without a restrictive output cap", async () => {
@@ -134,7 +139,8 @@ describe("summarizer providers", () => {
 
     await expect(generateSummary(item())).resolves.toBe("阶跃摘要");
 
-    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    const body = JSON.parse(String(// eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fetchMock as any).mock.calls[0][1]?.body));
     expect(body.reasoning_effort).toBe("low");
     expect(body.response_format).toEqual({ type: "json_object" });
     expect(body).not.toHaveProperty("max_tokens");
@@ -168,7 +174,8 @@ describe("summarizer providers", () => {
 
     await expect(generateSummary(item())).resolves.toBe("兼容接口摘要");
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toHaveProperty("response_format");
+    expect(JSON.parse(String(// eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fetchMock as any).mock.calls[0][1]?.body))).toHaveProperty("response_format");
     expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).not.toHaveProperty("response_format");
   });
 
@@ -261,7 +268,8 @@ describe("summarizer providers", () => {
       contentHtml: `<article><script>bad()</script><p>${"开头".repeat(80)}</p><p>重要结论在末尾</p></article>`,
     })).resolves.toBe("截断摘要");
 
-    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    const body = JSON.parse(String(// eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fetchMock as any).mock.calls[0][1]?.body));
     const userContent = body.messages[1].content as string;
     expect(userContent).not.toContain("<article>");
     expect(userContent).not.toContain("bad()");
@@ -298,7 +306,8 @@ describe("summarizer providers", () => {
     });
 
     expect(result.translatedTitle).toBe("OpenAI 今天发布了一项新功能。");
-    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    const body = JSON.parse(String(// eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fetchMock as any).mock.calls[0][1]?.body));
     expect(body.messages[1].content).toContain("平台：x");
     expect(body.messages[0].content).toContain("忠实翻译正文");
   });

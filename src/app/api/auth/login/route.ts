@@ -11,9 +11,20 @@ import { checkLoginRateLimit, clearLoginAttempts, recordLoginAttempt } from "@/d
 export const dynamic = "force-dynamic";
 
 function clientKey(req: Request): string {
-  return req.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
-    || req.headers.get("x-real-ip")
-    || "local";
+  // Only trust forwarded headers when the request originates from a trusted
+  // reverse proxy. In production (Docker), Caddy sits on the internal Docker
+  // network and is the sole source of X-Forwarded-For. In development,
+  // localhost requests are identified by the loopback address.
+  const trustedProxy = process.env.TRUSTED_PROXY_IP?.trim();
+  if (trustedProxy) {
+    const connectingIp = req.headers.get("x-real-ip")?.trim();
+    if (connectingIp === trustedProxy) {
+      const forwarded = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+      if (forwarded) return forwarded;
+    }
+  }
+  const directIp = req.headers.get("x-real-ip")?.trim();
+  return directIp || "local";
 }
 
 

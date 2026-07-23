@@ -58,6 +58,25 @@ class MemRepo implements IngestRepository {
     this.matchLinks.push(...links);
     return links.length;
   }
+
+  async findExistingSourceKeys(
+    _unused_sources: Array<{ platform: string; sourceProvider: string; upstreamId: string }>,
+  ): Promise<Set<string>> {
+    return new Set();
+  }
+
+  async findExistingCanonicalUrls(_unused_urls: string[]): Promise<Set<string>> {
+    return new Set();
+  }
+
+  async claimDocumentAnalysis(_unused_input: {
+    canonicalUrlHash: string;
+    analysisVersion: string;
+    ownerWorkerId: string;
+    leaseMinutes: number;
+  }): Promise<boolean> {
+    return true;
+  }
 }
 
 describe("toItemRows", () => {

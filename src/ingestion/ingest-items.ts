@@ -1,21 +1,26 @@
 import type { NormalizedItem } from "@/connectors/types";
-import { canonicalizeUrl, contentFingerprint, dedupeKey } from "./deduplicate";
 import { db } from "@/db";
-import { items, itemMatches, monitorMatchObservations, sourceItems, documentAnalysisClaims } from "@/db/schema";
-import { createHash } from "node:crypto";
-import { and, eq, inArray, or, sql } from "drizzle-orm";
+import { canonicalizeUrl, contentFingerprint, dedupeKey } from "./deduplicate";
 import { type SummaryRunStats } from "@/lib/summarizer";
 import { routeContentItems, CONTENT_ANALYSIS_VERSION } from "@/lib/content-router";
 import { deriveItemClassification } from "@/lib/item-tags";
-
-const WORKER_ID_FOR_CLAIM = process.env.WORKER_ID?.trim() || "ingest-" + Math.random().toString(36).slice(2, 8);
 import { deriveRetentionDecision, type MonitorRules, deriveMonitorRetention } from "@/lib/content-retention";
-import { createStructuredLogger } from "@/lib/structured-log";
+import {
+  sourceKey,
+  sourceProvider,
+  sourceIdentity,
+  canonicalUrlHash,
+  WORKER_ID_FOR_CLAIM,
+  type IngestItemRow,
+  type IngestMatchLink,
+  type IngestSourceObservation,
+  type IngestRepository,
+} from "./repositories";
 
-const ingestionLog = createStructuredLogger({ service: "ingestion" });
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export { createDrizzleIngestRepository } from "./repositories";
 
-/** Insert-ready row shape for the `items` table (driven by the Drizzle schema). */
-export type IngestItemRow = typeof items.$inferInsert;
+export type { IngestItemRow, IngestMatchLink, IngestSourceObservation, StoredSourceObservation, UpsertedDocument, IngestRepository } from "./repositories";
 
 const FUTURE_SKEW_MS = 5 * 60 * 1000;
 
@@ -109,70 +114,6 @@ export function toItemRows(input: NormalizedItem[]): IngestItemRow[] {
   return out;
 }
 
-export interface IngestMatchLink {
-  itemId: string;
-  monitorId: string;
-  sourceItemId?: string;
-  matchedQuery?: string;
-  relevanceScore?: number;
-  retentionReason?: string;
-  retentionSource?: string;
-  analysisStatus?: string;
-  analysisVersion?: string;
-  rawPayload?: unknown;
-  collectionRunId?: string;
-}
-
-export interface IngestSourceObservation {
-  itemId: string;
-  platform: NormalizedItem["platform"];
-  sourceProvider: string;
-  upstreamId: string;
-  sourceUrl: string;
-  authorId?: string;
-  authorName?: string;
-  authorHandle?: string;
-  avatarUrl?: string;
-  rawPayload: Record<string, unknown>;
-  publishedAt: Date;
-}
-
-export interface StoredSourceObservation {
-  id: string;
-  itemId: string;
-  platform: NormalizedItem["platform"];
-  sourceProvider: string;
-  upstreamId: string;
-}
-
-export interface UpsertedDocument {
-  id: string;
-  platform: NormalizedItem["platform"];
-  upstreamId: string;
-  canonicalUrl: string;
-}
-
-/** Storage boundary so `ingest` stays pure and testable without a live DB. */
-export interface IngestRepository {
-  upsertItems(
-    rows: IngestItemRow[],
-  ): Promise<UpsertedDocument[]>;
-  upsertSourceItems(observations: IngestSourceObservation[]): Promise<StoredSourceObservation[]>;
-  linkMatches(links: IngestMatchLink[]): Promise<number>;
-  findExistingSourceKeys?(
-    sources: Array<{ platform: NormalizedItem["platform"]; sourceProvider: string; upstreamId: string }>,
-  ): Promise<Set<string>>;
-  /** Return canonical URLs that already exist so model routing can skip them. */
-  findExistingCanonicalUrls?(canonicalUrls: string[]): Promise<Set<string>>;
-  /** Try to claim document analysis for a canonical URL. Returns true if claimed. */
-  claimDocumentAnalysis?(input: {
-    canonicalUrlHash: string;
-    analysisVersion: string;
-    ownerWorkerId: string;
-    leaseMinutes: number;
-  }): Promise<boolean>;
-}
-
 export interface IngestResult {
   itemsUpserted: number;
   matchesInserted: number;
@@ -207,18 +148,6 @@ function defaultSummaryStats(status: SummaryRunStats["status"]): SummaryRunStats
   };
 }
 
-function sourceKey(platform: string, upstreamId: string): string {
-  return `${platform}|${upstreamId}`;
-}
-
-function sourceProvider(item: NormalizedItem): string {
-  return item.sourceProvider?.trim() || item.platform;
-}
-
-function sourceIdentity(platform: string, provider: string, upstreamId: string): string {
-  return `${platform}|${provider}|${upstreamId}`;
-}
-
 function rawPayloadRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value)) {
     return value as Record<string, unknown>;
@@ -240,10 +169,6 @@ async function findExistingCanonicalUrls(repo: IngestRepository, urls: string[])
 }
 
 /** Analyse and normalize a batch without writing it. */
-function canonicalUrlHash(url: string): string {
-  return createHash("sha256").update(url).digest("base64url").slice(0, 32);
-}
-
 async function claimDocumentAnalyses(
   repo: IngestRepository,
   newItems: NormalizedItem[],
@@ -462,349 +387,3 @@ export async function ingest(
  */
 type IngestDatabase = Pick<typeof db, "select" | "insert" | "update">;
 
-export function createDrizzleIngestRepository(database: IngestDatabase = db): IngestRepository {
-  return {
-    async upsertItems(rows) {
-      if (rows.length === 0) return [];
-
-      const urls = [...new Set(rows.map((r) => r.canonicalUrl).filter(Boolean))];
-      type ExistingRow = UpsertedDocument & {
-        publishedAt: Date;
-        contentType: string | null;
-        topicTags: string[] | null;
-      };
-      const existingByUrl = new Map<string, ExistingRow>();
-      if (urls.length) {
-        const existing = await database
-          .select({
-            id: items.id,
-            platform: items.platform,
-            upstreamId: items.upstreamId,
-            canonicalUrl: items.canonicalUrl,
-            publishedAt: items.publishedAt,
-            contentType: items.contentType,
-            topicTags: items.topicTags,
-          })
-          .from(items)
-          .where(inArray(items.canonicalUrl, urls));
-        for (const row of existing) {
-          existingByUrl.set(row.canonicalUrl, {
-            id: row.id,
-            platform: row.platform as NormalizedItem["platform"],
-            upstreamId: row.upstreamId,
-            canonicalUrl: row.canonicalUrl,
-            publishedAt: row.publishedAt,
-            contentType: row.contentType,
-            topicTags: row.topicTags,
-          });
-        }
-      }
-
-      const toInsert: IngestItemRow[] = [];
-      const merged: UpsertedDocument[] = [];
-
-      const mergeIntoExisting = async (row: IngestItemRow, hit: ExistingRow) => {
-        // Same article, possibly different upstream id: refresh plain content
-        // fields only. Keep historical identity (id / upstream_id) for matches.
-        const patch: Partial<IngestItemRow> & { updatedAt: Date } = {
-          authorId: row.authorId ?? null,
-          authorName: row.authorName ?? null,
-          authorHandle: row.authorHandle ?? null,
-          title: row.title ?? null,
-          bodyText: row.bodyText,
-          imageUrls: row.imageUrls ?? [],
-          contentHash: row.contentHash,
-          updatedAt: new Date(),
-        };
-        if (row.avatarUrl) patch.avatarUrl = row.avatarUrl;
-        if (row.sourceProvider) patch.sourceProvider = row.sourceProvider;
-        if (row.contentHtml) {
-          patch.contentHtml = row.contentHtml;
-          patch.contentProvider = row.contentProvider ?? null;
-          patch.contentFetchStatus = row.contentFetchStatus ?? null;
-          patch.contentFetchError = null;
-          if (row.contentFetchedAt) patch.contentFetchedAt = row.contentFetchedAt;
-        }
-        // Never move an existing item forward in the reader timeline.
-        if (row.publishedAt < hit.publishedAt) patch.publishedAt = row.publishedAt;
-        if (!hit.contentType && row.contentType) patch.contentType = row.contentType;
-        if ((!hit.topicTags || hit.topicTags.length === 0) && row.topicTags?.length) {
-          patch.topicTags = row.topicTags;
-        }
-        if (row.retentionReason) patch.retentionReason = row.retentionReason;
-        if (row.informationValueScore != null) patch.informationValueScore = row.informationValueScore;
-        if (row.relevanceScore != null) patch.relevanceScore = row.relevanceScore;
-        if (row.retentionSource) patch.retentionSource = row.retentionSource;
-
-        await database.update(items).set(patch).where(eq(items.id, hit.id));
-        merged.push({
-          id: hit.id,
-          platform: hit.platform,
-          upstreamId: hit.upstreamId,
-          canonicalUrl: hit.canonicalUrl,
-        });
-      };
-
-      for (const row of rows) {
-        const hit = existingByUrl.get(row.canonicalUrl);
-        if (!hit) {
-          toInsert.push(row);
-          continue;
-        }
-        await mergeIntoExisting(row, hit);
-      }
-
-      if (toInsert.length === 0) return merged;
-
-      const inserted: UpsertedDocument[] = [];
-      // Insert one row at a time and ignore every unique conflict. This is
-      // transaction-safe: catching a PostgreSQL 23505 would leave the entire
-      // transaction aborted. A no-op conflict lets us reselect and merge into
-      // whichever source/canonical row won the race.
-      for (const row of toInsert) {
-        const [saved] = await database
-          .insert(items)
-          .values(row as typeof items.$inferInsert)
-          .onConflictDoNothing()
-          .returning({
-            id: items.id,
-            platform: items.platform,
-            upstreamId: items.upstreamId,
-            canonicalUrl: items.canonicalUrl,
-          });
-        if (saved) {
-          inserted.push({
-            id: saved.id,
-            platform: saved.platform as NormalizedItem["platform"],
-            upstreamId: saved.upstreamId,
-            canonicalUrl: saved.canonicalUrl,
-          });
-          continue;
-        }
-
-        const [winner] = await database
-          .select({
-            id: items.id,
-            platform: items.platform,
-            upstreamId: items.upstreamId,
-            canonicalUrl: items.canonicalUrl,
-            publishedAt: items.publishedAt,
-            contentType: items.contentType,
-            topicTags: items.topicTags,
-          })
-          .from(items)
-          .where(or(
-            and(eq(items.platform, row.platform), eq(items.upstreamId, row.upstreamId)),
-            eq(items.canonicalUrl, row.canonicalUrl),
-          ))
-          .limit(1);
-        if (!winner) throw new Error("INGEST_CONFLICT_WINNER_NOT_FOUND");
-        await mergeIntoExisting(row, {
-          ...winner,
-          platform: winner.platform as NormalizedItem["platform"],
-        });
-      }
-
-      return [
-        ...merged,
-        ...inserted,
-      ];
-    },
-
-    async upsertSourceItems(observations) {
-      if (observations.length === 0) return [];
-      const now = new Date();
-      const returned = await database
-        .insert(sourceItems)
-        .values(
-          observations.map((obs) => ({
-            itemId: obs.itemId,
-            platform: obs.platform,
-            sourceProvider: obs.sourceProvider,
-            upstreamId: obs.upstreamId,
-            sourceUrl: obs.sourceUrl,
-            authorId: obs.authorId ?? null,
-            authorName: obs.authorName ?? null,
-            authorHandle: obs.authorHandle ?? null,
-            avatarUrl: obs.avatarUrl ?? null,
-            rawPayload: obs.rawPayload,
-            publishedAt: obs.publishedAt,
-            lastSeenAt: now,
-          })),
-        )
-        .onConflictDoUpdate({
-          target: [sourceItems.platform, sourceItems.sourceProvider, sourceItems.upstreamId],
-          set: {
-            // Never silently re-bind a source identity to a different document.
-            // Once bound, the source→document relationship is immutable in the
-            // hot path. Re-canonicalization must go through an explicit merge
-            // process that also migrates item_matches and observations.
-            itemId: sql`coalesce(${sourceItems.itemId}, excluded.${sourceItems.itemId})`,
-            sourceUrl: sql`excluded.${sourceItems.sourceUrl}`,
-            authorId: sql`coalesce(excluded.${sourceItems.authorId}, ${sourceItems.authorId})`,
-            authorName: sql`coalesce(excluded.${sourceItems.authorName}, ${sourceItems.authorName})`,
-            authorHandle: sql`coalesce(excluded.${sourceItems.authorHandle}, ${sourceItems.authorHandle})`,
-            avatarUrl: sql`coalesce(excluded.${sourceItems.avatarUrl}, ${sourceItems.avatarUrl})`,
-            rawPayload: sql`excluded.${sourceItems.rawPayload}`,
-            publishedAt: sql`excluded.${sourceItems.publishedAt}`,
-            lastSeenAt: now,
-          },
-        })
-        .returning({
-          id: sourceItems.id,
-          itemId: sourceItems.itemId,
-          platform: sourceItems.platform,
-          sourceProvider: sourceItems.sourceProvider,
-          upstreamId: sourceItems.upstreamId,
-        });
-      for (const { itemId, platform, sourceProvider, upstreamId } of returned) {
-        // When onConflict updated itemId, the returned row may come from
-        // the new values. Detect re-assignments by comparing with the input.
-        const input = observations.find(
-          (obs) => obs.platform === platform && obs.sourceProvider === sourceProvider && obs.upstreamId === upstreamId,
-        );
-        if (input && input.itemId !== itemId) {
-          ingestionLog.warn("source_items.item_reassigned", {
-            platform,
-            sourceProvider,
-            upstreamId,
-            previousDocumentId: itemId,
-            currentDocumentId: input.itemId,
-          });
-        }
-      }
-      return returned.map((row) => ({ ...row, platform: row.platform as NormalizedItem["platform"] }));
-    },
-
-    async findExistingSourceKeys(sources) {
-      if (sources.length === 0) return new Set();
-      const existingSources = await database
-        .select({
-          platform: sourceItems.platform,
-          sourceProvider: sourceItems.sourceProvider,
-          upstreamId: sourceItems.upstreamId,
-        })
-        .from(sourceItems)
-        .where(or(...sources.map((source) => and(
-          eq(sourceItems.platform, source.platform),
-          eq(sourceItems.sourceProvider, source.sourceProvider),
-          eq(sourceItems.upstreamId, source.upstreamId),
-        ))));
-      // TODO(backfill): Migrate all source identity reads to source_items
-      // and remove this legacy items fallback. Tracked for migration planning.
-      let legacyHits = 0;
-      const legacyItems = await database
-        .select({
-          platform: items.platform,
-          sourceProvider: items.sourceProvider,
-          upstreamId: items.upstreamId,
-        })
-        .from(items)
-        .where(or(...sources.map((source) => and(
-          eq(items.platform, source.platform),
-          eq(items.upstreamId, source.upstreamId),
-        ))));
-      legacyHits = legacyItems.length;
-      if (legacyHits > 0) {
-        ingestionLog.warn("ingest.legacy_source_items_hit", {
-          count: legacyHits,
-          note: "These sources exist only in items, not in source_items; backfill needed",
-        });
-      }
-      return new Set([
-        ...existingSources.map((source) => sourceIdentity(
-          source.platform,
-          source.sourceProvider,
-          source.upstreamId,
-        )),
-        ...legacyItems.map((item) => sourceIdentity(
-          item.platform,
-          item.sourceProvider?.trim() || item.platform,
-          item.upstreamId,
-        )),
-      ]);
-    },
-
-    async findExistingCanonicalUrls(canonicalUrls) {
-      if (canonicalUrls.length === 0) return new Set();
-      const existing = await database
-        .select({ canonicalUrl: items.canonicalUrl })
-        .from(items)
-        .where(inArray(items.canonicalUrl, canonicalUrls));
-      return new Set(existing.map((e) => e.canonicalUrl));
-    },
-
-    async linkMatches(links) {
-      if (links.length === 0) return 0;
-      const now = new Date();
-      const result = await database
-        .insert(itemMatches)
-        .values(
-          links.map((link) => ({
-            itemId: link.itemId,
-            monitorId: link.monitorId,
-            sourceItemId: link.sourceItemId ?? null,
-            matchedQuery: link.matchedQuery ?? null,
-            relevanceScore: link.relevanceScore ?? null,
-            retentionReason: link.retentionReason ?? null,
-            retentionSource: link.retentionSource ?? null,
-            analysisStatus: link.analysisStatus ?? null,
-            analysisVersion: link.analysisVersion ?? null,
-            rawPayload: (link.rawPayload ?? {}) as Record<string, unknown>,
-            lastSeenAt: now,
-          })),
-        )
-        .onConflictDoUpdate({
-          target: [itemMatches.itemId, itemMatches.monitorId],
-          set: {
-            sourceItemId: sql`coalesce(excluded.${itemMatches.sourceItemId}, ${itemMatches.sourceItemId})`,
-            matchedQuery: sql`coalesce(excluded.${itemMatches.matchedQuery}, ${itemMatches.matchedQuery})`,
-            relevanceScore: sql`coalesce(excluded.${itemMatches.relevanceScore}, ${itemMatches.relevanceScore})`,
-            retentionReason: sql`coalesce(excluded.${itemMatches.retentionReason}, ${itemMatches.retentionReason})`,
-            retentionSource: sql`coalesce(excluded.${itemMatches.retentionSource}, ${itemMatches.retentionSource})`,
-            analysisStatus: sql`coalesce(excluded.${itemMatches.analysisStatus}, ${itemMatches.analysisStatus})`,
-            analysisVersion: sql`coalesce(excluded.${itemMatches.analysisVersion}, ${itemMatches.analysisVersion})`,
-            rawPayload: sql`excluded.${itemMatches.rawPayload}`,
-            lastSeenAt: now,
-          },
-        })
-        .returning({ itemId: itemMatches.itemId });
-
-      // Persist discovery evidence independently of the match aggregation.
-      await database.insert(monitorMatchObservations).values(
-        links.map((link) => ({
-          matchItemId: link.itemId,
-          matchMonitorId: link.monitorId,
-          sourceItemId: link.sourceItemId ?? null,
-          collectionRunId: link.collectionRunId ?? null,
-          matchedQuery: link.matchedQuery ?? null,
-          rawPayload: (link.rawPayload ?? {}) as Record<string, unknown>,
-        })),
-      ).onConflictDoNothing({
-        target: [
-          monitorMatchObservations.matchItemId,
-          monitorMatchObservations.matchMonitorId,
-          monitorMatchObservations.sourceItemId,
-          monitorMatchObservations.collectionRunId,
-        ],
-      });
-
-      return result.length;
-    },
-
-    async claimDocumentAnalysis(input) {
-      const result = await database
-        .insert(documentAnalysisClaims)
-        .values({
-          canonicalUrlHash: input.canonicalUrlHash,
-          analysisVersion: input.analysisVersion,
-          ownerWorkerId: input.ownerWorkerId,
-          status: "claimed",
-          expiresAt: new Date(Date.now() + input.leaseMinutes * 60_000),
-        })
-        .onConflictDoNothing()
-        .returning({ id: documentAnalysisClaims.id });
-      return result.length > 0;
-    },
-  };
-}

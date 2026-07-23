@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
-import { sql } from "drizzle-orm";
+import { sql, like, desc } from "drizzle-orm";
 import { db } from "@/db";
 import { runtimeHealth } from "@/db/schema";
-import { eq } from "drizzle-orm";
 import { deriveWorkerHealth } from "@/lib/system-health";
 
 export const dynamic = "force-dynamic";
@@ -14,7 +13,8 @@ export async function GET() {
     const [heartbeat] = await db
       .select({ status: runtimeHealth.status, lastHeartbeatAt: runtimeHealth.lastHeartbeatAt })
       .from(runtimeHealth)
-      .where(eq(runtimeHealth.service, "worker"))
+      .where(like(runtimeHealth.service, "worker:%"))
+      .orderBy(desc(runtimeHealth.lastHeartbeatAt))
       .limit(1);
     const lastHeartbeatAt = heartbeat?.lastHeartbeatAt ?? null;
     const worker = deriveWorkerHealth({
@@ -22,12 +22,16 @@ export async function GET() {
       lastHeartbeatAt,
       staleAfterSeconds: Number(process.env.WORKER_HEALTHCHECK_STALE_SECONDS) || 300,
     });
-    return NextResponse.json({
-      ok: worker === "ok",
-      database: "ok",
-      worker,
-      workerLastHeartbeatAt: lastHeartbeatAt?.toISOString() ?? null,
-    });
+    const ok = worker === "ok";
+    return NextResponse.json(
+      {
+        ok,
+        database: "ok",
+        worker,
+        workerLastHeartbeatAt: lastHeartbeatAt?.toISOString() ?? null,
+      },
+      { status: ok ? 200 : 503 },
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return NextResponse.json(

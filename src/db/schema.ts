@@ -27,6 +27,7 @@ export const runStatus = pgEnum("run_status", ["running", "success", "partial", 
 
 export const connectors = pgTable("connectors", {
   id: uuid("id").primaryKey().defaultRandom(),
+  // Legacy: prefer source_items.platform. Kept for backward-compat during migration.
   platform: platformType("platform").notNull(),
   provider: text("provider").notNull(),
   name: text("name").notNull(),
@@ -57,6 +58,7 @@ export const connectorCredentials = pgTable("connector_credentials", {
 
 export const monitors = pgTable("monitors", {
   id: uuid("id").primaryKey().defaultRandom(),
+  // Legacy: prefer source_items.platform. Kept for backward-compat during migration.
   platform: platformType("platform").notNull(),
   connectorId: uuid("connector_id").notNull().references(() => connectors.id),
   name: text("name").notNull(),
@@ -81,8 +83,11 @@ export const monitors = pgTable("monitors", {
 
 export const items = pgTable("items", {
   id: uuid("id").primaryKey().defaultRandom(),
+  // Legacy: prefer source_items.platform. Kept for backward-compat during migration.
   platform: platformType("platform").notNull(),
+  // Legacy: prefer source_items.source_provider. Kept for backward-compat.
   sourceProvider: text("source_provider"),
+  // Legacy: prefer source_items.upstream_id. Kept for backward-compat during migration.
   upstreamId: text("upstream_id").notNull(),
   canonicalUrl: text("canonical_url").notNull(),
   authorId: text("author_id"),
@@ -98,11 +103,12 @@ export const items = pgTable("items", {
   // 内容类型用于顶部筛选（单选、相对稳定）；主题标签用于卡片展示（多选、可扩展）。
   contentType: text("content_type"),
   topicTags: jsonb("topic_tags").$type<string[]>().notNull().default([]),
+  // Legacy: prefer item_matches.retention_reason. Kept for backward-compat.
   retentionReason: text("retention_reason"),
-  // Document-level information quality. `relevanceScore` remains during the
-  // compatibility window; monitor-specific relevance lives on item_matches.
   informationValueScore: integer("information_value_score"),
+  // Legacy: prefer item_matches.relevance_score. Kept for backward-compat.
   relevanceScore: integer("relevance_score"),
+  // Legacy: prefer item_matches.retention_source. Kept for backward-compat.
   retentionSource: text("retention_source"),
   // Durable per-item state for the unified LLM content route. Rule-derived
   // classification may exist while this status is still pending/failed.
@@ -145,8 +151,10 @@ export const items = pgTable("items", {
 export const sourceItems = pgTable("source_items", {
   id: uuid("id").primaryKey().defaultRandom(),
   itemId: uuid("item_id").notNull().references(() => items.id, { onDelete: "cascade" }),
+  // Legacy: prefer source_items.platform. Kept for backward-compat during migration.
   platform: platformType("platform").notNull(),
   sourceProvider: text("source_provider").notNull(),
+  // Legacy: prefer source_items.upstream_id. Kept for backward-compat during migration.
   upstreamId: text("upstream_id").notNull(),
   sourceUrl: text("source_url").notNull(),
   authorId: text("author_id"),
@@ -202,9 +210,6 @@ export const monitorMatchObservations = pgTable("monitor_match_observations", {
   index("match_observations_match_idx").on(table.matchItemId, table.matchMonitorId),
   index("match_observations_source_idx").on(table.sourceItemId),
   index("match_observations_run_idx").on(table.collectionRunId),
-  uniqueIndex("match_observations_run_match_source_uidx").on(
-    table.matchItemId, table.matchMonitorId, table.sourceItemId, table.collectionRunId,
-  ),
   uniqueIndex("match_observations_run_match_source_uidx").on(
     table.matchItemId, table.matchMonitorId, table.sourceItemId, table.collectionRunId,
   ),

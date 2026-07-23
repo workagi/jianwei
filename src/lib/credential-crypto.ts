@@ -58,13 +58,43 @@ export function isEncryptedCredential(value: string): boolean {
   return value.startsWith(LEGACY_PREFIX) || value.startsWith(PREFIX_TEMPLATE);
 }
 
+/**
+ * Return the key that should be used for NEW encryptions. When a key map is
+ * configured (APP_ENCRYPTION_KEYS_JSON), the active key ID selects which key
+ * to use. Falls back to APP_ENCRYPTION_KEY only in single-key mode.
+ * On startup failure (active ID missing from map), throws immediately in
+ * production — writing a key-tagged ciphertext with the wrong key is
+ * irreversible data loss.
+ */
+function activeEncryptionKey(): { id: string; key: Buffer } {
+  const keyId = activeKeyId();
+  const keyMap = loadKeyMap();
+  if (keyMap.size > 0) {
+    const key = keyMap.get(keyId);
+    if (!key) {
+      if (process.env.NODE_ENV === "production") {
+        throw new Error(
+          `APP_ENCRYPTION_ACTIVE_KEY_ID "${keyId}" not found in APP_ENCRYPTION_KEYS_JSON. ` +
+          "Refusing to encrypt with an unknown key ID.",
+        );
+      }
+      // Dev fallback: use the legacy key
+      return { id: keyId, key: encryptionKey() };
+    }
+    return { id: keyId, key };
+  }
+  return { id: "v1", key: encryptionKey() };
+}
+
 export function encryptCredential(value: string): string {
   if (isEncryptedCredential(value)) return value;
   const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", encryptionKey(), iv);
+  const { id: keyId, key } = activeEncryptionKey();
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
   const encrypted = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
   const tag = cipher.getAuthTag();
-  return `${currentPrefix()}${iv.toString("base64url")}:${tag.toString("base64url")}:${encrypted.toString("base64url")}`;
+  const prefix = keyId === "v1" ? LEGACY_PREFIX : `${PREFIX_TEMPLATE}${keyId}:`;
+  return `${prefix}${iv.toString("base64url")}:${tag.toString("base64url")}:${encrypted.toString("base64url")}`;
 }
 
 export function decryptCredential(value: string): string {

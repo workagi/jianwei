@@ -148,6 +148,41 @@
       "when": 1784779356466,
       "tag": "0020_redundant_ogun",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1784795144644,
+      "tag": "0021_observation_unique",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1784795145644,
+      "tag": "0022_doc_analysis_claims",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1784795146644,
+      "tag": "0023_match_observation_constraints",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1784795147644,
+      "tag": "0024_backfill_source_items",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1784795148644,
+      "tag": "0025_legacy_fields_nullable",
+      "breakpoints": true
     }
   ]
 }

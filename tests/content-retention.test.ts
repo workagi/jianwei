@@ -13,6 +13,7 @@ const item: NormalizedItem = {
   title: "OpenAI 发布 Codex Agent 更新",
   text: "OpenAI 为 Codex 增加可持续执行的 Agent 工作流，并公布新的开发者使用方式。",
   publishedAt: new Date("2026-07-15T08:00:00Z"),
+  imageUrls: [],
   raw: {},
 };
 

@@ -30,6 +30,8 @@ import {
 } from "@/lib/usage-budget";
 import { createStructuredLogger } from "@/lib/structured-log";
 import { classifyMonitorFailure } from "@/lib/monitor-error";
+import { claimMonitor, getLeaseWorkerId, getMonitorLeaseMs, type ClaimedMonitor } from "./lease-manager";
+import { cleanupStaleRunningRuns } from "./stale-run-reaper";
 
 // Cost per 1000 billable units. Brave's published rate is $3 / 1k queries; X has
 // no stable public rate, so it defaults to 0 and can be overridden.
@@ -305,7 +307,7 @@ async function runMonitor(claimed: ClaimedMonitor, claimedEpoch: number, shutdow
   });
 
   if (alreadySucceeded) {
-    await markRunProgress(runId, "skipped");
+    await markRunProgress(runId, attemptToken, "skipped");
     await db.update(monitors).set({
       nextRunAt,
       leaseOwner: null,
@@ -355,9 +357,9 @@ async function runMonitor(claimed: ClaimedMonitor, claimedEpoch: number, shutdow
     );
     // Provider and model work stays outside a database transaction. Only the
     // Connector finished.
-    await markRunProgress(runId, "gathering");
+    await markRunProgress(runId, attemptToken, "gathering");
     // Analyse (model calls happen inside prepareIngest).
-    await markRunProgress(runId, "analyzing");
+    await markRunProgress(runId, attemptToken, "analyzing");
     const prepared = await prepareIngest(createDrizzleIngestRepository(), {
       items,
       monitorId: claimed.monitorId,
@@ -367,7 +369,7 @@ async function runMonitor(claimed: ClaimedMonitor, claimedEpoch: number, shutdow
     });
     const summaryInputTokens = prepared.summary.inputTokens ?? 0;
     // Analysis complete, ready to commit.
-    await markRunProgress(runId, "ingesting");
+    await markRunProgress(runId, attemptToken, "ingesting");
     const summaryOutputTokens = prepared.summary.outputTokens ?? 0;
     const summaryCost = summaryEstimatedCostUsd(summaryInputTokens, summaryOutputTokens);
 
@@ -416,7 +418,7 @@ async function runMonitor(claimed: ClaimedMonitor, claimedEpoch: number, shutdow
       }
 
       const committed = await commitPreparedIngest(createDrizzleIngestRepository(tx), prepared);
-      await markRunProgress(runId, "committing");
+      await markRunProgress(runId, attemptToken, "committing");
 
       // Usage rows share the run's idempotency key. A retried commit can never
       // count the same provider/model metric twice.
@@ -780,92 +782,6 @@ async function maybeEnsureWeRssCollectionTask(now = Date.now()): Promise<void> {
   }
 }
 
-type ClaimedMonitor = {
-  id: string;
-  monitorId: string;
-  leaseEpoch: number;
-  platform: MonitorRow["platform"];
-  connectorId: string;
-  name: string;
-  config: Record<string, unknown>;
-  pollIntervalMinutes: number;
-  nextRunAt: Date;
-  cursor: Record<string, unknown>;
-  failureCount: number;
-  lastError: string | null;
-  enabled: boolean;
-  createdAt: Date;
-  updatedAt: Date;
-  lastSuccessAt: Date | null;
-  leaseOwner: string | null;
-  leaseUntil: Date | null;
-};
-
-async function claimMonitor(monitor: MonitorRow, now = new Date()): Promise<ClaimedMonitor | null> {
-  const [claimed] = await db
-    .update(monitors)
-    .set({
-      leaseOwner: WORKER_ID,
-      leaseUntil: new Date(now.getTime() + MONITOR_LEASE_MS),
-      leaseEpoch: sql`${monitors.leaseEpoch} + 1`,
-    })
-    .where(and(
-      eq(monitors.id, monitor.id),
-      eq(monitors.enabled, true),
-      lte(monitors.nextRunAt, now),
-      or(isNull(monitors.leaseUntil), lte(monitors.leaseUntil, now)),
-    ))
-    .returning({
-      id: monitors.id,
-      leaseEpoch: monitors.leaseEpoch,
-      platform: monitors.platform,
-      connectorId: monitors.connectorId,
-      name: monitors.name,
-      config: monitors.config,
-      pollIntervalMinutes: monitors.pollIntervalMinutes,
-      nextRunAt: monitors.nextRunAt,
-      cursor: monitors.cursor,
-      failureCount: monitors.failureCount,
-      lastError: monitors.lastError,
-      enabled: monitors.enabled,
-      createdAt: monitors.createdAt,
-      updatedAt: monitors.updatedAt,
-      lastSuccessAt: monitors.lastSuccessAt,
-      leaseOwner: monitors.leaseOwner,
-      leaseUntil: monitors.leaseUntil,
-    });
-
-  // If no row was updated the lease was already taken by another worker or the
-  // monitor was disabled / rescheduled between query and claim.
-  if (!claimed) {
-    workerLog.warn("monitor.claim.lost", {
-      monitorId: monitor.id,
-      platform: monitor.platform,
-      nextRunAt: monitor.nextRunAt,
-    });
-    return null;
-  }
-  return {
-    id: claimed.id,
-    monitorId: claimed.id,
-    leaseEpoch: claimed.leaseEpoch,
-    platform: claimed.platform,
-    connectorId: claimed.connectorId,
-    name: claimed.name,
-    config: claimed.config as Record<string, unknown>,
-    pollIntervalMinutes: claimed.pollIntervalMinutes,
-    nextRunAt: claimed.nextRunAt,
-    cursor: claimed.cursor as Record<string, unknown>,
-    failureCount: claimed.failureCount,
-    lastError: claimed.lastError,
-    enabled: claimed.enabled,
-    createdAt: claimed.createdAt,
-    updatedAt: claimed.updatedAt,
-    lastSuccessAt: claimed.lastSuccessAt,
-    leaseOwner: claimed.leaseOwner,
-    leaseUntil: claimed.leaseUntil,
-  };
-}
 
 export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
   // 每轮开始前刷新凭据，确保界面保存的密钥立即生效。
@@ -908,7 +824,7 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
     // Fire and forget — each monitor runs independently. The counter
     // decrement in .finally() signals a free slot to waiting iterations.
     void (async () => {
-    let leaseLost = false; // eslint-disable-line @typescript-eslint/no-unused-vars -- set from async renewal timer; transaction assertion is the real enforcement
+    const leaseController = new AbortController();
     let leaseRenewalRunning = false;
     const leaseRenewalTimer = setInterval(() => {
       if (leaseRenewalRunning) return;
@@ -925,7 +841,7 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
       .returning({ id: monitors.id })
       .then((rows) => {
         if (rows.length === 0) {
-          leaseLost = true;
+          leaseController.abort(new Error("LEASE_LOST"));
           workerLog.error("monitor.lease_renewal.lost", {
             monitorId: claimed.monitorId,
             platform: claimed.platform,
@@ -939,8 +855,11 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
       }))
         .finally(() => { leaseRenewalRunning = false; });
     }, Math.min(60_000, Math.max(5_000, Math.floor(MONITOR_LEASE_MS / 3))));
+    const taskSignal = shutdownSignal
+      ? AbortSignal.any([shutdownSignal, leaseController.signal])
+      : leaseController.signal;
     try {
-      await runMonitor(claimed, claimedEpoch, shutdownSignal);
+      await runMonitor(claimed, claimedEpoch, taskSignal);
     } finally {
       clearInterval(leaseRenewalTimer);
       // Release the lease only if we still own it (epoch matches).
@@ -952,7 +871,13 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
         eq(monitors.leaseEpoch, claimedEpoch),
       ));
     }
-    })().finally(() => { activeCount -= 1; });
+    })().catch((error) => {
+      workerLog.error("monitor.task.unhandled", {
+        monitorId: monitor.id,
+        platform: monitor.platform,
+        error,
+      });
+    }).finally(() => { activeCount -= 1; });
   }
 
   // Wait for all running monitors before exiting this cycle.
@@ -1030,40 +955,16 @@ async function maybeRetryFailedContentAnalysis(now = Date.now()): Promise<void> 
 }
 const RUN_PROGRESS_STALE_MS = 10 * 60_000;
 
-export async function cleanupStaleRunningRuns(): Promise<number> {
-  const progressCutoff = new Date(Date.now() - RUN_PROGRESS_STALE_MS);
-  const leaseCutoff = new Date(Date.now() - MONITOR_LEASE_MS - 60_000);
-  const rows = await db
-    .update(collectionRuns)
-    .set({
-      status: "failed",
-      finishedAt: new Date(),
-      errorCode: "RUN_INTERRUPTED",
-      errorMessage: "Abandoned: no progress for 10+ min and monitor lease expired.",
-    })
-    .where(and(
-      eq(collectionRuns.status, "running"),
-      lte(collectionRuns.lastProgressAt, progressCutoff),
-      sql`exists (
-        select 1 from ${monitors}
-        where ${monitors.id} = ${collectionRuns.monitorId}
-          and (
-            ${monitors.leaseOwner} is distinct from ${WORKER_ID}
-            or ${monitors.leaseUntil} is null
-            or ${monitors.leaseUntil} < ${leaseCutoff.toISOString()}
-          )
-      )`,
-    ))
-    .returning({ id: collectionRuns.id });
-  return rows.length;
-}
-
-async function markRunProgress(runId: string, stage: string): Promise<void> {
+async function markRunProgress(runId: string, attemptToken: string, stage: string): Promise<void> {
   await db
     .update(collectionRuns)
     .set({ currentStage: stage, lastProgressAt: new Date() })
-    .where(eq(collectionRuns.id, runId))
-    .catch((error) => workerLog.warn("run.progress.update_failed", { runId, stage, error }));
+    .where(and(
+      eq(collectionRuns.id, runId),
+      eq(collectionRuns.attemptToken, attemptToken),
+      eq(collectionRuns.status, "running"),
+    ))
+    .catch((error) => workerLog.warn("run.progress.update_failed", { runId, attemptToken, stage, error }));
 }
 
 async function withTimeout<T>(
@@ -1120,7 +1021,7 @@ async function main(): Promise<void> {
       .finally(() => { heartbeatRunning = false; });
   }, 15_000);
   try {
-    const cleaned = await cleanupStaleRunningRuns();
+    const cleaned = await cleanupStaleRunningRuns(MONITOR_LEASE_MS, workerLog);
     if (cleaned) workerLog.warn("collection.stale_runs.cleaned", { cleaned });
   } catch (err) {
     workerLog.warn("collection.stale_runs.cleanup_failed", { error: err });

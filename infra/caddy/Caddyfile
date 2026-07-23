@@ -15,11 +15,13 @@
 		-Server
 	}
 
-	# Strip incoming forwarding headers set by the client. Caddy is the
-	# only trusted proxy — it will set the real X-Forwarded-For itself.
-	header_down X-Forwarded-For
-	header_down X-Real-IP
-	header_down True-Client-IP
-
-	reverse_proxy web:3000
+	reverse_proxy web:3000 {
+		# Strip any X-Forwarded-* / X-Real-IP / True-Client-IP headers that the
+		# client may have injected. Caddy is the trusted edge and will set its
+		# own X-Forwarded-For based on the actual client address.
+		header_up -X-Real-IP
+		header_up -True-Client-IP
+		# X-Forwarded-For is managed by Caddy's trusted_proxies; do not delete
+		# it here — Caddy will overwrite or append depending on configuration.
+	}
 }

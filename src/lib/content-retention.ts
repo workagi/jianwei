@@ -7,6 +7,20 @@ export interface RetentionDecision {
   source: "model" | "rules";
 }
 
+
+/** Build a regex pattern for keyword matching. CJK keywords use substring
+ *  matching; Latin/digit keywords use Unicode word boundaries to avoid
+ *  false positives (e.g. "AI" should not match "said"). */
+function keywordPattern(kw: string): RegExp {
+  const escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // If the keyword contains any Latin letter or digit, add word boundaries
+  const hasLatin = /[a-zA-Z0-9]/.test(kw);
+  if (hasLatin) {
+    return new RegExp(`(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])`, "iu");
+  }
+  return new RegExp(escaped, "i");
+}
+
 export function normalizeRelevanceScore(value: unknown): number | undefined {
   const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
   if (!Number.isFinite(parsed)) return undefined;
@@ -115,26 +129,56 @@ export function deriveMonitorRetention(monitor: MonitorRules, doc: {
   title?: string;
   bodyText?: string;
 }): MonitorRetentionResult {
+  const haystack = [doc.title, doc.summary, doc.bodyText].filter(Boolean).join(" ").toLowerCase();
+
+  // ═══ Gate: hard rejection ════════════════════════════════════════════════
+  // Excluded keywords: if any appear in the document text, reject immediately.
+  // This is a hard Gate — excluded content should never appear in the feed.
+  const excludeKeywords = monitor.excludeKeywords ?? [];
+  const matchedExcludes = excludeKeywords.filter((kw) => {
+    return keywordPattern(kw).test(haystack);
+  });
+  if (matchedExcludes.length > 0) {
+    return {
+      shouldKeep: false,
+      relevanceScore: 0,
+      retentionReason: `命中排除词：${matchedExcludes.join("、")}`,
+    };
+  }
+
+  // Required keywords: if configured but zero matches against the document,
+  // reject. Multiple required keywords use AND semantics — all must appear.
+  const requiredKeywords = monitor.requiredKeywords ?? [];
+  if (requiredKeywords.length > 0) {
+    const matchedRequired = requiredKeywords.filter((kw) => {
+      return keywordPattern(kw).test(haystack);
+    });
+    if (matchedRequired.length < requiredKeywords.length) {
+      const missing = requiredKeywords.filter((kw) => !matchedRequired.includes(kw));
+      return {
+        shouldKeep: false,
+        relevanceScore: 0,
+        retentionReason: `未命中必含关键词：${missing.join("、")}`,
+      };
+    }
+  }
+
+  // ═══ Rank: scoring ═════════════════════════════════════════════════════════
   const baseScore = doc.informationValueScore ?? 45;
 
   // Keyword hit bonus: each monitor keyword matched in the document signals
   // stronger relevance. Missing keywords don't penalize the base score.
   const keywords = monitor.keywords ?? [];
-  const haystack = [doc.title, doc.summary, doc.bodyText].filter(Boolean).join(" ").toLowerCase();
   const keywordHits = keywords.filter((kw) => {
-    const pattern = kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    return new RegExp(pattern, "i").test(haystack);
+    return keywordPattern(kw).test(haystack);
   }).length;
   const matchRatio = keywords.length > 0 ? keywordHits / keywords.length : 0;
   const keywordBonus = Math.round(matchRatio * 20);
 
-  // Exclusion penalty: if an excluded keyword appears, reduce relevance.
-  const excludeKeywords = monitor.excludeKeywords ?? [];
-  const exclusionHits = excludeKeywords.filter((kw) => {
-    const pattern = kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    return new RegExp(pattern, "i").test(haystack);
-  }).length;
-  const exclusionPenalty = exclusionHits > 0 ? 25 : 0;
+  // Exclusion penalty: dead code after Gate — excluded content never reaches
+  // the Rank phase. Kept as a safety net for future configurable Gate levels.
+  const exclusionHits = 0; // eslint-disable-line @typescript-eslint/no-unused-vars -- dead code safety net after Gate
+  const exclusionPenalty = 0;
 
   // Content type match bonus: if the monitor targets specific content types
   // and the document matches, boost relevance.
@@ -161,9 +205,7 @@ export function deriveMonitorRetention(monitor: MonitorRules, doc: {
   if (topicHits > 0) {
     reasonParts.push(`相关主题${topicHits}个`);
   }
-  if (exclusionHits > 0) {
-    reasonParts.push(`含${exclusionHits}个排除词`);
-  }
+  // exclusionHits is always 0 after Gate — excluded content never reaches here
 
   const reason = reasonParts.length > 0
     ? reasonParts.join("，")
@@ -171,3 +213,4 @@ export function deriveMonitorRetention(monitor: MonitorRules, doc: {
 
   return { shouldKeep: true, relevanceScore: score, retentionReason: reason };
 }
+

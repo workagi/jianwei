@@ -40,6 +40,16 @@ class WorkflowRepository implements IngestRepository {
     this.links.push(...links);
     return links.length;
   }
+
+  async findExistingSourceKeys(
+    _unused: Array<{ platform: string; sourceProvider: string; upstreamId: string }>,
+  ): Promise<Set<string>> {
+    return new Set();
+  }
+
+  async findExistingCanonicalUrls(_unused: string[]): Promise<Set<string>> {
+    return new Set();
+  }
 }
 
 afterEach(() => {

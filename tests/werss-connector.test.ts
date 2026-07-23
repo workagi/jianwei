@@ -160,6 +160,7 @@ describe("WeRssConnector", () => {
 
     const connector = new WeRssConnector("http://werss:8001", "key:secret", fetcher);
     const preview = await connector.validate({
+      kind: "account" as const,
       provider: "werss",
       articleUrl: "https://mp.weixin.qq.com/s/f16Fr2f4VAOowvQXeUX_nA",
     });
@@ -248,6 +249,7 @@ describe("WeRssConnector", () => {
 
     const connector = new WeRssConnector("http://werss:8001", "key:secret", fetcher);
     const result = await connector.collect({
+      kind: "account" as const,
       provider: "werss",
       articleUrl: "https://mp.weixin.qq.com/s/single-article",
     });
@@ -290,6 +292,7 @@ describe("WeRssConnector", () => {
 
     const connector = new WeRssConnector("http://werss:8001", "key:secret", fetcher);
     const result = await connector.collect({
+      kind: "account" as const,
       provider: "werss",
       articleUrl: "https://mp.weixin.qq.com/s/cached",
       mpId: "MP_CACHED",
@@ -321,6 +324,7 @@ describe("WeRssConnector", () => {
     );
 
     await expect(connector.collect({
+      kind: "account" as const,
       provider: "werss",
       articleUrl: "https://mp.weixin.qq.com/s/stale",
       mpId: "MP_STALE",

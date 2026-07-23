@@ -76,10 +76,10 @@ describeDatabase("fencing token prevents stale worker writes", () => {
       eq(monitors.id, mon.id),
       eq(monitors.leaseOwner, "worker-a"),
       eq(monitors.leaseEpoch, 5),
-    ));
+    )).returning({ id: monitors.id });
 
-    // Verify 0 rows updated — fencing worked
-    expect(result.rowCount).toBe(0);
+    // Verify 0 rows returned — fencing worked
+    expect(result).toHaveLength(0);
     const [current] = await db.select({ leaseOwner: monitors.leaseOwner, leaseEpoch: monitors.leaseEpoch })
       .from(monitors).where(eq(monitors.id, mon.id));
     expect(current.leaseOwner).toBe("worker-b");
@@ -98,7 +98,8 @@ describeDatabase("canonical URL concurrent insert safety", () => {
       canonicalUrl: canonicalUrl,
       text: "Worker A content",
       publishedAt: new Date(),
-      contentHash: randomUUID(),
+      imageUrls: [],
+      raw: {},
     };
 
     const itemB: NormalizedItem = {
@@ -107,12 +108,13 @@ describeDatabase("canonical URL concurrent insert safety", () => {
       canonicalUrl: canonicalUrl,
       text: "Worker B content with more detail and extra information",
       publishedAt: new Date(),
-      contentHash: randomUUID(),
+      imageUrls: [],
+      raw: {},
     };
 
     // Simulate concurrent insert: both try to insert the same canonical URL
-    const rowsA = [{ platform: itemA.platform, upstreamId: itemA.upstreamId, canonicalUrl, bodyText: itemA.text, contentHash: itemA.contentHash, publishedAt: itemA.publishedAt, title: null, topicTags: [] }];
-    const rowsB = [{ platform: itemB.platform, upstreamId: itemB.upstreamId, canonicalUrl, bodyText: itemB.text, contentHash: itemB.contentHash, publishedAt: itemB.publishedAt, title: null, topicTags: [] }];
+    const rowsA = [{ platform: itemA.platform, upstreamId: itemA.upstreamId, canonicalUrl, bodyText: itemA.text, contentHash: randomUUID(), publishedAt: itemA.publishedAt, title: null, topicTags: [] }];
+    const rowsB = [{ platform: itemB.platform, upstreamId: itemB.upstreamId, canonicalUrl, bodyText: itemB.text, contentHash: randomUUID(), publishedAt: itemB.publishedAt, title: null, topicTags: [] }];
 
     const [resultA, resultB] = await Promise.all([
       repo.upsertItems(rowsA as Parameters<typeof repo.upsertItems>[0]),
@@ -177,10 +179,10 @@ describeDatabase("source_items itemId is immutable after first binding", () => {
       sourceProvider: "brave",
       upstreamId: sourceId,
       sourceUrl: url2,
-      authorId: null,
-      authorName: null,
-      authorHandle: null,
-      avatarUrl: null,
+      authorId: undefined,
+      authorName: undefined,
+      authorHandle: undefined,
+      avatarUrl: undefined,
       rawPayload: {},
       publishedAt: new Date(),
     }];
@@ -237,9 +239,10 @@ describeDatabase("collection_run attemptToken prevents stale attempt from overwr
     const staleUpdate = await db.update(collectionRuns).set({
       status: "success",
       finishedAt: new Date(),
-    }).where(and(eq(collectionRuns.id, runId), eq(collectionRuns.attemptToken, attempt1Token)));
+    }).where(and(eq(collectionRuns.id, runId), eq(collectionRuns.attemptToken, attempt1Token)))
+      .returning({ id: collectionRuns.id });
 
-    expect(staleUpdate.rowCount).toBe(0);
+    expect(staleUpdate).toHaveLength(0);
 
     // Verify attempt 2 is still running (not overwritten)
     const [current] = await db.select({ status: collectionRuns.status, attempt: collectionRuns.attempt, attemptToken: collectionRuns.attemptToken })
