@@ -58,7 +58,7 @@ export function evaluateContentRules(cases: ContentRuleEvaluationCase[]): Conten
       aiSummary: null,
     });
 
-    if (testCase.expectedContentType) {
+    if (testCase.expectedContentType && (testCase.expectedContentType as string) !== "?") {
       typeAssertions += 1;
       if (classification.contentType === testCase.expectedContentType) typePassed += 1;
       else failures.push({

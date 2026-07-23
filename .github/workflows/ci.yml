@@ -80,3 +80,41 @@ jobs:
 
       - name: Validate Docker Compose
         run: docker compose config
+
+  smoke:
+    name: Docker smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    needs: validate
+    env:
+      APP_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: smoke-test-password
+      ADMIN_API_TOKEN: smoke-test-token
+      DATABASE_URL: postgres://monitor:monitor@postgres:5432/monitor
+      WERSS_BASE_URL: http://werss:8001
+      BRAVE_API_KEY: placeholder
+      X_BEARER_TOKEN: placeholder
+      SUPERGROK_REFRESH_TOKEN: placeholder
+      TRENDRADAR_REFRESH_TOKEN: placeholder
+      SUMMARY_PROVIDER: ""
+      BUDGET_ENABLED: "false"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Build and start stack
+        run: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build --wait
+      - name: Verify health endpoints
+        run: |
+          for i in $(seq 1 10); do
+            curl -sf http://localhost:3000/api/health && break
+            sleep 3
+          done
+      - name: Verify login page
+        run: curl -sf http://localhost:3000/admin | grep -q "登录" && echo "Login page OK"
+      - name: Collect logs on failure
+        if: failure()
+        run: docker compose logs --tail=100
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

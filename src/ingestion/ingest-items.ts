@@ -592,7 +592,7 @@ export function createDrizzleIngestRepository(database: IngestDatabase = db): In
           sourceProvider: sourceItems.sourceProvider,
           upstreamId: sourceItems.upstreamId,
         });
-      for (const { id, itemId, platform, sourceProvider, upstreamId } of returned) {
+      for (const { itemId, platform, sourceProvider, upstreamId } of returned) {
         // When onConflict updated itemId, the returned row may come from
         // the new values. Detect re-assignments by comparing with the input.
         const input = observations.find(
