@@ -167,3 +167,46 @@ jobs:
 
       - name: Run DB upgrade test
         run: bash scripts/test-upgrade.sh
+
+  e2e:
+    name: Playwright E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: smoke
+    env:
+      E2E_BASE_URL: http://localhost:3000
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: smoke-test-password
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Start stack
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build --wait
+      - name: Wait for web
+        run: |
+          for i in $(seq 1 15); do
+            curl -sf http://localhost:3000/api/health && break
+            sleep 2
+          done
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10.28.1
+      - name: Install Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install Playwright browsers
+        run: pnpm exec playwright install chromium --with-deps
+      - name: Run E2E tests
+        run: pnpm test:e2e
+      - name: Collect logs on failure
+        if: failure()
+        run: docker compose logs --tail=100
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

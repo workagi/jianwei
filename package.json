@@ -28,7 +28,9 @@
     "content:evaluate": "tsx scripts/evaluate-content-rules.ts",
     "audit:open-source": "node scripts/open-source-audit.mjs",
     "build:worker": "esbuild src/worker/index.ts --bundle --platform=node --target=node22 --outfile=dist/worker/index.js --external:better-sqlite3 --external:oracledb --external:mysql2 --external:pg-native --external:mock-aws-s3 --external:aws-sdk --external:nock --external:tedious",
-    "worker:dev": "tsx src/worker/index.ts"
+    "worker:dev": "tsx src/worker/index.ts",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.2",
@@ -42,6 +44,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
