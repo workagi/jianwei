@@ -9,7 +9,7 @@ const WORKER_ID =
   process.env.WORKER_ID?.trim() ||
   `${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
 const MONITOR_LEASE_MS =
-  (Number(process.env.WORKER_MONITOR_LEASE_SECONDS) || 300) * 1000;
+  (Number(process.env.WORKER_MONITOR_LEASE_SECONDS) || 1800) * 1000;
 
 const leaseLog = createStructuredLogger({
   service: "worker",

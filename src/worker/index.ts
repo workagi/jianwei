@@ -267,7 +267,9 @@ async function startCollectionRun(monitor: { id?: string; monitorId?: string; ne
     return { runId: existing.id, runKey, attemptToken: existing.attemptToken, alreadySucceeded: true };
   }
 
-  await db
+  // CAS: only take over if the run hasn't been claimed by another worker
+  // or marked success since we read it.
+  const [updated] = await db
     .update(collectionRuns)
     .set({
       status: "running",
@@ -278,7 +280,25 @@ async function startCollectionRun(monitor: { id?: string; monitorId?: string; ne
       attemptToken,
       attempt: sql`${collectionRuns.attempt} + 1`,
     })
-    .where(eq(collectionRuns.id, existing.id));
+    .where(and(
+      eq(collectionRuns.id, existing.id),
+      eq(collectionRuns.status, existing.status),
+      eq(collectionRuns.attemptToken, existing.attemptToken),
+    ))
+    .returning({ id: collectionRuns.id });
+  if (!updated) {
+    // Another worker already took over — re-read to get current state
+    const [latest] = await db
+      .select({ id: collectionRuns.id, status: collectionRuns.status, attemptToken: collectionRuns.attemptToken })
+      .from(collectionRuns)
+      .where(eq(collectionRuns.id, existing.id))
+      .limit(1);
+    if (!latest) throw new Error("COLLECTION_RUN_IDEMPOTENCY_CONFLICT");
+    if (latest.status === "success") {
+      return { runId: latest.id, runKey, attemptToken: latest.attemptToken, alreadySucceeded: true };
+    }
+    return { runId: latest.id, runKey, attemptToken: latest.attemptToken, alreadySucceeded: false };
+  }
   return { runId: existing.id, runKey, attemptToken, alreadySucceeded: false };
 }
 
@@ -405,7 +425,7 @@ async function runMonitor(claimed: ClaimedMonitor, claimedEpoch: number, shutdow
       // the thrown error rolls back the entire transaction.
       const [asserted] = await tx
         .update(monitors)
-        .set({ leaseUntil: new Date(Date.now() + MONITOR_LEASE_MS) })
+        .set({ leaseUntil: new Date(Date.now() + getMonitorLeaseMs()) })
         .where(and(
           eq(monitors.id, claimed.id),
           eq(monitors.leaseOwner, getLeaseWorkerId()),
@@ -521,6 +541,7 @@ async function runMonitor(claimed: ClaimedMonitor, claimedEpoch: number, shutdow
         await tx.update(monitors).set({ leaseOwner: null, leaseUntil: null }).where(and(
           eq(monitors.id, claimed.id),
           eq(monitors.leaseOwner, getLeaseWorkerId()),
+          eq(monitors.leaseEpoch, claimedEpoch),
         ));
         await tx.update(collectionRuns).set({
           status: "failed",
@@ -801,7 +822,7 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
       or(isNull(monitors.leaseUntil), lte(monitors.leaseUntil, new Date())),
     ))
     .orderBy(monitors.nextRunAt)
-    .limit(20);
+    .limit(100);
 
   let claimedCount = 0;
   let activeCount = 0;
@@ -809,7 +830,7 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
   // Provider-level bulkhead: prevent a single slow provider (e.g. WeChat)
   // from consuming all concurrency slots and starving other monitors.
   const providerConcurrency: Record<string, number> = {
-    // WeChat: both werss and fallback share a browser/network resource
+    // WeChat: independent concurrency per provider type
     werss: 1,
     wechat: 1,
     wechat_fallback: 1,
@@ -856,6 +877,7 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
 
     // Wait for a free concurrency slot before claiming the next monitor.
     while (activeCount >= WORKER_CONCURRENCY) {
+      if (shutdownSignal?.aborted) break;
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
 
@@ -880,7 +902,7 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
       leaseRenewalRunning = true;
       db.update(monitors)
       .set({
-        leaseUntil: new Date(Date.now() + MONITOR_LEASE_MS),
+        leaseUntil: new Date(Date.now() + getMonitorLeaseMs()),
       })
       .where(and(
         eq(monitors.id, monitor.id),
@@ -903,7 +925,7 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
         error,
       }))
         .finally(() => { leaseRenewalRunning = false; });
-    }, Math.min(60_000, Math.max(5_000, Math.floor(MONITOR_LEASE_MS / 3))));
+    }, Math.min(60_000, Math.max(5_000, Math.floor(getMonitorLeaseMs() / 3))));
     const taskSignal = shutdownSignal
       ? AbortSignal.any([shutdownSignal, leaseController.signal])
       : leaseController.signal;
@@ -984,10 +1006,7 @@ const X_GATHER_TIMEOUT_MS = (Number(process.env.WORKER_X_GATHER_TIMEOUT_SECONDS)
 // 微信公众号在「包含全文摘要」模式下会逐篇抓取文章正文（by_article 约 15–30s/篇），
 // 需要比通用采集更长的超时预算，否则会被通用 60s 一刀切中断。
 const WECHAT_GATHER_TIMEOUT_MS = (Number(process.env.WORKER_WECHAT_GATHER_TIMEOUT_SECONDS) || 180) * 1000;
-const MONITOR_LEASE_MS = Math.max(
-  5 * 60_000,
-  (Number(process.env.WORKER_MONITOR_LEASE_SECONDS) || 30 * 60) * 1000,
-);
+
 const CONTENT_RETRY_INTERVAL_MS = (Number(process.env.CONTENT_RETRY_INTERVAL_MINUTES) || 15) * 60_000;
 const CONTENT_RETRY_BATCH_SIZE = Math.max(1, Number(process.env.CONTENT_RETRY_BATCH_SIZE) || 5);
 const CONTENT_RETRY_MAX_ATTEMPTS = Math.max(1, Number(process.env.CONTENT_RETRY_MAX_ATTEMPTS) || 5);
@@ -1081,7 +1100,7 @@ async function main(): Promise<void> {
   workerLog.info("worker.started", {
     pid: process.pid,
     pollIntervalSeconds: POLL_INTERVAL_MS / 1000,
-    monitorLeaseSeconds: MONITOR_LEASE_MS / 1000,
+    monitorLeaseSeconds: getMonitorLeaseMs() / 1000,
   });
   await markWorkerHeartbeat();
   let heartbeatRunning = false;
@@ -1093,7 +1112,7 @@ async function main(): Promise<void> {
       .finally(() => { heartbeatRunning = false; });
   }, 15_000);
   try {
-    const cleaned = await cleanupStaleRunningRuns(MONITOR_LEASE_MS, workerLog);
+    const cleaned = await cleanupStaleRunningRuns(getMonitorLeaseMs(), workerLog);
     if (cleaned) workerLog.warn("collection.stale_runs.cleaned", { cleaned });
   } catch (err) {
     workerLog.warn("collection.stale_runs.cleanup_failed", { error: err });
