@@ -717,6 +717,18 @@ async function claimMonitor(monitor: MonitorRow, now = new Date()): Promise<bool
       or(isNull(monitors.leaseUntil), lte(monitors.leaseUntil, now)),
     ))
     .returning({ id: monitors.id });
+
+  // If no row was updated the lease was already taken by another worker or
+  // the monitor was disabled / rescheduled between query and claim. A logged
+  // warning here tells the operator whether the lost claim was a race or a
+  // stale snapshot.
+  if (!claimed) {
+    workerLog.warn("monitor.claim.lost", {
+      monitorId: monitor.id,
+      platform: monitor.platform,
+      nextRunAt: monitor.nextRunAt,
+    });
+  }
   return Boolean(claimed);
 }
 
@@ -737,7 +749,9 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
       eq(monitors.enabled, true),
       lte(monitors.nextRunAt, new Date()),
       or(isNull(monitors.leaseUntil), lte(monitors.leaseUntil, new Date())),
-    ));
+    ))
+    .orderBy(monitors.nextRunAt)
+    .limit(20);
 
   let claimedCount = 0;
   for (const monitor of due) {
@@ -748,12 +762,24 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
     const leaseRenewalTimer = setInterval(() => {
       if (leaseRenewalRunning) return;
       leaseRenewalRunning = true;
-      db.update(monitors).set({
+      db.update(monitors)
+      .set({
         leaseUntil: new Date(Date.now() + MONITOR_LEASE_MS),
-      }).where(and(
+      })
+      .where(and(
         eq(monitors.id, monitor.id),
         eq(monitors.leaseOwner, WORKER_ID),
-      )).catch((error) => workerLog.warn("monitor.lease_renewal.failed", {
+      ))
+      .returning({ id: monitors.id })
+      .then((rows) => {
+        if (rows.length === 0) {
+          workerLog.error("monitor.lease_renewal.lost", {
+            monitorId: monitor.id,
+            platform: monitor.platform,
+          });
+        }
+      })
+      .catch((error) => workerLog.warn("monitor.lease_renewal.failed", {
         monitorId: monitor.id,
         platform: monitor.platform,
         error,

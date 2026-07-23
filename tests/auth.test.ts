@@ -94,7 +94,7 @@ describe("管理员账号登录", () => {
     process.env.ADMIN_PASSWORD = PASSWORD;
     const secret = getAdminSessionSecret();
     expect(secret).toBe(PASSWORD);
-    const session = adminSessionCookieValue(secret!);
+    const session = await adminSessionCookieValue(secret!);
     expect(session).not.toContain(PASSWORD);
     await expect(pageCookieOk(session)).resolves.toBe(true);
     await expect(pageCookieOk(PASSWORD)).resolves.toBe(false);
@@ -115,7 +115,7 @@ describe("requireWriteAuth", () => {
 
   it("登录会话可执行后台同源写操作", async () => {
     process.env.ADMIN_PASSWORD = PASSWORD;
-    const session = adminSessionCookieValue(getAdminSessionSecret()!);
+    const session = await adminSessionCookieValue(getAdminSessionSecret()!);
     await expect(requireWriteAuth(req({ cookie: `${ADMIN_COOKIE}=${session}` }))).resolves.toBeNull();
   });
 

@@ -466,9 +466,22 @@ export async function recordLoginAttempt(key: string): Promise<void> {
     .values({ attemptKey: key, windowStartedAt: now, attemptCount: 1 })
     .onConflictDoUpdate({
       target: loginAttempts.attemptKey,
-      setWhere: sql`${loginAttempts.windowStartedAt} + interval '10 minutes' > ${now.toISOString()}`,
       set: {
-        attemptCount: sql`${loginAttempts.attemptCount} + 1`,
+        windowStartedAt: sql`CASE
+          WHEN ${loginAttempts.windowStartedAt} + interval '10 minutes' <= ${now.toISOString()}
+          THEN ${now.toISOString()}
+          ELSE ${loginAttempts.windowStartedAt}
+        END`,
+        attemptCount: sql`CASE
+          WHEN ${loginAttempts.windowStartedAt} + interval '10 minutes' <= ${now.toISOString()}
+          THEN 1
+          ELSE ${loginAttempts.attemptCount} + 1
+        END`,
+        blockedUntil: sql`CASE
+          WHEN ${loginAttempts.windowStartedAt} + interval '10 minutes' <= ${now.toISOString()}
+          THEN NULL
+          ELSE ${loginAttempts.blockedUntil}
+        END`,
         updatedAt: now,
       },
     });

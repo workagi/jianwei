@@ -41,6 +41,11 @@
 - 会话 Cookie 升级为带时间戳的签名载荷（iat/exp/sid），向后兼容旧格式。
 - 登录限流从进程内存迁移到 PostgreSQL（login_attempts 表），重启和多副本安全共享。
 
+- 登录限流修复窗口过期后无法重置的 bug（setWhere → CASE 原子 upsert）。
+- 会话 Cookie 验证比对数据库 sessionVersion；改密码自动递增，旧 Cookie 即时失效。
+- 旧 HMAC Cookie 设置 2026-09-01 兼容截止时间。
+- claimMonitor 检查 RETURNING 行数，claim 丢失记录 warning 日志。
+- due monitor 查询加 ORDER BY nextRunAt + LIMIT 20，lease 续约检查 affected rows。
 ## [0.1.0]
 
 - 完成单用户自托管信息流闭环。

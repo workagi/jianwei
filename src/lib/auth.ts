@@ -55,15 +55,17 @@ const ADMIN_SESSION_VERSION_KEY = "ADMIN_SESSION_VERSION";
 const SESSION_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 
 /** Signed session payload: base64url(payload):base64url(signature).
- *  Payload: "username:iat:exp:sid:version". Timestamps are epoch seconds. */
-export function adminSessionCookieValue(secret: string, username = getAdminUsername()): string {
+ *  Payload: "username:iat:exp:sid:format:dbVersion". Timestamps are epoch seconds. */
+export async function adminSessionCookieValue(secret: string, username = getAdminUsername()): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
+  const version = await adminSessionVersion();
   const payload = [
     username,
     now,
     now + Math.floor(SESSION_TTL_MS / 1000),
     randomBytes(12).toString("base64url"),
-    "v3", // Discriminator for format evolution
+    "v4",
+    String(version),
   ].join(":");
   const sig = createHmac("sha256", secret).update(payload).digest("base64url");
   return `${Buffer.from(payload).toString("base64url")}:${sig}`;
@@ -73,6 +75,8 @@ export function adminSessionCookieValue(secret: string, username = getAdminUsern
 export async function verifySessionCookie(value: string): Promise<string | null> {
   // Backward-compat: old HMAC-only format
   if (!value.includes(":")) {
+    // Legacy cookies accepted until 2026-09-01; after that, require re-login.
+    if (Date.now() > Date.UTC(2026, 8, 1)) return null;
     const secret = await effectiveAdminSessionSecret();
     if (!secret) return null;
     const expected = createHmac("sha256", secret)
@@ -92,14 +96,22 @@ export async function verifySessionCookie(value: string): Promise<string | null>
   }
 
   const parts = payload.split(":");
-  if (parts.length < 2) return null;
-  const [username, iatStr, expStr] = parts;
+  // payload: username:iat:exp:sid:format[:dbVersion]
+  if (parts.length < 5) return null;
+  const [username, iatStr, expStr, , format, dbVersionStr] = parts;
 
   const now = Math.floor(Date.now() / 1000);
   const iat = Number(iatStr);
   if (Number.isFinite(iat) && iat > now + 300) return null; // clock skew guard
   const exp = Number(expStr);
   if (!Number.isFinite(exp) || exp < now) return null;
+
+  // v4+ sessions carry a DB version; reject if the DB has been bumped since.
+  if (format === "v4" || format === "v3") {
+    const payloadVersion = Number(dbVersionStr);
+    const currentVersion = await adminSessionVersion();
+    if (Number.isFinite(payloadVersion) && payloadVersion < currentVersion) return null;
+  }
 
   const secret = await effectiveAdminSessionSecret();
   if (!secret) return null;

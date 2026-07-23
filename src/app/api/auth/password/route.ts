@@ -41,7 +41,7 @@ export async function PUT(req: Request) {
   }
 
   const res = NextResponse.json({ ok: true });
-  res.cookies.set(ADMIN_COOKIE, adminSessionCookieValue(sessionSecret), {
+  res.cookies.set(ADMIN_COOKIE, await adminSessionCookieValue(sessionSecret), {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
