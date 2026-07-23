@@ -46,19 +46,69 @@ fi
 
 echo "Backup created: $BACKUP_FILE ($(du -h "$BACKUP_FILE" | cut -f1))"
 
-# Retention: grandfather-father-son using file timestamps.
-# - Daily: keep last 7 days
-# - Weekly: keep one per week (Sunday) for 4 weeks
-# - Monthly: keep one per month for 3 months
-find "$BACKUP_DIR" -name "jianwei-*.dump" -type f | while read -r f; do
-  # Already handled: skip retention logic for files older than 90 days
-  if [ "$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null)" -lt "$(date -d '90 days ago' +%s 2>/dev/null || echo 0)" ]; then
-    rm -f "$f"
+# ── Retention: grandfather-father-son ────────────────────────────────
+# - Keep all backups from the last 7 days (daily).
+# - Keep the newest backup per calendar week (Mon-Sun) for 4 weeks.
+# - Keep the newest backup per calendar month for 3 months.
+#
+# Approach: mark files to keep, then delete everything else.
+
+TODAY=$(date +%Y-%m-%d)
+CUTOFF_DAILY=$(date -d "7 days ago" +%Y-%m-%d 2>/dev/null || date -v-7d +%Y-%m-%d)
+FOUR_WEEKS_AGO=$(date -d "28 days ago" +%Y-%m-%d 2>/dev/null || date -v-28d +%Y-%m-%d)
+
+declare -A KEEP=()
+declare -A KEPT_BUCKET_MTIME=()
+
+for f in "$BACKUP_DIR"/jianwei-*.dump; do
+  [ -f "$f" ] || continue
+  BASENAME=$(basename "$f")
+  # Extract date: jianwei-20260723T120000Z.dump → 2026-07-23
+  FILE_DATE=$(echo "$BASENAME" | sed -n 's/^jianwei-\([0-9]\{8\}\)T.*/\1/p')
+  [ -n "$FILE_DATE" ] || continue
+  FORMATTED=$(echo "$FILE_DATE" | sed 's/\(....\)\(..\)\(..\)/\1-\2-\3/')
+
+  # Rule 1: within last 7 days → always keep
+  if [[ "$FORMATTED" > "$CUTOFF_DAILY" || "$FORMATTED" == "$CUTOFF_DAILY" ]]; then
+    KEEP["$f"]=1
     continue
+  fi
+
+  # Rule 2: keep newest per calendar week (last 4 weeks)
+  DOW=$(date -d "$FORMATTED" +%u 2>/dev/null || date -j -f "%Y-%m-%d" "$FORMATTED" +%u 2>/dev/null || echo 1)
+  # Monday of that week
+  WEEK_START=$(date -d "$FORMATTED - $((DOW - 1)) days" +%Y-%m-%d 2>/dev/null || \
+               date -j -v-$((DOW - 1))d -f "%Y-%m-%d" "$FORMATTED" +%Y-%m-%d 2>/dev/null || echo "")
+  if [ -n "$WEEK_START" ] && [[ "$WEEK_START" > "$FOUR_WEEKS_AGO" || "$WEEK_START" == "$FOUR_WEEKS_AGO" ]]; then
+    BUCKET="week:$WEEK_START"
+    MTIME=$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo 0)
+    if [ -z "${KEPT_BUCKET_MTIME[$BUCKET]}" ] || [ "$MTIME" -gt "${KEPT_BUCKET_MTIME[$BUCKET]}" ]; then
+      KEPT_BUCKET_MTIME[$BUCKET]="$MTIME"
+      KEEP["$f"]=1
+    fi
+  fi
+
+  # Rule 3: keep newest per calendar month (last 3 months)
+  MONTH_KEY=$(echo "$FORMATTED" | cut -d- -f1-2)
+  THREE_MONTHS_AGO=$(date -d "90 days ago" +%Y-%m 2>/dev/null || date -v-90d +%Y-%m)
+  if [[ "$MONTH_KEY" > "$THREE_MONTHS_AGO" || "$MONTH_KEY" == "$THREE_MONTHS_AGO" ]]; then
+    BUCKET="month:$MONTH_KEY"
+    MTIME=$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo 0)
+    if [ -z "${KEPT_BUCKET_MTIME[$BUCKET]}" ] || [ "$MTIME" -gt "${KEPT_BUCKET_MTIME[$BUCKET]}" ]; then
+      KEPT_BUCKET_MTIME[$BUCKET]="$MTIME"
+      KEEP["$f"]=1
+    fi
   fi
 done
 
-# Daily cleanup: keep only last 7 (using mtime)
-find "$BACKUP_DIR" -name "jianwei-*.dump" -mtime +6 -delete 2>/dev/null || true
+# Delete anything not marked for keep.
+DELETED=0
+for f in "$BACKUP_DIR"/jianwei-*.dump; do
+  [ -f "$f" ] || continue
+  if [ -z "${KEEP[$f]}" ]; then
+    rm -f "$f" "${f}.log" 2>/dev/null || true
+    DELETED=$((DELETED + 1))
+  fi
+done
 
-echo "Retention: 7 daily backups kept"
+echo "Retention: ${#KEEP[@]} backups kept, $DELETED deleted"
