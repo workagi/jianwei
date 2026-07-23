@@ -27,30 +27,14 @@ USER nextjs
 EXPOSE 3000
 CMD ["node", "server.js"]
 
-# Full toolchain image for the one-shot migration runner and the long-running
-# collector worker. Reuses the complete dependency tree from the deps stage
-# (including dev deps: tsx + drizzle-kit), since the standalone runtime above
-# only ships the trimmed Next.js server, not the worker source or tsx.
 FROM base AS tools
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
-# Copy only what the worker + migrate need at runtime:
-# compiled worker, drizzle migrations, pruned source config
-COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/drizzle ./drizzle
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/tsconfig.json ./tsconfig.json
+COPY --from=builder /app/dist ./dist
 ENV NODE_ENV=production
-RUN addgroup --system --gid 1001 nodejs \
-  && adduser --system --uid 1001 nextjs \
-  && chown -R nextjs:nodejs /app \
-  && mkdir -p /home/nextjs/.cache/node \
-  && cp -R /root/.cache/node/corepack /home/nextjs/.cache/node/corepack \
-  && chown -R nextjs:nodejs /home/nextjs/.cache
+RUN addgroup --system --gid 1001 nodejs   && adduser --system --uid 1001 nextjs   && chown -R nextjs:nodejs /app   && mkdir -p /home/nextjs/.cache/node   && cp -R /root/.cache/node/corepack /home/nextjs/.cache/node/corepack   && chown -R nextjs:nodejs /home/nextjs/.cache
 USER nextjs
-# The root image layer already downloaded pnpm via corepack; copy that cache to
-# the non-root user above so `pnpm worker` / `pnpm db:migrate` start offline.
-
-# command is overridden per-service in compose: migrate runs `pnpm db:migrate`,
-# worker runs `pnpm worker`.
 CMD ["pnpm", "worker"]
