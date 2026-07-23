@@ -42,8 +42,7 @@ const X_OFFICIAL_MAX_BILLABLE_UNITS = 101;
 const MONTHLY_BUDGET_USD = Number(process.env.X_BRAVE_MONTHLY_BUDGET_USD);
 const BUDGET_ENABLED = Number.isFinite(MONTHLY_BUDGET_USD) && MONTHLY_BUDGET_USD > 0;
 const MONITOR_DISABLE_AFTER_FAILURES = Number(process.env.WORKER_DISABLE_MONITOR_AFTER_FAILURES ?? "5") || 0;
-// WORKER_CONCURRENCY: set to >1 when per-platform semaphores are implemented.
-// const WORKER_CONCURRENCY = Math.max(1, Number(process.env.WORKER_CONCURRENCY ?? "4") || 0);
+const WORKER_CONCURRENCY = Math.max(1, Number(process.env.WORKER_CONCURRENCY ?? "4") || 0);
 const WORKER_HEARTBEAT_FILE = process.env.WORKER_HEARTBEAT_FILE ?? "/tmp/jianwei-worker-heartbeat";
 const WORKER_ID = process.env.WORKER_ID?.trim() || `${process.pid}-${randomUUID()}`;
 const workerLog = createStructuredLogger({ service: "worker", workerId: WORKER_ID });
@@ -890,12 +889,25 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
     .limit(20);
 
   let claimedCount = 0;
+  let activeCount = 0;
+
   for (const monitor of due) {
     if (shutdownSignal?.aborted) break;
+
+    // Wait for a free concurrency slot before claiming the next monitor.
+    while (activeCount >= WORKER_CONCURRENCY) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
     const claimed = await claimMonitor(monitor);
     if (!claimed) continue;
     claimedCount += 1;
+    activeCount += 1;
     const claimedEpoch = claimed.leaseEpoch;
+
+    // Fire and forget — each monitor runs independently. The counter
+    // decrement in .finally() signals a free slot to waiting iterations.
+    void (async () => {
     let leaseLost = false; // eslint-disable-line @typescript-eslint/no-unused-vars -- set from async renewal timer; transaction assertion is the real enforcement
     let leaseRenewalRunning = false;
     const leaseRenewalTimer = setInterval(() => {
@@ -940,7 +952,14 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
         eq(monitors.leaseEpoch, claimedEpoch),
       ));
     }
+    })().finally(() => { activeCount -= 1; });
   }
+
+  // Wait for all running monitors before exiting this cycle.
+  while (activeCount > 0) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+
   if (!shutdownSignal?.aborted) await maybeRetryFailedContentAnalysis();
   return claimedCount;
 }
