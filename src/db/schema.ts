@@ -202,6 +202,9 @@ export const monitorMatchObservations = pgTable("monitor_match_observations", {
   index("match_observations_match_idx").on(table.matchItemId, table.matchMonitorId),
   index("match_observations_source_idx").on(table.sourceItemId),
   index("match_observations_run_idx").on(table.collectionRunId),
+  uniqueIndex("match_observations_run_match_source_uidx").on(
+    table.matchItemId, table.matchMonitorId, table.sourceItemId, table.collectionRunId,
+  ),
 ]);
 
 // 见微 is currently a single-user workspace. A dedicated join table

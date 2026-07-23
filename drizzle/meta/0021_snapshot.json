@@ -1,0 +1,6 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "id": "0021_observation_unique",
+  "prevId": "0020_redundant_ogun"
+}

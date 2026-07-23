@@ -220,21 +220,31 @@ describe("worker monitor circuit breaker", () => {
   });
 
   it("auto-disables a monitor once consecutive failures reach the threshold", async () => {
-    const { shouldDisableMonitorAfterFailure } = await import("@/worker");
+    const { shouldSuspendMonitor } = await import("@/worker");
 
-    expect(shouldDisableMonitorAfterFailure(4, 5)).toBe(false);
-    expect(shouldDisableMonitorAfterFailure(5, 5)).toBe(true);
-    expect(shouldDisableMonitorAfterFailure(10, 0)).toBe(false);
-    expect(shouldDisableMonitorAfterFailure(10, 5, "XAI_X_SEARCH_503")).toBe(false);
-    expect(shouldDisableMonitorAfterFailure(10, 5, "XAI_X_SEARCH_429")).toBe(false);
-    expect(shouldDisableMonitorAfterFailure(10, 5, "XAI_X_SEARCH_NETWORK:UND_ERR_SOCKET")).toBe(false);
-    expect(shouldDisableMonitorAfterFailure(10, 5, "XAI_X_SEARCH_TIMEOUT")).toBe(false);
-    expect(shouldDisableMonitorAfterFailure(10, 5, "GATHER_TIMEOUT:x")).toBe(false);
-    expect(shouldDisableMonitorAfterFailure(10, 5, "fetch failed")).toBe(false);
-    expect(shouldDisableMonitorAfterFailure(10, 5, "BUDGET_EXHAUSTED")).toBe(false);
-    expect(shouldDisableMonitorAfterFailure(10, 5, "XAI_X_SEARCH_DAILY_BUDGET_EXHAUSTED")).toBe(false);
-    expect(shouldDisableMonitorAfterFailure(10, 5, "WERSS_FEED_STALE:2026-07-19T10:00:00.000Z")).toBe(false);
-    expect(shouldDisableMonitorAfterFailure(10, 5, "WERSS_FEED_NEVER_SYNCED")).toBe(false);
+    // Under threshold → 0 (no suspension)
+    expect(shouldSuspendMonitor(4, 5)).toBe(0);
+    // At threshold with disable-eligible error → >0 (suspended, not permanently disabled)
+    expect(shouldSuspendMonitor(5, 5)).toBeGreaterThan(0);
+    // Threshold disabled → 0
+    expect(shouldSuspendMonitor(10, 0)).toBe(0);
+    // Transient errors (not disableEligible) → 0 even above threshold
+    expect(shouldSuspendMonitor(10, 5, "XAI_X_SEARCH_503")).toBe(0);
+    expect(shouldSuspendMonitor(10, 5, "XAI_X_SEARCH_429")).toBe(0);
+    expect(shouldSuspendMonitor(10, 5, "XAI_X_SEARCH_NETWORK:UND_ERR_SOCKET")).toBe(0);
+    expect(shouldSuspendMonitor(10, 5, "XAI_X_SEARCH_TIMEOUT")).toBe(0);
+    expect(shouldSuspendMonitor(10, 5, "GATHER_TIMEOUT:x")).toBe(0);
+    expect(shouldSuspendMonitor(10, 5, "fetch failed")).toBe(0);
+    expect(shouldSuspendMonitor(10, 5, "BUDGET_EXHAUSTED")).toBe(0);
+    expect(shouldSuspendMonitor(10, 5, "XAI_X_SEARCH_DAILY_BUDGET_EXHAUSTED")).toBe(0);
+    expect(shouldSuspendMonitor(10, 5, "WERSS_FEED_STALE:2026-07-19T10:00:00.000Z")).toBe(0);
+    expect(shouldSuspendMonitor(10, 5, "WERSS_FEED_NEVER_SYNCED")).toBe(0);
+    // Disable-eligible errors → suspension minutes scale with failure count
+    const baseSuspension = shouldSuspendMonitor(5, 5, "XAI_X_SEARCH_401");
+    expect(baseSuspension).toBeGreaterThan(0);
+    // Excess failures double the suspension (cap at 24h = 1440 min)
+    const doubledSuspension = shouldSuspendMonitor(6, 5, "XAI_X_SEARCH_401");
+    expect(doubledSuspension).toBeGreaterThan(baseSuspension);
   });
 
   it("waits for the next budget window instead of repeatedly retrying", async () => {

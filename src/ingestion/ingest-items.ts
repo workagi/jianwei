@@ -586,10 +586,11 @@ export function createDrizzleIngestRepository(database: IngestDatabase = db): In
         .onConflictDoUpdate({
           target: [sourceItems.platform, sourceItems.sourceProvider, sourceItems.upstreamId],
           set: {
-            // Re-assign to the current canonical document when the same
-            // source identity is re-canonicalized; operators see a log
-            // line when this happens.
-            itemId: sql`excluded.${sourceItems.itemId}`,
+            // Never silently re-bind a source identity to a different document.
+            // Once bound, the source→document relationship is immutable in the
+            // hot path. Re-canonicalization must go through an explicit merge
+            // process that also migrates item_matches and observations.
+            itemId: sql`coalesce(${sourceItems.itemId}, excluded.${sourceItems.itemId})`,
             sourceUrl: sql`excluded.${sourceItems.sourceUrl}`,
             authorId: sql`coalesce(excluded.${sourceItems.authorId}, ${sourceItems.authorId})`,
             authorName: sql`coalesce(excluded.${sourceItems.authorName}, ${sourceItems.authorName})`,
@@ -720,7 +721,14 @@ export function createDrizzleIngestRepository(database: IngestDatabase = db): In
           matchedQuery: link.matchedQuery ?? null,
           rawPayload: (link.rawPayload ?? {}) as Record<string, unknown>,
         })),
-      ).onConflictDoNothing();
+      ).onConflictDoNothing({
+        target: [
+          monitorMatchObservations.matchItemId,
+          monitorMatchObservations.matchMonitorId,
+          monitorMatchObservations.sourceItemId,
+          monitorMatchObservations.collectionRunId,
+        ],
+      });
 
       return result.length;
     },

@@ -393,6 +393,22 @@ async function runMonitor(claimed: ClaimedMonitor, claimedEpoch: number, shutdow
     }
 
     const result = await db.transaction(async (tx) => {
+      // Fenced assertion: verify we still hold the lease before any writes.
+      // If another worker took over (epoch changed), this returns 0 rows and
+      // the thrown error rolls back the entire transaction.
+      const [asserted] = await tx
+        .update(monitors)
+        .set({ leaseUntil: new Date(Date.now() + MONITOR_LEASE_MS) })
+        .where(and(
+          eq(monitors.id, claimed.id),
+          eq(monitors.leaseOwner, WORKER_ID),
+          eq(monitors.leaseEpoch, claimedEpoch),
+        ))
+        .returning({ id: monitors.id });
+      if (!asserted) {
+        throw new Error("LEASE_LOST: Monitor lease was taken by another worker");
+      }
+
       const committed = await commitPreparedIngest(createDrizzleIngestRepository(tx), prepared);
       await markRunProgress(runId, "committing");
 
@@ -442,12 +458,16 @@ async function runMonitor(claimed: ClaimedMonitor, claimedEpoch: number, shutdow
         }
       }
 
-      await tx
+      const [monitorUpdated] = await tx
         .update(monitors)
         .set(monitorUpdate)
-        .where(and(eq(monitors.id, claimed.id), eq(monitors.leaseOwner, WORKER_ID), eq(monitors.leaseEpoch, claimedEpoch)));
+        .where(and(eq(monitors.id, claimed.id), eq(monitors.leaseOwner, WORKER_ID), eq(monitors.leaseEpoch, claimedEpoch)))
+        .returning({ id: monitors.id });
+      if (!monitorUpdated) {
+        throw new Error("LEASE_LOST: Monitor update affected 0 rows — lease expired mid-commit");
+      }
 
-      await tx
+      const [runUpdated] = await tx
         .update(collectionRuns)
         .set({
           status: "success",
@@ -463,7 +483,11 @@ async function runMonitor(claimed: ClaimedMonitor, claimedEpoch: number, shutdow
           summaryErrorMessage: committed.summary.errorMessage ?? null,
           providerCost: String(summaryCost),
         })
-        .where(and(eq(collectionRuns.id, runId), eq(collectionRuns.attemptToken, attemptToken)));
+        .where(and(eq(collectionRuns.id, runId), eq(collectionRuns.attemptToken, attemptToken)))
+        .returning({ id: collectionRuns.id });
+      if (!runUpdated) {
+        throw new Error("ATTEMPT_TOKEN_MISMATCH: Collection run update affected 0 rows");
+      }
       return committed;
     });
 
@@ -510,7 +534,13 @@ async function runMonitor(claimed: ClaimedMonitor, claimedEpoch: number, shutdow
     } else if (failure.retryAfterMinutes) {
       nextRunAt = nextStaggeredRunAt({ intervalMinutes: failure.retryAfterMinutes, staggerKey });
     }
-    const shouldDisable = shouldDisableMonitorAfterFailure(failureCount, MONITOR_DISABLE_AFTER_FAILURES, message);
+    const suspensionMinutes = shouldSuspendMonitor(failureCount, MONITOR_DISABLE_AFTER_FAILURES, message);
+    // Circuit-break: if the failure threshold is reached, push nextRunAt far
+    // enough into the future that the monitor naturally pauses, but don't
+    // permanently disable it. Transient upstream issues will self-heal.
+    const suspendedNextRunAt = suspensionMinutes > 0
+      ? new Date(Date.now() + suspensionMinutes * 60_000)
+      : nextRunAt;
     const errorCode = failure.code;
     await db.transaction(async (tx) => {
       await releaseUsageReservation(tx, budgetReservationKey);
@@ -519,10 +549,9 @@ async function runMonitor(claimed: ClaimedMonitor, claimedEpoch: number, shutdow
         .set({
           failureCount,
           lastError: message,
-          nextRunAt,
+          nextRunAt: suspendedNextRunAt,
           leaseOwner: null,
           leaseUntil: null,
-          ...(shouldDisable ? { enabled: false } : {}),
         })
         .where(and(eq(monitors.id, claimed.id), eq(monitors.leaseOwner, WORKER_ID), eq(monitors.leaseEpoch, claimedEpoch)));
 
@@ -542,8 +571,9 @@ async function runMonitor(claimed: ClaimedMonitor, claimedEpoch: number, shutdow
       errorCode,
       errorMessage: message,
       failureCount,
-      disableThreshold: MONITOR_DISABLE_AFTER_FAILURES || null,
-      monitorDisabled: shouldDisable,
+      suspensionMinutes: suspensionMinutes || null,
+      suspendThreshold: MONITOR_DISABLE_AFTER_FAILURES || null,
+      monitorSuspended: suspensionMinutes > 0,
       transient: isTransientMonitorFailure(message),
       budgetExhausted: isBudgetExhaustion(message),
       nextRunAt,
@@ -551,14 +581,20 @@ async function runMonitor(claimed: ClaimedMonitor, claimedEpoch: number, shutdow
   }
 }
 
-export function shouldDisableMonitorAfterFailure(
+/**
+ * Returns minutes to suspend the monitor after repeated failures.
+ * At threshold, suspend for 6 hours; each additional failure doubles the
+ * suspension up to 24 hours. Returns 0 if the failure doesn't qualify.
+ */
+export function shouldSuspendMonitor(
   failureCount: number,
   threshold = MONITOR_DISABLE_AFTER_FAILURES,
   message = "",
-): boolean {
-  return threshold > 0
-    && failureCount >= threshold
-    && classifyMonitorFailure(message).disableEligible;
+): number {
+  if (threshold <= 0 || failureCount < threshold) return 0;
+  if (!classifyMonitorFailure(message).disableEligible) return 0;
+  const excessFailures = failureCount - threshold;
+  return Math.min(24 * 60, 6 * 60 * Math.pow(2, excessFailures));
 }
 
 export function isTransientMonitorFailure(message: string): boolean {
@@ -853,6 +889,7 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
     if (!claimed) continue;
     claimedCount += 1;
     const claimedEpoch = claimed.leaseEpoch;
+    let leaseLost = false;
     let leaseRenewalRunning = false;
     const leaseRenewalTimer = setInterval(() => {
       if (leaseRenewalRunning) return;
@@ -864,10 +901,12 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
       .where(and(
         eq(monitors.id, monitor.id),
         eq(monitors.leaseOwner, WORKER_ID),
+        eq(monitors.leaseEpoch, claimedEpoch),
       ))
       .returning({ id: monitors.id })
       .then((rows) => {
         if (rows.length === 0) {
+          leaseLost = true;
           workerLog.error("monitor.lease_renewal.lost", {
             monitorId: claimed.monitorId,
             platform: claimed.platform,
@@ -885,10 +924,13 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
       await runMonitor(claimed, claimedEpoch, shutdownSignal);
     } finally {
       clearInterval(leaseRenewalTimer);
-      // Also releases a lease if creating the collection_run itself failed.
+      // Release the lease only if we still own it (epoch matches).
+      // Adding leaseEpoch prevents a stale worker from releasing a lease
+      // that has already been taken by another worker.
       await db.update(monitors).set({ leaseOwner: null, leaseUntil: null }).where(and(
         eq(monitors.id, monitor.id),
         eq(monitors.leaseOwner, WORKER_ID),
+        eq(monitors.leaseEpoch, claimedEpoch),
       ));
     }
   }
