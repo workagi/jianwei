@@ -1,7 +1,8 @@
+# Dockerfile for Chinese mainland deployments
+# Uses domestic mirrors for npm/pnpm to avoid network timeouts
 FROM node:22-alpine AS base
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
-# Use registry mirror for China network; npm install -g works around corepack hardcoding npmjs.org
 RUN npm config set registry https://registry.npmmirror.com &&     npm install -g pnpm@10.28.1 &&     pnpm config set registry https://registry.npmmirror.com
 
 FROM base AS deps
@@ -12,12 +13,9 @@ RUN pnpm install --frozen-lockfile
 FROM base AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
-# esbuild is a transitive dependency; pnpm's isolated linker won't expose its bin.
-# Link it manually so build:worker can find it.
-RUN ESBUILD_BIN=$(find /app/node_modules/.pnpm -name esbuild -type f -path '*/bin/esbuild' 2>/dev/null | head -1) && \
-    if [ -n "$ESBUILD_BIN" ]; then ln -sf "$ESBUILD_BIN" /usr/local/bin/esbuild; fi
 COPY . .
-RUN mkdir -p public && pnpm build && pnpm build:worker
+RUN mkdir -p public
+RUN pnpm build && pnpm build:worker
 
 FROM node:22-alpine AS runner
 WORKDIR /app

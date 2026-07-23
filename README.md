@@ -77,9 +77,33 @@
 
 ## 快速开始
 
+### 最低配置要求
+
+| 部署模式 | CPU | 内存 | 磁盘 | 说明 |
+| -------- | --- | ---- | ---- | ---- |
+| 核心服务（web + db + worker） | 1 核 | 2 GB | 10 GB | 不含公众号和热榜采集 |
+| + WeRSS（公众号采集） | 2 核 | 3 GB | 15 GB | 含浏览器环境 |
+| + TrendRadar（热榜） | 2-3 核 | 4 GB | 20 GB | 含热榜/RSS 采集与 MCP |
+| 完整全量部署 | 4 核 | 4 GB+ | 30 GB+ | 以上全部 + 全文回填 |
+
+> 实测：核心 3 服务空闲仅约 176MB，WeRSS 约 150MB（受 2GB mem_limit 约束），TrendRadar 约 130MB。建议至少保留 1GB 空闲内存给系统。
+
+### 准备工作
+
 需要提前安装：
 
 - Docker Desktop 或 OrbStack。
+
+> **国内服务器部署**：如果 Docker 构建时无法访问 npmjs.org 或 ghcr.io，请使用 `Dockerfile.cn`（内置阿里云 npm 镜像）：
+> ```bash
+> cp Dockerfile.cn Dockerfile
+> ```
+> WeRSS 基础镜像若无法从 `ghcr.io` 拉取，可通过南京大学镜像中转：
+> ```bash
+> docker pull ghcr.nju.edu.cn/rachelos/we-mp-rss:latest
+> docker tag ghcr.nju.edu.cn/rachelos/we-mp-rss:latest ghcr.io/rachelos/we-mp-rss:latest
+> ```
+
 - Git。
 
 克隆仓库并启动：

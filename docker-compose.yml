@@ -76,12 +76,6 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-      werss:
-        condition: service_started
-      trendradar-mcp:
-        condition: service_started
-      trendradar-refresh:
-        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/api/health || exit 1"]
       interval: 30s
@@ -173,7 +167,6 @@ services:
     restart: unless-stopped
 
   # --- WeRSS sidecar (WeChat Official Account RSS) -----------------------
-  werss:
     # Public installs use the official upstream image. Advanced users can
     # override WERSS_IMAGE with a reviewed custom build.
     image: ${WERSS_IMAGE:-jianwei-werss:local}
@@ -269,11 +262,11 @@ services:
     restart: unless-stopped
 
   # --- Internal refresh helper for "Save and refresh now" ----------------
+  trendradar-refresh:
   # TrendRadar itself serves static reports and runs collection by cron; it
   # does not expose a refresh endpoint. This helper shares the same config and
   # output volumes, accepts only internal Docker-network requests, and runs one
   # fixed command (`python -m trendradar`) without exposing the Docker socket.
-  trendradar-refresh:
     image: wantcat/trendradar:6.10.0
     environment:
       TZ: Asia/Shanghai
