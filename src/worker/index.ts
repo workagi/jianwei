@@ -42,7 +42,8 @@ const X_OFFICIAL_MAX_BILLABLE_UNITS = 101;
 const MONTHLY_BUDGET_USD = Number(process.env.X_BRAVE_MONTHLY_BUDGET_USD);
 const BUDGET_ENABLED = Number.isFinite(MONTHLY_BUDGET_USD) && MONTHLY_BUDGET_USD > 0;
 const MONITOR_DISABLE_AFTER_FAILURES = Number(process.env.WORKER_DISABLE_MONITOR_AFTER_FAILURES ?? "5") || 0;
-const WORKER_CONCURRENCY = Math.max(1, Number(process.env.WORKER_CONCURRENCY ?? "4") || 0);
+// WORKER_CONCURRENCY: set to >1 when per-platform semaphores are implemented.
+// const WORKER_CONCURRENCY = Math.max(1, Number(process.env.WORKER_CONCURRENCY ?? "4") || 0);
 const WORKER_HEARTBEAT_FILE = process.env.WORKER_HEARTBEAT_FILE ?? "/tmp/jianwei-worker-heartbeat";
 const WORKER_ID = process.env.WORKER_ID?.trim() || `${process.pid}-${randomUUID()}`;
 const workerLog = createStructuredLogger({ service: "worker", workerId: WORKER_ID });
@@ -889,21 +890,8 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
     .limit(20);
 
   let claimedCount = 0;
-  // Process monitors in concurrent batches to prevent a slow connector
-  // from blocking all other monitors. Per-platform semaphores are not
-  // yet implemented; the global concurrency limit is the first step.
-  const running = new Set<Promise<void>>();
   for (const monitor of due) {
     if (shutdownSignal?.aborted) break;
-    // Wait for a slot if we are at the concurrency limit
-    while (running.size >= WORKER_CONCURRENCY) {
-      await Promise.race(running);
-      // Purge settled promises
-      for (const p of running) {
-        const done = await Promise.race([p.then(() => "done"), Promise.resolve("pending")]);
-        if (done === "done") running.delete(p);
-      }
-    }
     const claimed = await claimMonitor(monitor);
     if (!claimed) continue;
     claimedCount += 1;

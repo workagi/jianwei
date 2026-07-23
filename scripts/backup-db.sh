@@ -29,4 +29,4 @@ find "${BACKUP_DIR}" -name "jianwei-*.sql.gz" -type f | sort -r | tail -n +8 | w
   rm -f "${old}"
 done
 
-echo "[backup] done: $(du -h "${BACKUP_FILE}" | cut -f1)"
+echo "[backup] done: $(du -h "${BACKUP_FILE}" | awk "{print $1}")"
