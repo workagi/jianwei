@@ -269,6 +269,14 @@ docker compose down
 ./start.sh logs       # 查看实时日志
 ./start.sh restart    # 重启服务
 ./start.sh stop       # 停止并保留数据
+
+## 卸载
+
+```bash
+./uninstall.sh           # 交互式逐步确认（推荐）
+./uninstall.sh --yes     # 一键全部删除，跳过确认
+./uninstall.sh --clean   # 只删容器和数据卷，保留项目文件和镜像
+```
 ```
 
 开发检查：
