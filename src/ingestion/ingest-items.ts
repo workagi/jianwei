@@ -371,14 +371,23 @@ export async function commitPreparedIngest(
           title: row?.title ?? undefined,
           bodyText: row?.bodyText ?? undefined,
         })
-      : { relevanceScore: row?.informationValueScore ?? undefined, retentionReason: undefined as string | undefined };
+      : {
+          shouldKeep: true,
+          relevanceScore: row?.informationValueScore ?? undefined,
+          retentionReason: undefined as string | undefined,
+        };
+
+    // Gate rejections: when a hard filter (exclude/required keyword) blocks
+    // the document, set score low and reason explicit, but still record the
+    // match so the UI can surface the decision.
+    const gateBlocked = input.monitorRules && !monitorRetention.shouldKeep;
 
    linksByItem.set(itemId, {
      itemId,
      monitorId: input.monitorId,
      sourceItemId: storedSource?.id,
      matchedQuery: input.matchedQuery,
-      relevanceScore: monitorRetention.relevanceScore,
+      relevanceScore: gateBlocked ? (monitorRetention.relevanceScore ?? 0) : monitorRetention.relevanceScore,
       retentionReason: monitorRetention.retentionReason ?? undefined,
       retentionSource: monitorRetention.retentionReason ? ("rules" as const) : undefined,
      analysisStatus: row?.analysisStatus ?? undefined,

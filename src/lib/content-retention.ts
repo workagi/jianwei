@@ -88,6 +88,7 @@ export function deriveRetentionDecision(input: {
 
 export interface MonitorRules {
   keywords?: string[];
+  requiredKeywords?: string[];
   excludeKeywords?: string[];
   contentTypeFilters?: string[];
   topicFilters?: string[];
@@ -98,6 +99,13 @@ export interface MonitorRules {
  * the document's extracted facts match the monitor's rules. This runs after
  * document-level analysis and is specific to each monitor → document edge.
  */
+export interface MonitorRetentionResult {
+  /** Always true unless a hard Gate rule (exclude/required keyword) rejects. */
+  shouldKeep: boolean;
+  relevanceScore: number;
+  retentionReason: string;
+}
+
 export function deriveMonitorRetention(monitor: MonitorRules, doc: {
   contentType: string;
   topicTags: string[];
@@ -105,7 +113,7 @@ export function deriveMonitorRetention(monitor: MonitorRules, doc: {
   informationValueScore?: number;
   title?: string;
   bodyText?: string;
-}): { relevanceScore: number; retentionReason: string } {
+}): MonitorRetentionResult {
   const baseScore = doc.informationValueScore ?? 45;
 
   // Keyword hit bonus: each monitor keyword matched in the document signals
@@ -160,5 +168,5 @@ export function deriveMonitorRetention(monitor: MonitorRules, doc: {
     ? reasonParts.join("，")
     : `基于${getContentTypeLabel(doc.contentType) ?? doc.contentType}类型的信息参考`;
 
-  return { relevanceScore: score, retentionReason: reason };
+  return { shouldKeep: true, relevanceScore: score, retentionReason: reason };
 }

@@ -191,10 +191,13 @@ function extractMonitorRules(monitor: MonitorRow): MonitorRules | undefined {
   const topicFilters = Array.isArray(config.topicFilters)
     ? config.topicFilters.filter((k): k is string => typeof k === "string")
     : [];
-  if (!keywords.length && !excludeKeywords.length && !contentTypeFilters.length && !topicFilters.length) {
+  const requiredKeywords = Array.isArray(config.requiredKeywords)
+    ? config.requiredKeywords.filter((k): k is string => typeof k === 'string')
+    : [];
+  if (!keywords.length && !requiredKeywords.length && !excludeKeywords.length && !contentTypeFilters.length && !topicFilters.length) {
     return undefined;
   }
-  return { keywords, excludeKeywords, contentTypeFilters, topicFilters };
+  return { keywords, requiredKeywords, excludeKeywords, contentTypeFilters, topicFilters };
 }
 
 function monitorMatchedQuery(monitor: MonitorRow): string | undefined {
@@ -889,7 +892,7 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
     if (!claimed) continue;
     claimedCount += 1;
     const claimedEpoch = claimed.leaseEpoch;
-    let leaseLost = false;
+    let leaseLost = false; // eslint-disable-line @typescript-eslint/no-unused-vars -- set from async renewal timer; transaction assertion is the real enforcement
     let leaseRenewalRunning = false;
     const leaseRenewalTimer = setInterval(() => {
       if (leaseRenewalRunning) return;
