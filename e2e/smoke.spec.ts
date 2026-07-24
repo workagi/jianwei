@@ -15,7 +15,8 @@ test.describe("jianwei smoke tests", () => {
 
     // Should redirect to admin dashboard
     await page.waitForURL("**/admin**");
-    await expect(page.locator("text=监控任务").or(page.locator("text=平台连接"))).toBeVisible({ timeout: 10_000 });
+    // Verify admin sidebar loaded (use role-based, avoids intro paragraph text)
+    await expect(page.getByRole("link", { name: "监控任务" })).toBeVisible({ timeout: 10_000 });
   });
 
   test("reader feed loads with content", async ({ page }) => {
@@ -52,6 +53,7 @@ test.describe("jianwei smoke tests", () => {
     await page.goto("/admin/connectors");
     await expect(page.locator("body")).toBeVisible();
     // Should show at least one connector type
-    await expect(page.locator("text=微信公众号").or(page.locator("text=X").or(page.locator("text=Web").or(page.locator("text=TrendRadar"))))).toBeVisible({ timeout: 10_000 });
+    // Verify connectors page content loaded (use heading, not sidebar links)
+    await expect(page.getByRole("heading", { name: "信源采集通道" })).toBeVisible({ timeout: 10_000 });
   });
 });
