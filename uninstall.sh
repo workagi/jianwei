@@ -48,7 +48,7 @@ confirm() {
 
 # 匹配本项目相关的所有 Docker 资源
 VOL_PATTERN='jianwei|monitor-postgres|werss-data|trendradar-output|wechat-fallback-data|worker-heartbeat'
-IMG_PATTERN='jianwei|werss|trendradar|postgres.*17-alpine|we-mp-rss|wechat-fallback|wechat-download'
+IMG_PATTERN='^jianwei|^ghcr.*we-mp-rss|^wantcat/trendradar|^tmwgsicp/wechat-download'
 
 # ---- Step 1: Stop & remove containers + networks -----------------------
 echo ""
@@ -83,7 +83,9 @@ else
   echo "以下 Docker 镜像将被删除："
   docker images --format '  {{.Repository}}:{{.Tag}}  {{.Size}}' 2>/dev/null | grep -E "$IMG_PATTERN" || echo "  （未找到）"
 
-  if confirm "删除以上镜像？"; then
+  # 只删除本项目构建或拉取的镜像。如果镜像被其他项目共享，
+# docker rmi 会因为"image is being used"而自动跳过，不会误删。
+if confirm "删除以上镜像？"; then
     docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -E "$IMG_PATTERN" | while read img; do
       docker rmi "$img" 2>/dev/null || true
     done
