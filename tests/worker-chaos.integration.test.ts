@@ -10,7 +10,7 @@
  */
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { db } from "@/db";
-import { monitors, collectionRuns, items, sourceItems, usageLedger } from "@/db/schema";
+import { monitors, collectionRuns, items, sourceItems, connectors } from "@/db/schema";
 import { createDrizzleIngestRepository } from "@/ingestion/repositories";
 import { cleanupStaleRunningRuns } from "@/worker/stale-run-reaper";
 import { createStructuredLogger } from "@/lib/structured-log";
@@ -25,13 +25,21 @@ describe.skipIf(!RUN_DB_TESTS)("multi-worker chaos", () => {
   const workerA = `chaos-A-${randomUUID().slice(0, 8)}`;
   const workerB = `chaos-B-${randomUUID().slice(0, 8)}`;
 
+  const chaosConnectorId = randomUUID();
+
   beforeAll(async () => {
-    // Seed a monitor for lease tests
+    // Seed connector + monitor for lease tests
+    await db.insert(connectors).values({
+      id: chaosConnectorId,
+      platform: "web_search",
+      provider: "brave",
+      name: "chaos-test-connector",
+    }).onConflictDoNothing();
     await db.insert(monitors).values({
       id: randomUUID(),
       name: "Chaos Test Monitor",
       platform: "web_search" as const,
-      connectorId: randomUUID(),
+      connectorId: chaosConnectorId,
       config: { provider: "brave", query: "test" },
       pollIntervalMinutes: 60,
       enabled: true,
@@ -44,6 +52,7 @@ describe.skipIf(!RUN_DB_TESTS)("multi-worker chaos", () => {
     // Cleanup
     await db.delete(collectionRuns).where(eq(collectionRuns.errorCode, "chaos-test"));
     await db.delete(monitors).where(eq(monitors.name, "Chaos Test Monitor"));
+    await db.delete(connectors).where(eq(connectors.name, "chaos-test-connector"));
     await db.delete(items).where(eq(items.canonicalUrl, "https://chaos-test.example.com/doc"));
     await db.delete(sourceItems).where(eq(sourceItems.sourceProvider, "chaos-test"));
   });
