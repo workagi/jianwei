@@ -90,6 +90,7 @@ jobs:
     needs: validate
     env:
       POSTGRES_PASSWORD: monitor
+      JIANWEI_DOMAIN: localhost
       APP_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
       ADMIN_USERNAME: admin
       ADMIN_PASSWORD: smoke-test-password
@@ -179,6 +180,9 @@ jobs:
     needs: smoke
     env:
       POSTGRES_PASSWORD: monitor
+      JIANWEI_DOMAIN: localhost
+      APP_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      TRENDRADAR_REFRESH_TOKEN: placeholder
       E2E_BASE_URL: http://localhost:3000
       ADMIN_USERNAME: admin
       ADMIN_PASSWORD: smoke-test-password
