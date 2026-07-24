@@ -162,7 +162,7 @@ ENV
   # 若 ADMIN_SESSION_SECRET 仍是占位符或缺失，生成随机会话密钥。
   if grep -q '^ADMIN_SESSION_SECRET=__GENERATE__$' .env 2>/dev/null \
      || ! grep -q '^ADMIN_SESSION_SECRET=' .env 2>/dev/null; then
-    local s
+    s=
     s="$(openssl rand -hex 32)"
     if grep -q '^ADMIN_SESSION_SECRET=' .env 2>/dev/null; then
       if sed --version >/dev/null 2>&1; then

@@ -71,6 +71,10 @@ jobs:
         run: pnpm content:evaluate
         continue-on-error: true
 
+      - name: ShellCheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck start.sh scripts/test-upgrade.sh uninstall.sh
       - name: Lint
         run: pnpm lint
 
