@@ -1,0 +1,9 @@
+# CI override: expose web port for health checks and E2E tests.
+# In production, only Caddy 80/443 is public.
+services:
+  web:
+    ports:
+      - "3000:3000"
+  caddy:
+    ports:
+      - "80:80"
