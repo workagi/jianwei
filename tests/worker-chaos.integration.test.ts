@@ -73,7 +73,7 @@ describe.skipIf(!RUN_DB_TESTS)("multi-worker chaos", () => {
     const monitor = due[0];
 
     // Worker A claims with epoch bump
-    const [claimed] = await db.update(monitors)
+    const claimed = await db.update(monitors)
       .set({
         leaseOwner: workerA,
         leaseUntil: new Date(Date.now() + 300_000),
@@ -85,7 +85,7 @@ describe.skipIf(!RUN_DB_TESTS)("multi-worker chaos", () => {
       ))
       .returning({ leaseEpoch: monitors.leaseEpoch });
 
-    const epochA = (claimed as any).leaseEpoch ?? (claimed as any)[0]?.leaseEpoch;
+    const epochA = claimed[0]?.leaseEpoch ?? 0;
     expect(epochA).toBeGreaterThan(0);
 
     // Worker B attempts to take over while A still holds lease
@@ -105,7 +105,7 @@ describe.skipIf(!RUN_DB_TESTS)("multi-worker chaos", () => {
     expect(stolenB).toHaveLength(0);
 
     // Verify A can still commit with its epoch
-    const [committed] = await db.update(monitors)
+    const committed = await db.update(monitors)
       .set({ leaseOwner: null, leaseUntil: null })
       .where(and(
         eq(monitors.id, monitor.id),
@@ -114,7 +114,7 @@ describe.skipIf(!RUN_DB_TESTS)("multi-worker chaos", () => {
       ))
       .returning({ id: monitors.id });
 
-    expect(committed).toBeDefined();
+    expect(committed[0]).toBeDefined();
     expect(committed).toHaveLength(1);
   });
 
