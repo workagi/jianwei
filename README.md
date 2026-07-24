@@ -129,15 +129,28 @@ cd jianwei
 | 信息流 | <http://localhost:3000> | 阅读精选、最新和全部信息 |
 | 监控任务 | <http://localhost:3000/admin> | 添加账号、公众号和关键词 |
 | 平台连接 | <http://localhost:3000/admin/connectors> | 配置 API、模型、RSS 和全文通道 |
-| WeRSS 后台 | <http://localhost:8001> | 微信扫码和公众号订阅状态 |
-| TrendRadar | <http://localhost:8088> | 查看上游榜单和 RSS 采集结果 |
+| WeRSS 后台 | <http://localhost:8001> | 微信扫码、公众号订阅、创建 Access Key |
+| TrendRadar | <http://localhost:8088> | 调试用（数据通过主站 3000 端口访问） |
+
+### 默认凭据
+
+> **⚠️ 安全提醒：首次登录后请立即修改密码！**
+
+见微管理后台与 WeRSS（公众号采集器）使用统一的默认凭据：
+
+| 服务 | 地址 | 账号 | 密码 |
+| ---- | ---- | ---- | ---- |
+| 见微后台 | `http://localhost:3000/admin` | `admin` | `admin@123` |
+| WeRSS 后台 | `http://localhost:8001` | `admin` | `admin@123` |
+
+`start.sh` 首次运行会自动将密码写入 `.env` 的 `ADMIN_PASSWORD`。登录后请在后台修改为强密码。
 
 ### 第一次配置
 
 1. 从 `.env` 查看自动生成的 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD`。
 2. 登录 `/admin`；登录后可在后台修改成容易记忆的密码。
 3. 打开“平台连接”，只配置你准备使用的信息源。
-4. 使用公众号时，在 WeRSS 后台完成扫码。
+4. 使用公众号时：登录 WeRSS 后台（admin / admin@123）→ 扫码绑定 → 创建 Access Key → 将 AK:SK 填入 `.env` 的 `WERSS_ACCESS_KEY`。
 5. 在“监控任务”中添加一个来源。
 6. 可以先预览，也可以直接添加，让后台完成首次识别。
 
@@ -292,7 +305,21 @@ docker compose config
 
 ## 部署到服务器
 
-公网部署请使用 `docker-compose.prod.yml`。生产模式只暴露 Caddy 的 80/443，PostgreSQL、WeRSS、TrendRadar 和 MCP 服务全部保留在 Docker 内网。
+公网部署推荐使用 `docker-compose.prod.yml`（Caddy 自动 HTTPS）。如果暂时没有域名和证书，也可以用开发 Compose 部署到服务器：
+
+```bash
+# 1. 编辑 .env，修改以下变量：
+SECURE_COOKIE=false              # HTTP 部署必须设为 false
+WERSS_BIND_HOST=0.0.0.0          # 允许外网访问 WeRSS
+TRENDRADAR_BIND_HOST=0.0.0.0     # 允许外网访问 TrendRadar
+TRENDRADAR_MCP_BIND_HOST=0.0.0.0 # 允许外网访问 TrendRadar MCP
+WERSS_ADMIN_URL=http://<服务器IP>:8001/wechat-status
+
+# 2. 启动
+./start.sh
+```
+
+> ⚠️ HTTP 部署仅建议用于测试或内网。生产环境务必配置 HTTPS 和防火墙。
 
 不要把本地 Compose 的数据库和管理侧车端口直接暴露到公网。
 
