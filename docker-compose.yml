@@ -189,7 +189,7 @@ services:
       - GATHER.CONTENT_AUTO_INTERVAL=${GATHER_CONTENT_AUTO_INTERVAL:-59}
       - GATHER.CONTENT_MODE=${GATHER_CONTENT_MODE:-api}
     ports:
-      - "127.0.0.1:8001:8001"
+      - "${WERSS_BIND_HOST:-127.0.0.1}:8001:8001"
     volumes:
       - werss-data:/app/data
     # 硬顶：即使 Playwright 再泄漏，也不至于拖死整机（2026-07-17 曾到 600%+ CPU / 600+ 进程）。
@@ -243,7 +243,7 @@ services:
       AI_MODEL: ${AI_MODEL:-}
       AI_API_BASE: ${AI_API_BASE:-}
     ports:
-      - "127.0.0.1:${TRENDRADAR_WEBSERVER_PORT:-8088}:8080"
+      - "${TRENDRADAR_BIND_HOST:-127.0.0.1}:${TRENDRADAR_WEBSERVER_PORT:-8088}:8080"
     volumes:
       - ./infra/trendradar/config:/app/config:ro
       - trendradar-output:/app/output
@@ -256,7 +256,7 @@ services:
       TZ: Asia/Shanghai
       MCP_PORT: 3333
     ports:
-      - "127.0.0.1:3333:3333"
+      - "${TRENDRADAR_MCP_BIND_HOST:-127.0.0.1}:3333:3333"
     volumes:
       - ./infra/trendradar/config:/app/config:ro
       - trendradar-output:/app/output

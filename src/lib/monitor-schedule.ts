@@ -61,7 +61,7 @@ export function initialStaggeredRunAt(input: {
 }): Date {
   const now = input.now ?? new Date();
   const intervalMinutes = normalizePollIntervalMinutes(input.intervalMinutes);
-  const maxInitialSpreadMinutes = normalizePollIntervalMinutes(input.maxInitialSpreadMinutes ?? 30);
+  const maxInitialSpreadMinutes = normalizePollIntervalMinutes(input.maxInitialSpreadMinutes ?? 2);
   const spreadMs = Math.max(SECOND_MS, Math.min(intervalMinutes, maxInitialSpreadMinutes) * MINUTE_MS);
   const delayMs = hashToPositiveInt(input.staggerKey) % spreadMs;
   return new Date(now.getTime() + delayMs);

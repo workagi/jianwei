@@ -159,6 +159,23 @@ ENV
   fi
 }
 
+  # 若 ADMIN_SESSION_SECRET 仍是占位符或缺失，生成随机会话密钥。
+  if grep -q '^ADMIN_SESSION_SECRET=__GENERATE__$' .env 2>/dev/null \
+     || ! grep -q '^ADMIN_SESSION_SECRET=' .env 2>/dev/null; then
+    local s
+    s="$(openssl rand -hex 32)"
+    if grep -q '^ADMIN_SESSION_SECRET=' .env 2>/dev/null; then
+      if sed --version >/dev/null 2>&1; then
+        sed -i "s|^ADMIN_SESSION_SECRET=.*|ADMIN_SESSION_SECRET=$s|" .env
+      else
+        sed -i '' 's|^ADMIN_SESSION_SECRET=.*|ADMIN_SESSION_SECRET=$s|' .env
+      fi
+    else
+      printf 'ADMIN_SESSION_SECRET=%s\n' "$s" >> .env
+    fi
+    ok "已生成会话签名密钥 ADMIN_SESSION_SECRET"
+  fi
+
 # 安全读取 .env 中某个变量的值（兼容含空格/特殊字符的值，不 source 执行文件内容）
 # 注意：docker compose 自身会读取项目目录的 .env，无需在本脚本里 export 它。
 env_get() {
