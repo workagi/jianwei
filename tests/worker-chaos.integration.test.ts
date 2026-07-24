@@ -77,7 +77,7 @@ describe.skipIf(!RUN_DB_TESTS)("multi-worker chaos", () => {
       .set({
         leaseOwner: workerA,
         leaseUntil: new Date(Date.now() + 300_000),
-        leaseEpoch: (activeMonitor[0].leaseEpoch ?? 0) + 1,
+        leaseEpoch: (due[0].leaseEpoch ?? 0) + 1,
       })
       .where(and(
         eq(monitors.id, monitor.id),
@@ -93,7 +93,7 @@ describe.skipIf(!RUN_DB_TESTS)("multi-worker chaos", () => {
       .set({
         leaseOwner: workerB,
         leaseUntil: new Date(Date.now() + 300_000),
-        leaseEpoch: (activeMonitor[0].leaseEpoch ?? 0) + 1,
+        leaseEpoch: (due[0].leaseEpoch ?? 0) + 1,
       })
       .where(and(
         eq(monitors.id, monitor.id),
@@ -190,6 +190,8 @@ describe.skipIf(!RUN_DB_TESTS)("multi-worker chaos", () => {
       monitorId: activeMonitor[0].id,
       status: "running" as const,
       startedAt: new Date(Date.now() - 900_000),
+      scheduledFor: new Date(),
+      idempotencyKey: randomUUID(),
       lastProgressAt: new Date(Date.now() - 900_000),
     } as any).onConflictDoNothing();
 
