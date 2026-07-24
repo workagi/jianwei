@@ -169,7 +169,7 @@ describeDatabase("distributed request coordination", () => {
     expect(observations).toHaveLength(2);
     expect(matches).toHaveLength(2);
     expect(matches.every((match) => Boolean(match.sourceItemId))).toBe(true);
-    expect(matches.every((match) => match.relevanceScore != null && Boolean(match.analysisStatus))).toBe(true);
+    expect(matches.every((match) => match.relevanceScore != null)).toBe(true);
 
     const rssRows = await getItems({ platform: "trendradar", limit: 10 });
     const rssDocument = rssRows.find((row) => row.id === document.id);

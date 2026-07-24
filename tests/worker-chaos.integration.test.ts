@@ -31,7 +31,7 @@ describe.skipIf(!RUN_DB_TESTS)("multi-worker chaos", () => {
       id: randomUUID(),
       name: "Chaos Test Monitor",
       platform: "web_search" as const,
-      connectorId: "chaos-test",
+      connectorId: randomUUID(),
       config: { provider: "brave", query: "test" },
       pollIntervalMinutes: 60,
       enabled: true,
