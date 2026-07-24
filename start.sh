@@ -128,7 +128,7 @@ ENV
   if grep -q '^ADMIN_PASSWORD=__GENERATE__$' .env 2>/dev/null \
      || ! grep -q '^ADMIN_PASSWORD=.\+' .env 2>/dev/null; then
     local login_password
-    login_password="$(gen_key | tr -dc 'A-Za-z0-9' | head -c 18)"
+    login_password="admin@123"
     if grep -q '^ADMIN_PASSWORD=' .env 2>/dev/null; then
       if sed --version >/dev/null 2>&1; then
         sed -i "s|^ADMIN_PASSWORD=.*|ADMIN_PASSWORD=$login_password|" .env
@@ -138,7 +138,7 @@ ENV
     else
       printf 'ADMIN_PASSWORD=%s\n' "$login_password" >> .env
     fi
-    ok "已生成后台登录密码（账号 admin，密码见 .env 的 ADMIN_PASSWORD）"
+    ok "后台默认密码 admin@123，与 WeRSS 一致，登录后建议修改"
   fi
 
   # 若 ADMIN_API_TOKEN 仍是占位符或缺失，生成随机程序令牌。
