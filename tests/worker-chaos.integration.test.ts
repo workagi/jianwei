@@ -89,7 +89,7 @@ describe.skipIf(!RUN_DB_TESTS)("multi-worker chaos", () => {
     expect(epochA).toBeGreaterThan(0);
 
     // Worker B attempts to take over while A still holds lease
-    const [stolenB] = await db.update(monitors)
+    const stolenB = await db.update(monitors)
       .set({
         leaseOwner: workerB,
         leaseUntil: new Date(Date.now() + 300_000),
