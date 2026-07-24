@@ -46,7 +46,6 @@ describe.skipIf(!RUN_DB_TESTS)("multi-worker chaos", () => {
     await db.delete(monitors).where(eq(monitors.name, "Chaos Test Monitor"));
     await db.delete(items).where(eq(items.canonicalUrl, "https://chaos-test.example.com/doc"));
     await db.delete(sourceItems).where(eq(sourceItems.sourceProvider, "chaos-test"));
-    await db.delete(usageLedger).where(eq(usageLedger.connectorId, "chaos-test"));
   });
 
   it("lease fencing: only current lease holder can commit", async () => {
