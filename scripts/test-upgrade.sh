@@ -16,7 +16,8 @@ echo "Baseline items: $(cat /tmp/baseline_items_count.txt)"
 # Verify key tables exist
 echo "Verifying schema..."
 for table in items item_matches source_items collection_runs monitors api_credentials \
-             usage_ledger workers admin_settings login_attempts monitor_match_observations; do
+             usage_ledger runtime_health login_attempts monitor_match_observations \
+             connectors bookmarks document_analysis_claims; do
   if psql "$DATABASE_URL" -t -c "SELECT 1 FROM information_schema.tables WHERE table_name='$table'" | grep -q 1; then
     echo "  ✓ $table"
   else
