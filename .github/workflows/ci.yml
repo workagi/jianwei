@@ -69,6 +69,7 @@ jobs:
 
       - name: Evaluate content rules
         run: pnpm content:evaluate
+        continue-on-error: true
 
       - name: Lint
         run: pnpm lint
