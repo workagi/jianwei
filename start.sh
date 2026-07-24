@@ -230,10 +230,14 @@ cmd_start() {
   audit_creds
   echo
   ok "完成！访问以下地址："
+  echo
+  dim "   WeRSS 默认登录: admin / admin@123"
+  dim "   WeRSS AK 配置: 登录 WeRSS 后台 → 创建 Access Key → 填入 .env 的 WERSS_ACCESS_KEY"
+  dim "   远程部署提示: .env 中 *_BIND_HOST 改为 0.0.0.0，SECURE_COOKIE 改为 false（HTTP）"
   dim "   信息流:      http://localhost:3000"
   dim "   监控后台:    http://localhost:3000/admin"
   dim "   WeRSS 授权:  http://localhost:8001"
-  dim "   TrendRadar:  http://localhost:8088（仅本机）"
+  dim "   TrendRadar:  http://localhost:8088（调试用，数据通过主站 3000 端口访问）"
   dim "   查看日志:    ./start.sh logs"
 }
 
