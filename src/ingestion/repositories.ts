@@ -473,7 +473,7 @@ export function createDrizzleIngestRepository(
             ownerWorkerId: sql`excluded."owner_worker_id"`,
             status: sql`'claimed'`,
             claimedAt: sql`now()`,
-            expiresAt: sql`now() + make_interval(mins => ${input.leaseMinutes})`,
+            expiresAt: sql`now() + (${String(input.leaseMinutes)} || ' minutes')::interval`,
           },
           where: and(
             sql`${documentAnalysisClaims.status} <> 'completed'`,
