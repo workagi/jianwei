@@ -94,8 +94,6 @@ jobs:
       ADMIN_PASSWORD: smoke-test-password
       ADMIN_API_TOKEN: smoke-test-token
       ADMIN_SESSION_SECRET: smoke-test-session-secret-32bytes!!
-      ADMIN_API_TOKEN: smoke-test-token
-      ADMIN_SESSION_SECRET: smoke-test-session-secret-32bytes!!
       DATABASE_URL: postgres://monitor:monitor@postgres:5432/monitor
       WERSS_BASE_URL: http://werss:8001
       BRAVE_API_KEY: placeholder
@@ -182,6 +180,8 @@ jobs:
       E2E_BASE_URL: http://localhost:3000
       ADMIN_USERNAME: admin
       ADMIN_PASSWORD: smoke-test-password
+      ADMIN_API_TOKEN: smoke-test-token
+      ADMIN_SESSION_SECRET: smoke-test-session-secret-32bytes!!
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
