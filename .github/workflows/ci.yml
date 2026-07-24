@@ -89,6 +89,7 @@ jobs:
     timeout-minutes: 12
     needs: validate
     env:
+      POSTGRES_PASSWORD: monitor
       APP_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
       ADMIN_USERNAME: admin
       ADMIN_PASSWORD: smoke-test-password
@@ -177,6 +178,7 @@ jobs:
     timeout-minutes: 15
     needs: smoke
     env:
+      POSTGRES_PASSWORD: monitor
       E2E_BASE_URL: http://localhost:3000
       ADMIN_USERNAME: admin
       ADMIN_PASSWORD: smoke-test-password
