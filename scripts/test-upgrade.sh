@@ -4,22 +4,14 @@ set -euo pipefail
 
 echo "=== DB Upgrade Test ==="
 
-# Apply baseline migrations (0000-0010, representing v0.1.0 schema)
-echo "Applying baseline migrations (0000-0010)..."
-for f in drizzle/0000_*.sql drizzle/0001_*.sql drizzle/0002_*.sql drizzle/0003_*.sql \
-         drizzle/0004_*.sql drizzle/0005_*.sql drizzle/0006_*.sql drizzle/0007_*.sql \
-         drizzle/0008_*.sql drizzle/0009_*.sql drizzle/0010_*.sql; do
-  echo "  $f"
-  psql "$DATABASE_URL" -f "$f" -q
-done
+# Apply all migrations via drizzle-kit. This tests that the full migration
+# chain (0000→0025) works end-to-end on a clean database.
+echo "Applying all migrations (0000→0025)..."
+pnpm db:migrate
 
 echo "Recording baseline state..."
 psql "$DATABASE_URL" -t -c "SELECT count(*) FROM items;" > /tmp/baseline_items_count.txt
 echo "Baseline items: $(cat /tmp/baseline_items_count.txt)"
-
-# Run full migration (applies 0011+)
-echo "Running pnpm db:migrate..."
-pnpm db:migrate
 
 # Verify key tables exist
 echo "Verifying schema..."
