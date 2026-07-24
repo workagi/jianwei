@@ -101,8 +101,9 @@ describe.skipIf(!RUN_DB_TESTS)("multi-worker chaos", () => {
       ))
       .returning({ leaseEpoch: monitors.leaseEpoch });
 
+    const stolenBArr = Array.isArray(stolenB) ? stolenB : (stolenB ? [stolenB] : []);
     // B should get 0 rows because A still holds the lease
-    expect(stolenB).toHaveLength(0);
+    expect(stolenBArr).toHaveLength(0);
 
     // Verify A can still commit with its epoch
     const committed = await db.update(monitors)
@@ -114,8 +115,9 @@ describe.skipIf(!RUN_DB_TESTS)("multi-worker chaos", () => {
       ))
       .returning({ id: monitors.id });
 
-    expect(committed[0]).toBeDefined();
-    expect(committed).toHaveLength(1);
+    const committedArr = Array.isArray(committed) ? committed : (committed ? [committed] : []);
+    expect(committedArr[0]).toBeDefined();
+    expect(committedArr).toHaveLength(1);
   });
 
   it("concurrent canonical URL: only one document wins", async () => {

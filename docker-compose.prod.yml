@@ -182,7 +182,7 @@ services:
 
   # Optional. Its login UI is bound to server loopback only; use an SSH tunnel
   # for the one-time scan instead of exposing this unauthenticated API publicly.
- wechat-fallback:
+  wechat-fallback:
     profiles: ["wechat-fallback"]
     image: tmwgsicp/wechat-download-api:1.7.0
     environment:
