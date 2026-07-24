@@ -56,7 +56,7 @@ info "Step 1/5: 停止并删除容器和网络 ..."
 docker compose down --remove-orphans --volumes 2>/dev/null || true
 docker compose -f docker-compose.prod.yml down --remove-orphans --volumes 2>/dev/null || true
 # 清理未被 compose 管理的残留网络
-docker network ls --format '{{.Name}}' 2>/dev/null | grep -E 'jianwei' | while read net; do
+docker network ls --format '{{.Name}}' 2>/dev/null | grep -E 'jianwei' | while read -r net; do
   docker network rm "$net" 2>/dev/null || true
 done
 ok "容器和网络已清理"
@@ -67,7 +67,7 @@ echo "以下 Docker 数据卷将被删除："
 docker volume ls --format '  {{.Name}}' 2>/dev/null | grep -E "$VOL_PATTERN" || echo "  （未找到）"
 
 if confirm "删除以上数据卷？这将永久删除所有监控数据和配置！"; then
-  docker volume ls -q 2>/dev/null | grep -E "$VOL_PATTERN" | while read vol; do
+  docker volume ls -q 2>/dev/null | grep -E "$VOL_PATTERN" | while read -r vol; do
     docker volume rm "$vol" 2>/dev/null || true
   done
   ok "数据卷已删除"
@@ -86,7 +86,7 @@ else
   # 只删除本项目构建或拉取的镜像。如果镜像被其他项目共享，
 # docker rmi 会因为"image is being used"而自动跳过，不会误删。
 if confirm "删除以上镜像？"; then
-    docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -E "$IMG_PATTERN" | while read img; do
+    docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -E "$IMG_PATTERN" | while read -r img; do
       docker rmi "$img" 2>/dev/null || true
     done
     ok "镜像已删除"
@@ -116,7 +116,7 @@ else
   warn "最后一步：删除整个项目目录"
   echo "  路径: $SCRIPT_DIR"
   if confirm "确认删除项目目录及其所有文件？"; then
-    PARENT="$SCRIPT_DIR/.."
+    cd "$SCRIPT_DIR/.." || true
     rm -rf "$SCRIPT_DIR"
     ok "项目目录已删除"
     echo ""
