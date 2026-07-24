@@ -38,6 +38,7 @@ jobs:
       ADMIN_USERNAME: admin
       ADMIN_PASSWORD: ci-placeholder-password
       ADMIN_API_TOKEN: ci-placeholder-api-token
+      ADMIN_SESSION_SECRET: ci-placeholder-session-secret-32bytes!!
       RUN_DB_INTEGRATION_TESTS: "1"
 
     steps:
@@ -91,6 +92,9 @@ jobs:
       ADMIN_USERNAME: admin
       ADMIN_PASSWORD: smoke-test-password
       ADMIN_API_TOKEN: smoke-test-token
+      ADMIN_SESSION_SECRET: smoke-test-session-secret-32bytes!!
+      ADMIN_API_TOKEN: smoke-test-token
+      ADMIN_SESSION_SECRET: smoke-test-session-secret-32bytes!!
       DATABASE_URL: postgres://monitor:monitor@postgres:5432/monitor
       WERSS_BASE_URL: http://werss:8001
       BRAVE_API_KEY: placeholder
