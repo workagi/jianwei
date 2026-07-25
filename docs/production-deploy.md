@@ -11,6 +11,8 @@
 - 系统：Ubuntu 22.04/24.04 或 Debian 12
 - 域名：准备一个域名并把 A 记录解析到服务器公网 IP
 
+4 核 / 4GB 可以运行完整服务并做小规模监控；如果同时开启模型摘要、公众号全文回填或多个高频任务，建议 8GB 内存。没有 Swap 的 4GB 主机只建议用于小规模测试，长期公网运行前应增加 Swap 或升级内存。
+
 服务器只需要放行：
 
 - `80/tcp`
@@ -87,7 +89,7 @@ https://你的域名/admin/connectors
 
 后台登录使用 `.env.production` 里的 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD`。
 `ADMIN_API_TOKEN` 只供脚本调用写接口，不能用于网页登录；三项凭据缺失时系统会拒绝访问，不会降级为无密码模式。
-`ADMIN_API_TOKEN` 只用于脚本或 CI 调用受保护的写接口。
+首次登录后立即在后台修改管理密码；不要把 `.env.production`、API Token 或加密密钥提交到 Git。
 
 ## 5. WeRSS 授权方式
 
@@ -105,13 +107,32 @@ http://localhost:8001
 
 授权完成后关闭 SSH 隧道即可。
 
-如果服务器无法通过 `127.0.0.1:8001` 访问 WeRSS，是因为生产 compose 默认没有对宿主机暴露端口。可临时执行：
+如果服务器无法通过 `127.0.0.1:8001` 访问 WeRSS，是因为生产 compose 默认没有对宿主机暴露端口。`docker compose port` 只能查询已有映射，不能创建映射。需要扫码时，在项目目录临时创建 override：
 
 ```bash
-docker compose --env-file .env.production -p jianwei -f docker-compose.prod.yml port werss 8001
+cat > /tmp/jianwei-werss-tunnel.yml <<'EOF'
+services:
+  werss:
+    ports:
+      - "127.0.0.1:8001:8001"
+EOF
+
+docker compose --env-file .env.production -p jianwei \
+  -f docker-compose.prod.yml -f /tmp/jianwei-werss-tunnel.yml up -d werss
+
+ssh -L 8001:127.0.0.1:8001 <user>@<server>
 ```
 
-更推荐的方式是临时加一个只绑定 `127.0.0.1` 的 override 文件，用完删掉；不要把 WeRSS 裸露到公网。
+本机浏览器访问 `http://localhost:8001` 完成授权后，停止临时映射并删除文件：
+
+```bash
+docker compose --env-file .env.production -p jianwei \
+  -f docker-compose.prod.yml -f /tmp/jianwei-werss-tunnel.yml stop werss
+rm -f /tmp/jianwei-werss-tunnel.yml
+docker compose --env-file .env.production -p jianwei -f docker-compose.prod.yml up -d werss
+```
+
+映射只绑定服务器回环地址，不要把 WeRSS 裸露到公网。
 
 ## 6. 热榜 / RSS 来源管理
 
@@ -204,3 +225,36 @@ docker compose --env-file .env.production -p jianwei -f docker-compose.prod.yml 
 ### WeRSS 需要重新扫码
 
 用 SSH 隧道访问 WeRSS 后台重新授权。务必备份 `werss-data` volume，否则重建服务器时授权会丢。
+
+### Worker 日志出现 `402/404 Message task not found or has been deactivated`
+
+这通常表示 WeRSS 中原来的订阅任务已被删除、停用或授权状态失效，不代表 Jianwei 容器启动失败。处理顺序：
+
+1. 通过 SSH 隧道打开 WeRSS 后台。
+2. 重新扫码授权微信账号。
+3. 确认公众号订阅仍存在；必要时删除旧订阅后重新添加。
+4. 回到 Jianwei 后台检查对应监控，等待下一轮采集。
+
+如果 Worker 和 `/api/health` 仍为 healthy，但只有某个公众号出现该错误，优先按上述方式修复该订阅，不要重装数据库。
+
+## 10. 全新服务器验收清单
+
+首次在没有 Jianwei 容器、镜像和数据卷的服务器上部署，建议按下面顺序验收：
+
+```bash
+docker compose --env-file .env.production -p jianwei -f docker-compose.prod.yml config -q
+docker compose --env-file .env.production -p jianwei -f docker-compose.prod.yml up -d --build --wait
+docker compose --env-file .env.production -p jianwei -f docker-compose.prod.yml ps
+curl -fsS https://你的域名/api/health
+```
+
+验收标准：
+
+- `postgres`、`web`、`worker`、`werss`、`trendradar`、`trendradar-mcp`、`trendradar-refresh` 均已启动。
+- `/api/health` 返回 `ok: true`，且 `database`、`worker` 均为 `ok`。
+- 能打开 `/admin` 并登录。
+- WeRSS 通过 SSH 隧道完成扫码后，能订阅一个公众号。
+- 添加一个监控后，能在首页看到首次采集结果。
+- `docker compose logs web worker` 没有持续增长的启动错误。
+
+这套验收证明的是“全新环境可以启动和完成主链路”，不替代真实平台账号的长期稳定性测试。

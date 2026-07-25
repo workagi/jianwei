@@ -88,6 +88,8 @@
 
 > 实测：核心 3 服务空闲仅约 176MB，WeRSS 约 150MB（受 2GB mem_limit 约束），TrendRadar 约 130MB。建议至少保留 1GB 空闲内存给系统。
 
+> 如果要同时运行 WeRSS、TrendRadar、全文增强和较高频监控，4GB 是起步值，8GB 更稳。没有 Swap 的 4GB 云主机可以完成小规模冒烟测试，但不建议长期承载大量公众号或全文回填。
+
 ### 准备工作
 
 需要提前安装：
@@ -113,6 +115,8 @@ git clone https://github.com/workagi/jianwei.git
 cd jianwei
 ./start.sh
 ```
+
+这条路径适合本机、内网或临时测试。公网长期运行请直接使用下面的「部署到服务器」和 [生产部署说明](docs/production-deploy.md)，不要把 HTTP 的 `3000/8001/8088` 端口直接暴露给互联网。
 
 `start.sh` 首次运行会：
 
@@ -159,7 +163,7 @@ cd jianwei
 | 我想关注… | 需要配什么 | 怎么配 |
 | --------- | ---------- | ------ |
 | 微信公众号 | WeRSS | 打开 http://localhost:8001 → admin / admin@123 登录 → 扫码绑定微信 → 创建 Access Key → 把 AK:SK 填到 .env 的 WERSS_ACCESS_KEY= 后面 |
-| X（Twitter）博主 | SuperGrok（默认） | 什么都不用配，系统内置了 |
+| X（Twitter）博主 | SuperGrok（默认） | 在「平台连接」点击「连接 SuperGrok」完成 xAI 授权；不需要手填 X API Key |
 | 全网关键词搜索 | Brave Search API | 去 brave.com 申请免费 API Key，填到「平台连接」→ Brave Search |
 | 国内热榜、RSS | TrendRadar（默认） | 什么都不用配，系统内置了 |
 
@@ -308,6 +312,7 @@ docker compose down
 ./start.sh logs       # 查看实时日志
 ./start.sh restart    # 重启服务
 ./start.sh stop       # 停止并保留数据
+```
 
 ## 卸载
 
@@ -315,7 +320,6 @@ docker compose down
 ./uninstall.sh           # 交互式逐步确认（推荐）
 ./uninstall.sh --yes     # 一键全部删除，跳过确认
 ./uninstall.sh --clean   # 只删容器和数据卷，保留项目文件和镜像
-```
 ```
 
 开发检查：
@@ -331,7 +335,13 @@ docker compose config
 
 ## 部署到服务器
 
-公网部署推荐使用 `docker-compose.prod.yml`（Caddy 自动 HTTPS）。如果暂时没有域名和证书，也可以用开发 Compose 部署到服务器：
+### 公网生产部署（推荐）
+
+有域名时使用 `docker-compose.prod.yml`，由 Caddy 负责 HTTPS。完整步骤见 [生产部署说明](docs/production-deploy.md)。公网只开放 `80/443`，不要把数据库、WeRSS、TrendRadar 或 MCP 端口暴露出去。
+
+### 临时 HTTP / 内网测试
+
+如果暂时没有域名和证书，可以用开发 Compose 部署到服务器：
 
 ```bash
 # 1. 编辑 .env，修改以下变量：

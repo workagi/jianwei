@@ -95,6 +95,7 @@ docker compose config
 ## 6. 发布前仍需人工完成
 
 - [ ] 在一个全新目录或另一台没有本项目镜像和 volumes 的机器运行 `./start.sh`。
+  > 已在一台已有部署的 Debian 12 / 4C4G 腾讯云服务器完成升级冒烟；这不等价于空机器首次安装，发布前仍应保留这项验收。
 - [x] README 当前未嵌入信息流截图或真实演示数据，不含真实账号内容。
 - [x] 仓库切换为 Public 后立即启用 Private vulnerability reporting。
 - [x] `NOTICE` 使用 `skymao2021` 作为当前权利人标识。

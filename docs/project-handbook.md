@@ -426,6 +426,7 @@ Worker 和模型处理日志采用一行一个 JSON 事件，便于直接交给 
 | 信息流没有更新 | worker 心跳、任务 `nextRunAt`、最近一次 `collection_runs` |
 | X 采集失败 | Provider 选择、SuperGrok 授权、官方 API Token、每日预算 |
 | 公众号没有新文章 | WeRSS 登录状态、订阅是否存在、文章列表接口 |
+| Worker 出现 `402/404 Message task not found or has been deactivated` | WeRSS 订阅任务已删除/停用或授权失效；通过 SSH 隧道重新扫码并重新订阅，不要先重装数据库 |
 | 公众号没有摘要 | 全文状态、模型开关、模型 API 配置、处理积压 |
 | 全网搜索无结果 | Provider API Key、必含词和排除词、域名限制 |
 | 榜单出现无关内容 | TrendRadar 来源、兴趣规则、规则是否在模型前命中 |
