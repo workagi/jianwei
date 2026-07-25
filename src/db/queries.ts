@@ -21,6 +21,7 @@ function itemConditions(filter: ItemFilter): SQL[] {
       select 1
       from ${itemMatches}
       where ${itemMatches.itemId} = ${items.id}
+        and ${itemMatches.retentionStatus} = 'kept'
     )`,
   ];
   if (filter.platform && filter.monitorId) {
@@ -34,6 +35,7 @@ function itemConditions(filter: ItemFilter): SQL[] {
       inner join ${sourceItems} on ${sourceItems.id} = ${itemMatches.sourceItemId}
       where ${itemMatches.itemId} = ${items.id}
         and ${itemMatches.monitorId} = ${filter.monitorId}
+        and ${itemMatches.retentionStatus} = 'kept'
         and ${sourceItems.platform} = ${filter.platform}
     )`);
   } else if (filter.platform) {
@@ -48,6 +50,7 @@ function itemConditions(filter: ItemFilter): SQL[] {
       from ${itemMatches}
       where ${itemMatches.itemId} = ${items.id}
         and ${itemMatches.monitorId} = ${filter.monitorId}
+        and ${itemMatches.retentionStatus} = 'kept'
     )`);
   }
   if (filter.search) {
@@ -81,7 +84,7 @@ export async function getItems(filter: ItemFilter = {}) {
         select 1 from item_matches selected_match
         where selected_match.source_item_id = si.id
           and selected_match.monitor_id = ${filter.monitorId}
-          and selected_match.relevance_score >= 0
+          and selected_match.retention_status = 'kept'
       )` : sql``}
     order by
       case when si.platform = ${items.platform} and si.upstream_id = ${items.upstreamId} then 0 else 1 end,
@@ -141,7 +144,7 @@ export async function getItems(filter: ItemFilter = {}) {
           select selected_match.retention_reason from item_matches selected_match
           where selected_match.item_id = ${items.id}
             and selected_match.monitor_id = ${filter.monitorId}
-            and selected_match.relevance_score >= 0
+            and selected_match.retention_status = 'kept'
           limit 1
         )` : sql`null`},
         ${items.retentionReason}
@@ -151,7 +154,7 @@ export async function getItems(filter: ItemFilter = {}) {
           select selected_match.relevance_score from item_matches selected_match
           where selected_match.item_id = ${items.id}
             and selected_match.monitor_id = ${filter.monitorId}
-            and selected_match.relevance_score >= 0
+            and selected_match.retention_status = 'kept'
           limit 1
         )` : sql`null`},
         ${items.informationValueScore},
@@ -162,7 +165,7 @@ export async function getItems(filter: ItemFilter = {}) {
           select selected_match.retention_source from item_matches selected_match
           where selected_match.item_id = ${items.id}
             and selected_match.monitor_id = ${filter.monitorId}
-            and selected_match.relevance_score >= 0
+            and selected_match.retention_status = 'kept'
           limit 1
         )` : sql`null`},
         ${items.retentionSource}
@@ -193,6 +196,7 @@ export async function getItems(filter: ItemFilter = {}) {
         from item_matches im
         join monitors m on m.id = im.monitor_id
         where im.item_id = ${items.id}
+          and im.retention_status = 'kept'
       )`,
     })
     .from(items)

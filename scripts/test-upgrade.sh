@@ -32,7 +32,8 @@ for col_check in \
   "monitors:lease_epoch" \
   "collection_runs:attempt_token" \
   "collection_runs:current_stage" \
-  "collection_runs:last_progress_at"; do
+  "collection_runs:last_progress_at" \
+  "item_matches:retention_status"; do
   table="${col_check%%:*}"
   col="${col_check##*:}"
   if psql "$DATABASE_URL" -t -c "SELECT 1 FROM information_schema.columns WHERE table_name='$table' AND column_name='$col'" | grep -q 1; then

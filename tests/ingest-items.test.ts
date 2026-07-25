@@ -210,6 +210,24 @@ describe("ingest", () => {
     expect(repo.sourceRows).toHaveLength(2);
     expect(repo.matchLinks.every((m) => m.monitorId === "m1")).toBe(true);
     expect(repo.matchLinks.every((m) => Boolean(m.sourceItemId))).toBe(true);
+    expect(repo.matchLinks.every((m) => m.retentionStatus === "kept")).toBe(true);
+  });
+
+  it("stores hard Gate rejections as audit-only matches", async () => {
+    const repo = new MemRepo();
+    await ingest(repo, {
+      items: [makeItem({ title: "招聘：AI 工程师", text: "加入我们负责 AI 产品开发" })],
+      monitorId: "m1",
+      monitorRules: {
+        keywords: ["AI"],
+        requiredKeywords: [],
+        excludeKeywords: ["招聘"],
+      },
+    });
+
+    expect(repo.matchLinks).toHaveLength(1);
+    expect(repo.matchLinks[0].retentionStatus).toBe("gate_blocked");
+    expect(repo.matchLinks[0].relevanceScore).toBe(-1);
   });
 
   it("returns zeros for an empty batch", async () => {

@@ -13,6 +13,7 @@ import {
 import { and, eq, sql } from "drizzle-orm";
 import { createDrizzleIngestRepository } from "@/ingestion/ingest-items";
 import type { NormalizedItem } from "@/connectors/types";
+import { countItems, getItems } from "@/db/queries";
 
 const describeDatabase = process.env.RUN_DB_INTEGRATION_TESTS === "1" ? describe : describe.skip;
 
@@ -250,5 +251,89 @@ describeDatabase("collection_run attemptToken prevents stale attempt from overwr
     expect(current.attempt).toBe(2);
     expect(current.attemptToken).toBe(attempt2Token);
     expect(current.status).toBe("running");
+  });
+});
+
+describeDatabase("reader visibility follows explicit Gate decisions", () => {
+  it("keeps blocked matches auditable without exposing them in the feed", async () => {
+    const [connector] = await db.insert(connectors).values({
+      platform: "web_search",
+      provider: "brave",
+      name: `reader-gate-${randomUUID()}`,
+    }).returning({ id: connectors.id });
+    cleanupIds.connectors.push(connector.id);
+
+    const [monitor] = await db.insert(monitors).values({
+      platform: "web_search",
+      connectorId: connector.id,
+      name: `reader-gate-monitor-${randomUUID()}`,
+      config: { query: "AI" },
+      nextRunAt: new Date(),
+    }).returning({ id: monitors.id });
+    cleanupIds.monitors.push(monitor.id);
+
+    const insertedDocs = await db.insert(items).values([
+      {
+        platform: "web_search",
+        upstreamId: `reader-kept-${randomUUID()}`,
+        canonicalUrl: `https://example.com/reader-kept-${randomUUID()}`,
+        title: "AI 产品更新",
+        bodyText: "A kept document",
+        contentHash: randomUUID(),
+        publishedAt: new Date(),
+      },
+      {
+        platform: "web_search",
+        upstreamId: `reader-blocked-${randomUUID()}`,
+        canonicalUrl: `https://example.com/reader-blocked-${randomUUID()}`,
+        title: "AI 招聘信息",
+        bodyText: "A blocked document",
+        contentHash: randomUUID(),
+        publishedAt: new Date(),
+      },
+    ]).returning({ id: items.id, canonicalUrl: items.canonicalUrl });
+    cleanupIds.items.push(...insertedDocs.map((doc) => doc.id));
+
+    const insertedSources = await db.insert(sourceItems).values(insertedDocs.map((doc, index) => ({
+      itemId: doc.id,
+      platform: "web_search" as const,
+      sourceProvider: "brave",
+      upstreamId: `reader-source-${index}-${randomUUID()}`,
+      sourceUrl: doc.canonicalUrl,
+    }))).returning({ id: sourceItems.id, itemId: sourceItems.itemId });
+
+    await db.insert(itemMatches).values([
+      {
+        itemId: insertedDocs[0].id,
+        monitorId: monitor.id,
+        sourceItemId: insertedSources.find((source) => source.itemId === insertedDocs[0].id)?.id,
+        retentionStatus: "kept",
+        relevanceScore: 80,
+      },
+      {
+        itemId: insertedDocs[1].id,
+        monitorId: monitor.id,
+        sourceItemId: insertedSources.find((source) => source.itemId === insertedDocs[1].id)?.id,
+        retentionStatus: "gate_blocked",
+        relevanceScore: -1,
+        retentionReason: "命中排除词：招聘",
+      },
+    ]);
+
+    const rows = await getItems({ monitorId: monitor.id, limit: 10 });
+    expect(rows.map((row) => row.id)).toEqual([insertedDocs[0].id]);
+    expect(await countItems({ monitorId: monitor.id })).toBe(1);
+
+    const [blockedAuditRow] = await db.select({
+      status: itemMatches.retentionStatus,
+      reason: itemMatches.retentionReason,
+    }).from(itemMatches).where(and(
+      eq(itemMatches.itemId, insertedDocs[1].id),
+      eq(itemMatches.monitorId, monitor.id),
+    ));
+    expect(blockedAuditRow).toEqual({
+      status: "gate_blocked",
+      reason: "命中排除词：招聘",
+    });
   });
 });

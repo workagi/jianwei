@@ -179,6 +179,12 @@ export const itemMatches = pgTable("item_matches", {
   relevanceScore: integer("relevance_score"),
   retentionReason: text("retention_reason"),
   retentionSource: text("retention_source"),
+  /**
+   * Explicit reader decision for this monitor-document edge.
+   * `gate_blocked` rows remain available for audit, but never enter the
+   * normal reader feed. Do not infer visibility from a magic score value.
+   */
+  retentionStatus: text("retention_status").notNull().default("kept"),
   analysisStatus: text("analysis_status"),
   analysisVersion: text("analysis_version"),
   rawPayload: jsonb("raw_payload").$type<Record<string, unknown>>().notNull().default({}),
@@ -187,6 +193,7 @@ export const itemMatches = pgTable("item_matches", {
 }, (table) => [
   primaryKey({ columns: [table.itemId, table.monitorId] }),
   index("item_matches_monitor_seen_idx").on(table.monitorId, table.firstSeenAt),
+  index("item_matches_monitor_status_seen_idx").on(table.monitorId, table.retentionStatus, table.firstSeenAt),
   index("item_matches_source_item_idx").on(table.sourceItemId),
   index("item_matches_monitor_relevance_idx").on(table.monitorId, table.relevanceScore),
 ]);

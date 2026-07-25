@@ -242,7 +242,7 @@ cd jianwei
 |--------|------|------|
 | P1 | provider 级并发隔离 | 微信/X/搜索目前共享全局并发，慢任务可能互相阻塞 |
 | P1 | 规则评估集扩大 | 当前 ~100 条，建议逐步到 500+ 并加 confusion matrix |
-| P1 | item_matches 增加 retention_status | 区分 kept/gate_blocked/pending，Reader 只查 kept |
+| 已完成 | item_matches 明确 retention_status | 已区分 kept/gate_blocked/pending/error，Reader 只查询 kept，blocked 记录保留审计证据 |
 | P1 | worker 大文件拆分 | `src/worker/index.ts` 已 ~1150 行，建议按职责拆 module |
 | P2 | 加密密钥版本轮换 | 目前仅支持单密钥，需增加 keyId + 多密钥解密 |
 | P2 | worker 生产运行时 | 当前用 tsx 跑 TypeScript，建议编译为 JS |

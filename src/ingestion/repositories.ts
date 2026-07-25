@@ -27,6 +27,7 @@ export interface IngestMatchLink {
   relevanceScore?: number;
   retentionReason?: string;
   retentionSource?: string;
+  retentionStatus: "kept" | "gate_blocked" | "pending" | "error";
   analysisVersion?: string;
   collectionRunId?: string;
   analysisStatus?: string;
@@ -435,6 +436,7 @@ export function createDrizzleIngestRepository(
             relevanceScore: link.relevanceScore,
             retentionReason: link.retentionReason,
             retentionSource: link.retentionSource,
+            retentionStatus: link.retentionStatus,
             rawPayload: link.rawPayload,
           })),
         )
@@ -445,6 +447,7 @@ export function createDrizzleIngestRepository(
             relevanceScore: sql`coalesce(excluded."relevance_score", "item_matches"."relevance_score")`,
             retentionReason: sql`coalesce(excluded."retention_reason", "item_matches"."retention_reason")`,
             retentionSource: sql`coalesce(excluded."retention_source", "item_matches"."retention_source")`,
+            retentionStatus: sql`excluded."retention_status"`,
             rawPayload: sql`excluded."raw_payload"`,
             lastSeenAt: new Date(),
           },

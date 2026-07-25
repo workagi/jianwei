@@ -1,5 +1,4 @@
 import type { NormalizedItem } from "@/connectors/types";
-import { db } from "@/db";
 import { canonicalizeUrl, contentFingerprint, dedupeKey } from "./deduplicate";
 import { type SummaryRunStats } from "@/lib/summarizer";
 import { routeContentItems, CONTENT_ANALYSIS_VERSION } from "@/lib/content-router";
@@ -17,7 +16,6 @@ import {
   type IngestRepository,
 } from "./repositories";
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 export { createDrizzleIngestRepository } from "./repositories";
 
 export type { IngestItemRow, IngestMatchLink, IngestSourceObservation, StoredSourceObservation, UpsertedDocument, IngestRepository } from "./repositories";
@@ -347,17 +345,18 @@ export async function commitPreparedIngest(
     // match so the UI can surface the decision.
     const gateBlocked = input.monitorRules && !monitorRetention.shouldKeep;
 
-   linksByItem.set(itemId, {
-     itemId,
-     monitorId: input.monitorId,
-     sourceItemId: storedSource?.id,
-     matchedQuery: input.matchedQuery,
+    linksByItem.set(itemId, {
+      itemId,
+      monitorId: input.monitorId,
+      sourceItemId: storedSource?.id,
+      matchedQuery: input.matchedQuery,
       relevanceScore: gateBlocked ? -1 : (monitorRetention.relevanceScore ?? undefined),
       retentionReason: monitorRetention.retentionReason ?? undefined,
       retentionSource: monitorRetention.retentionReason ? ("rules" as const) : undefined,
-     analysisStatus: row?.analysisStatus ?? undefined,
+      retentionStatus: gateBlocked ? "gate_blocked" : "kept",
+      analysisStatus: row?.analysisStatus ?? undefined,
       analysisVersion: row?.analysisVersion ?? undefined,
-     rawPayload: observation.rawPayload,
+      rawPayload: observation.rawPayload,
       collectionRunId: input.runId,
     });
   }
@@ -378,12 +377,3 @@ export async function ingest(
   const prepared = await prepareIngest(repo, input);
   return commitPreparedIngest(repo, prepared);
 }
-
-/**
- * Drizzle-backed implementation of {@link IngestRepository}.
- * Items upsert on (platform, upstream_id). When the same canonical_url already
- * exists under a different upstream id (WeRSS id format churn), update that
- * row instead of inserting — `items_canonical_url_uidx` is global.
- */
-type IngestDatabase = Pick<typeof db, "select" | "insert" | "update">;
-
