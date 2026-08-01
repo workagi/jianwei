@@ -90,6 +90,7 @@
 | `x_grok` | X | 订阅能力 | 使用 SuperGrok / X Search，保存带真实推文引用的结果 |
 | `x_official` | X | API | X 官方 API 后备路径 |
 | `wechat_werss` | 微信 | 订阅服务 | 解析文章链接、订阅公众号、读取文章列表 |
+| `wechat_zlzchat` | 微信 | 外置兼容接口 | 连接用户自建 ZLZChat，作为 WeRSS 之外的可选通道 |
 | `wechat_keyword` | 微信 | 本地规则 | 在已采集的公众号文章中匹配关键词 |
 | `web_brave` | 全网搜索 | API | 适合品牌词、公司名和新闻监控 |
 | `web_tavily` | 全网搜索 | API | 适合语义研究和更宽的召回 |
@@ -109,6 +110,7 @@ flowchart LR
     Worker["采集 Worker"] --> Registry["Source Provider Registry"]
     Registry --> X["X / SuperGrok"]
     Registry --> WeRSS["WeRSS"]
+    Registry --> ZLZ["ZLZChat（用户自建，可选）"]
     Registry --> Search["Brave / Tavily / Serper"]
     Registry --> TRMCP["TrendRadar MCP"]
 
@@ -204,7 +206,7 @@ flowchart TD
 
 公众号采集分为“订阅文章列表”和“获取文章全文”两个问题：
 
-1. WeRSS 负责识别公众号、订阅账号和返回文章列表。
+1. 默认由 WeRSS 负责识别公众号、订阅账号和返回文章列表；用户也可以为单个监控选择自建 ZLZChat 兼容通道。
 2. 如果文章列表中已有可用正文，直接进入内容处理。
 3. 如果正文缺失，系统按配置尝试公开文章直连。
 4. 仍然失败时，可调用 `wechat-download-api` 兼容的增强采集器。
@@ -471,6 +473,7 @@ pnpm content:evaluate
 | Next.js / React | Web 应用 | 大版本升级带来框架行为变化 |
 | PostgreSQL / Drizzle | 持久化 | Schema 迁移和备份兼容 |
 | WeRSS | 公众号订阅 | 微信登录失效、接口和风控变化 |
+| ZLZChat（外置可选） | 公众号订阅备选 | 微信读书账号风控、作者中转服务、上游未提供明确开源许可证 |
 | wechat-download-api | 公众号全文备用 | 登录状态、页面结构和项目维护状态 |
 | TrendRadar | 榜单 / RSS | 上游配置格式、MCP 契约和许可证边界 |
 | X / xAI | 推文来源 | 额度、搜索质量、接口政策 |

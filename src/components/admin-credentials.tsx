@@ -33,6 +33,20 @@ const FIELDS = [
     description: "解析公众号文章链接、订阅公众号并拉取文章。",
     placeholder: "WERSS_ACCESS_KEY",
   },
+  {
+    key: "zlzchat_base_url",
+    label: "微信公众号 · ZLZChat 地址（备选）",
+    description: "填写经过安全审计的自建 ZLZChat 地址；公开演示地址会被拒绝。",
+    placeholder: "http://zlzchat:805",
+    inputType: "url",
+  },
+  {
+    key: "zlzchat_api_key",
+    label: "微信公众号 · ZLZChat API Key（备选）",
+    description: "与上面的自建服务配套；只有监控任务选择 ZLZChat 时才会使用。",
+    placeholder: "ZLZCHAT_API_KEY",
+    inputType: "password",
+  },
 ] as const;
 
 type FieldKey = (typeof FIELDS)[number]["key"];
@@ -109,7 +123,7 @@ export function CredentialsManager() {
                 <p>{f.description}</p>
               </div>
               <input
-                type="password"
+                type={"inputType" in f ? f.inputType : "password"}
                 autoComplete="off"
                 value={values[f.key] ?? ""}
                 onChange={(e) =>

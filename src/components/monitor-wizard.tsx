@@ -37,6 +37,8 @@ interface FormState {
   includeReposts: boolean;
   includeQuotes: boolean;
   articleUrl: string;
+  wechatProvider: "werss" | "zlzchat";
+  zlzchatWxsId: string;
   searchProvider: "brave" | "tavily" | "serper";
   query: string;
   resultType: string;
@@ -58,6 +60,8 @@ const EMPTY: FormState = {
   includeReposts: false,
   includeQuotes: false,
   articleUrl: "",
+  wechatProvider: "werss",
+  zlzchatWxsId: "",
   searchProvider: "brave",
   query: "",
   resultType: "both",
@@ -127,7 +131,14 @@ function configToForm(platform: UiPlatform, config: Record<string, unknown>, pol
     };
   }
   if (platform === "wechat") {
-    return { ...EMPTY, name, articleUrl: (c.articleUrl as string) ?? "", pollIntervalMinutes };
+    return {
+      ...EMPTY,
+      name,
+      articleUrl: (c.articleUrl as string) ?? "",
+      wechatProvider: c.provider === "zlzchat" ? "zlzchat" : "werss",
+      zlzchatWxsId: (c.zlzchatWxsId as string) ?? "",
+      pollIntervalMinutes,
+    };
   }
   return {
     ...EMPTY,
@@ -163,6 +174,7 @@ export function MonitorWizard({
     displayName?: string;
     warning?: string;
     articleUrl?: string;
+    wechatProvider?: FormState["wechatProvider"];
     configPatch?: Record<string, unknown>;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -183,7 +195,9 @@ export function MonitorWizard({
     x: form.xProvider === "x_grok"
       ? "SuperGrok 使用订阅额度；账号越多，越不适合高频轮询。系统会自动错开同频率账号。"
       : "官方 X API 有调用额度；账号多时可放宽到 1–2 小时。系统会自动错开请求。",
-    wechat: "公众号通常不是分钟级更新；2–3 小时兼顾及时性和 WeRSS 稳定性，多个公众号会自动错峰。",
+    wechat: form.wechatProvider === "zlzchat"
+      ? "ZLZChat 是外置备选通道；见微会限并发并在故障时退避，不会影响 WeRSS 任务。请在 ZLZChat 中启用定时同步。"
+      : "公众号通常不是分钟级更新；2–3 小时兼顾及时性和 WeRSS 稳定性，多个公众号会自动错峰。",
     wechat_keyword: "这是在已入库公众号文章中做本地筛选，不会重复抓微信；提高频率的额外成本较低。",
     web_search: "每次都会消耗搜索 API 额度；品牌舆情可用 1 小时，普通行业追踪用 2–4 小时。",
   };
@@ -215,10 +229,20 @@ export function MonitorWizard({
     }
     if (platform === "wechat") {
       const patch =
-        includePreviewPatch && preview?.articleUrl === form.articleUrl
+        includePreviewPatch
+          && preview?.articleUrl === form.articleUrl
+          && preview?.wechatProvider === form.wechatProvider
           ? preview.configPatch
           : undefined;
-      return { kind: "account", articleUrl: form.articleUrl, provider: "werss", ...(patch ?? {}) };
+      return {
+        kind: "account",
+        articleUrl: form.articleUrl,
+        provider: form.wechatProvider,
+        ...(form.wechatProvider === "zlzchat" && form.zlzchatWxsId.trim()
+          ? { zlzchatWxsId: form.zlzchatWxsId.trim() }
+          : {}),
+        ...(patch ?? {}),
+      };
     }
     if (platform === "wechat_keyword") {
       const terms = splitList(form.exactPhrases);
@@ -282,6 +306,7 @@ export function MonitorWizard({
         displayName: data.preview?.displayName,
         warning: data.preview?.warning,
         articleUrl: platform === "wechat" ? form.articleUrl : undefined,
+        wechatProvider: platform === "wechat" ? form.wechatProvider : undefined,
         configPatch: data.preview?.configPatch,
       });
     } catch {
@@ -430,17 +455,63 @@ export function MonitorWizard({
       )}
 
       {platform === "wechat" && (
-        <label className="field">
-          <span>公众号文章链接</span>
-          <input
-            placeholder="https://mp.weixin.qq.com/s/..."
-            value={form.articleUrl}
-            onChange={(e) => set("articleUrl", e.target.value)}
-          />
-          <small className="field-hint">
-            通过任意一篇公开文章识别公众号；直接添加后会在后台识别，想先确认公众号可点「预览公众号」。
-          </small>
-        </label>
+        <>
+          <label className="field">
+            <span>采集通道</span>
+            <select
+              value={form.wechatProvider}
+              onChange={(e) => {
+                const wechatProvider = e.target.value as FormState["wechatProvider"];
+                setForm((current) => ({ ...current, wechatProvider, zlzchatWxsId: "" }));
+                setPreview(null);
+                setError(null);
+                setSaved(false);
+              }}
+            >
+              <option value="werss">WeRSS · 默认</option>
+              <option value="zlzchat">ZLZChat · 外置备选</option>
+            </select>
+            <small className="field-hint">
+              {form.wechatProvider === "zlzchat"
+                ? "需先在“平台连接”填写你自建的 ZLZChat 地址和 API Key；预览会在 ZLZChat 中创建订阅，它故障时不会拖住 WeRSS。"
+                : "使用内置 WeRSS 侧车解析并订阅公众号。"}
+            </small>
+          </label>
+          <label className="field">
+            <span>公众号文章链接</span>
+            <input
+              placeholder="https://mp.weixin.qq.com/s/..."
+              value={form.articleUrl}
+              onChange={(e) => {
+                const articleUrl = e.target.value;
+                setForm((current) => ({
+                  ...current,
+                  articleUrl,
+                  zlzchatWxsId: current.wechatProvider === "zlzchat" ? "" : current.zlzchatWxsId,
+                }));
+                setPreview(null);
+                setError(null);
+                setSaved(false);
+              }}
+            />
+            <small className="field-hint">
+              通过任意一篇公开文章识别公众号；建议先点「预览公众号」确认绑定正确，再保存。
+            </small>
+          </label>
+          {form.wechatProvider === "zlzchat" && (
+            <label className="field">
+              <span>ZLZChat wxsId（已有订阅时填写）</span>
+              <input
+                placeholder="首次新增可留空；已在 ZLZChat 订阅则填写 wxsId"
+                value={form.zlzchatWxsId}
+                onChange={(e) => set("zlzchatWxsId", e.target.value)}
+              />
+              <small className="field-hint">
+                新公众号可留空自动识别；如果 ZLZChat 已订阅过该公众号，必须从其后台复制 wxsId，避免错误绑定。
+              </small>
+            </label>
+          )}
+        </>
       )}
 
       {platform === "wechat_keyword" && (

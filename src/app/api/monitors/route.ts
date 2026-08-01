@@ -12,7 +12,7 @@ import {
   type WechatAccountMonitorConfig,
   type WechatMonitorConfig,
 } from "@/connectors/types";
-import { createRuntimeWeRssConnector } from "@/connectors/factory";
+import { createRuntimeWeRssConnector, createRuntimeZlzChatConnector } from "@/connectors/factory";
 import type { ResolvedFeed } from "@/connectors/wechat/werss-connector";
 import { requireWriteAuth } from "@/lib/auth";
 import {
@@ -102,42 +102,65 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: "连接器未初始化，请先运行 `pnpm db:seed`" }, { status: 500 });
   }
 
-  // WeChat account monitors can be created in two ways:
+  // WeRSS account monitors can be created in two ways:
   // - after preview: config already contains mpId/mpBiz, so saving can subscribe
   //   quickly without re-running the slow by_article resolver;
   // - without preview: create the local monitor immediately and let the worker
   //   perform the slow resolve+subscribe in the background on its first run.
+  // ZLZChat is validated before insert because its open API cannot safely infer
+  // an already-subscribed feed without a stable wxsId.
   // Keyword rules are local DB rules over already-collected WeChat articles.
   let cursor: Record<string, unknown> = {};
   let normalizedConfig = parsed.data as Record<string, unknown>;
   let resolvedWechatName: string | undefined;
   if (platform === "wechat" && !isWechatKeywordRuleConfig(parsed.data)) {
     const config = parsed.data as Extract<WechatMonitorConfig, { kind: "account" }>;
-    const resolvedFeed = resolvedFeedFromWechatConfig(config);
-    if (resolvedFeed !== null) {
+    if (config.provider === "zlzchat") {
       try {
-        const feed = await (await createRuntimeWeRssConnector()).subscribeResolved(resolvedFeed);
-        cursor = { mpId: feed.mpId };
-        resolvedWechatName = usefulWechatName(feed.mpName);
-        normalizedConfig = {
-          ...normalizedConfig,
-          mpId: feed.mpId,
-          ...(feed.mpBiz ? { mpBiz: feed.mpBiz } : {}),
-          ...(feed.mpCover ? { mpCover: feed.mpCover } : {}),
-          ...(feed.mpIntro ? { mpIntro: feed.mpIntro } : {}),
-          ...(resolvedWechatName ? { mpName: resolvedWechatName } : {}),
-        };
+        const preview = await (await createRuntimeZlzChatConnector()).validate(config);
+        normalizedConfig = { ...normalizedConfig, ...(preview.configPatch ?? {}) };
+        const wxsId = typeof normalizedConfig.zlzchatWxsId === "string" ? normalizedConfig.zlzchatWxsId : undefined;
+        if (!wxsId) throw new Error("ZLZCHAT_WXS_ID_REQUIRED");
+        cursor = { zlzchatWxsId: wxsId };
+        resolvedWechatName = usefulWechatName(preview.displayName);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        console.warn(`[monitors] WeRSS 订阅失败: ${message}`);
         return NextResponse.json(
           {
             ok: false,
-            error: "WeRSS 订阅失败，请检查 Access Key / 扫码授权后重试。",
+            error: "ZLZChat 绑定失败，请检查自建服务地址、API Key 和 wxsId。",
             detail: message,
           },
           { status: 502 },
         );
+      }
+    } else {
+      const resolvedFeed = resolvedFeedFromWechatConfig(config);
+      if (resolvedFeed !== null) {
+        try {
+          const feed = await (await createRuntimeWeRssConnector()).subscribeResolved(resolvedFeed);
+          cursor = { mpId: feed.mpId };
+          resolvedWechatName = usefulWechatName(feed.mpName);
+          normalizedConfig = {
+            ...normalizedConfig,
+            mpId: feed.mpId,
+            ...(feed.mpBiz ? { mpBiz: feed.mpBiz } : {}),
+            ...(feed.mpCover ? { mpCover: feed.mpCover } : {}),
+            ...(feed.mpIntro ? { mpIntro: feed.mpIntro } : {}),
+            ...(resolvedWechatName ? { mpName: resolvedWechatName } : {}),
+          };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.warn(`[monitors] WeRSS 订阅失败: ${message}`);
+          return NextResponse.json(
+            {
+              ok: false,
+              error: "WeRSS 订阅失败，请检查 Access Key / 扫码授权后重试。",
+              detail: message,
+            },
+            { status: 502 },
+          );
+        }
       }
     }
   }

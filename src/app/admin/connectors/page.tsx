@@ -38,6 +38,7 @@ export default async function ConnectorsPage() {
     x_grok: "使用 SuperGrok 订阅的 X Search 采集公开账号。",
     x_official: "公开账号推文，通过 X 官方 API 采集。",
     wechat_werss: "发现公众号新文章，并优先获取正文。",
+    wechat_zlzchat: "连接你自建的 ZLZChat，作为 WeRSS 之外的公众号备选通道。",
     wechat_keyword: "在已订阅的公众号内容中按规则筛选。",
     web_brave: "通用网页与新闻搜索，适合品牌和行业动态。",
     web_tavily: "面向 AI Agent 的摘要型搜索结果。",
@@ -50,6 +51,10 @@ export default async function ConnectorsPage() {
     wechat_werss: {
       label: wechatCollected ? "正常" : credentialStatus.wechat ? "已配置" : "待配置",
       warning: !wechatCollected && !credentialStatus.wechat,
+    },
+    wechat_zlzchat: {
+      label: credentialStatus.zlzchat ? "已配置" : "待配置",
+      warning: !credentialStatus.zlzchat,
     },
     wechat_keyword: { label: "系统内置" },
     web_brave: { label: credentialStatus.web_search_brave ? "已配置" : "待配置", warning: !credentialStatus.web_search_brave },
@@ -64,7 +69,7 @@ export default async function ConnectorsPage() {
         <div>
           <h1>平台连接</h1>
           <p>
-            这里管理“平台级能力”：SuperGrok、X API、WeRSS、全网搜索服务商和模型 API。具体监控谁、搜什么，
+            这里管理“平台级能力”：SuperGrok、X API、WeRSS / ZLZChat、全网搜索服务商和模型 API。具体监控谁、搜什么，
             到「监控任务」里添加。
           </p>
         </div>

@@ -46,6 +46,10 @@ services:
       BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
       WERSS_BASE_URL: http://werss:8001
       WERSS_ACCESS_KEY: ${WERSS_ACCESS_KEY:-}
+      ZLZCHAT_BASE_URL: ${ZLZCHAT_BASE_URL:-}
+      ZLZCHAT_API_KEY: ${ZLZCHAT_API_KEY:-}
+      ZLZCHAT_TIMEOUT_SECONDS: ${ZLZCHAT_TIMEOUT_SECONDS:-15}
+      ZLZCHAT_PAGE_SIZE: ${ZLZCHAT_PAGE_SIZE:-30}
       WERSS_ADMIN_URL: ${WERSS_ADMIN_URL:-http://localhost:8001/wechat-status}
       # 超过该时长未同步则展示上游停更，而不是把重复旧列表误报为成功。
       WERSS_MAX_FEED_STALE_HOURS: ${WERSS_MAX_FEED_STALE_HOURS:-8}
@@ -106,6 +110,10 @@ services:
       XAI_X_SEARCH_DAILY_BUDGET: ${XAI_X_SEARCH_DAILY_BUDGET:-200}
       WERSS_BASE_URL: http://werss:8001
       WERSS_ACCESS_KEY: ${WERSS_ACCESS_KEY:-}
+      ZLZCHAT_BASE_URL: ${ZLZCHAT_BASE_URL:-}
+      ZLZCHAT_API_KEY: ${ZLZCHAT_API_KEY:-}
+      ZLZCHAT_TIMEOUT_SECONDS: ${ZLZCHAT_TIMEOUT_SECONDS:-15}
+      ZLZCHAT_PAGE_SIZE: ${ZLZCHAT_PAGE_SIZE:-30}
       # 自动维护 WeRSS 的公众号更新任务；任务内顺序执行并与监控错峰。
       WERSS_COLLECTION_CRON: "${WERSS_COLLECTION_CRON:-17 */3 * * *}"
       WERSS_MAX_FEED_STALE_HOURS: ${WERSS_MAX_FEED_STALE_HOURS:-8}
@@ -154,6 +162,13 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      # The seeded TrendRadar monitor runs on the worker's first poll. Wait
+      # for both local collectors so a fresh install does not record a false
+      # NETWORK_ERROR during the normal startup race.
+      werss:
+        condition: service_healthy
+      trendradar-mcp:
+        condition: service_healthy
     healthcheck:
       test:
         [
@@ -260,6 +275,18 @@ services:
     volumes:
       - ./infra/trendradar/config:/app/config:ro
       - trendradar-output:/app/output
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import socket; s=socket.create_connection(('127.0.0.1',3333),2); s.close()",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
     restart: unless-stopped
 
   # --- Internal refresh helper for "Save and refresh now" ----------------

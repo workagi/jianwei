@@ -6,7 +6,9 @@ services:
     image: caddy:2-alpine
     environment:
       JIANWEI_DOMAIN: ${JIANWEI_DOMAIN:?set JIANWEI_DOMAIN in .env.production}
-      ACME_EMAIL: ${ACME_EMAIL:-}
+      # Caddy's global `email` directive cannot be empty. Fail during Compose
+      # validation instead of entering a restart loop after deployment.
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env.production}
     ports:
       - "80:80"
       - "443:443"
@@ -65,6 +67,10 @@ services:
       SERPER_API_KEY: ${SERPER_API_KEY:-}
       WERSS_BASE_URL: http://werss:8001
       WERSS_ACCESS_KEY: ${WERSS_ACCESS_KEY:-}
+      ZLZCHAT_BASE_URL: ${ZLZCHAT_BASE_URL:-}
+      ZLZCHAT_API_KEY: ${ZLZCHAT_API_KEY:-}
+      ZLZCHAT_TIMEOUT_SECONDS: ${ZLZCHAT_TIMEOUT_SECONDS:-15}
+      ZLZCHAT_PAGE_SIZE: ${ZLZCHAT_PAGE_SIZE:-30}
       WERSS_ADMIN_URL: ${WERSS_ADMIN_URL:-http://localhost:8001/wechat-status}
       WERSS_MAX_FEED_STALE_HOURS: ${WERSS_MAX_FEED_STALE_HOURS:-8}
       WECHAT_DIRECT_FALLBACK_ENABLED: ${WECHAT_DIRECT_FALLBACK_ENABLED:-true}
@@ -108,6 +114,10 @@ services:
       SERPER_API_KEY: ${SERPER_API_KEY:-}
       WERSS_BASE_URL: http://werss:8001
       WERSS_ACCESS_KEY: ${WERSS_ACCESS_KEY:-}
+      ZLZCHAT_BASE_URL: ${ZLZCHAT_BASE_URL:-}
+      ZLZCHAT_API_KEY: ${ZLZCHAT_API_KEY:-}
+      ZLZCHAT_TIMEOUT_SECONDS: ${ZLZCHAT_TIMEOUT_SECONDS:-15}
+      ZLZCHAT_PAGE_SIZE: ${ZLZCHAT_PAGE_SIZE:-30}
       WERSS_COLLECTION_CRON: "${WERSS_COLLECTION_CRON:-17 */3 * * *}"
       WERSS_MAX_FEED_STALE_HOURS: ${WERSS_MAX_FEED_STALE_HOURS:-8}
       WERSS_AUTH_CHECK_INTERVAL_HOURS: ${WERSS_AUTH_CHECK_INTERVAL_HOURS:-6}

@@ -43,7 +43,7 @@ export function classifyMonitorFailure(message: string): MonitorFailure {
   if (/TIMEOUT|TIMED_OUT|ABORTERROR/.test(upper)) {
     return { code: "COLLECTION_TIMEOUT", retryable: true, retryAfterMinutes: 10, disableEligible: false };
   }
-  if (/API_KEY.*(?:未配置|REQUIRED|MISSING)|CONFIG(?:URATION)?_(?:REQUIRED|INVALID)|UNKNOWN_SOURCE_PROVIDER|APP_ENCRYPTION_KEY/.test(upper)) {
+  if (/API_KEY.*(?:未配置|REQUIRED|MISSING)|ZLZCHAT_(?:BASE_URL_MISSING|BASE_URL_INVALID|PUBLIC_DEMO_FORBIDDEN|WXS_ID_REQUIRED)|CONFIG(?:URATION)?_(?:REQUIRED|INVALID)|UNKNOWN_SOURCE_PROVIDER|APP_ENCRYPTION_KEY/.test(upper)) {
     return { code: "CONFIGURATION_ERROR", retryable: false, disableEligible: true };
   }
   if (/FETCH FAILED|NETWORK|UND_ERR|ECONN|ENOTFOUND|EAI_AGAIN|SOCKET|DNS/.test(upper)) {

@@ -65,11 +65,11 @@
 | 信息源 | 可选接入方式 | 需要配置 | 适合场景 |
 | --- | --- | --- | --- |
 | X / Twitter | **首选：** SuperGrok / X Search<br>**后备：** X 官方 API | xAI 授权<br>或 `X_BEARER_TOKEN` | 不单独购买 X API 时使用 SuperGrok；需要官方接口时切换后备通道 |
-| 微信公众号 | **订阅：** WeRSS<br>**专题筛选：** 本地关键词规则<br>**全文增强：** wechat-download-api 兼容服务（可选） | WeRSS 扫码登录 + Access Key<br>关键词筛选需先订阅公众号<br>全文增强通道需要独立扫码 | 订阅指定公众号、跨公众号筛选专题；仅在 WeRSS 缺少正文时启用增强通道 |
+| 微信公众号 | **默认订阅：** WeRSS<br>**外置备选：** ZLZChat 兼容接口（可选）<br>**专题筛选：** 本地关键词规则<br>**全文增强：** wechat-download-api 兼容服务（可选） | WeRSS 扫码登录 + Access Key<br>或自建 ZLZChat 地址 + API Key<br>关键词筛选需先订阅公众号 | 订阅指定公众号、跨公众号筛选专题；ZLZChat 只作为独立故障域的备选，不与 WeRSS 自动切换 |
 | 全网搜索 | **默认：** Brave Search<br>**语义研究：** Tavily<br>**Google 结果：** Serper | `BRAVE_SEARCH_API_KEY`<br>`TAVILY_API_KEY`<br>`SERPER_API_KEY` | 品牌与新闻监控、语义宽召回或 Google 结果采集；每个任务固定使用所选服务 |
 | 榜单 / RSS | **榜单：** TrendRadar Sidecar<br>**订阅：** 后台自定义 RSS | 在后台启用榜单来源<br>或填写 RSS 名称和地址 | 国内热门榜单、新闻站和自定义 RSS 订阅 |
 
-> 不知道选哪个？X 默认优先 SuperGrok；全网搜索默认优先 Brave；微信公众号先只配置 WeRSS，遇到缺失全文时再启用备用采集器。
+> 不知道选哪个？X 默认优先 SuperGrok；全网搜索默认优先 Brave；微信公众号先配置 WeRSS。只有你已经自行部署并维护 ZLZChat 时，才把单个公众号监控切换到 ZLZChat 备选通道。
 >
 > 同一行里的接入方式是同类信息源的不同路径或增强能力，不会在信息流里被拆成多个平台。
 >
@@ -380,6 +380,7 @@ WERSS_ADMIN_URL=http://<服务器IP>:8001/wechat-status
 | [项目手册](docs/project-handbook.md) | 产品、架构、数据链路、API、安全、运维与开源准备 |
 | [生产部署](docs/production-deploy.md) | 公网服务器、Caddy、HTTPS、备份与升级 |
 | [TrendRadar 集成架构](docs/architecture-trendradar.md) | 为什么复用 Sidecar，以及许可证边界 |
+| [ZLZChat 备选通道](docs/zlzchat-integration.md) | 如何连接自建 ZLZChat，以及稳定性和许可证边界 |
 | [第三方声明](THIRD_PARTY_NOTICES.md) | 第三方项目和许可证说明 |
 | [开源准备报告](docs/open-source-readiness.md) | 敏感信息、许可证、CI 和公开发布门禁 |
 | [路线图](ROADMAP.md) | 近期改进方向与不承诺事项 |

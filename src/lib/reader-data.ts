@@ -85,6 +85,7 @@ export interface AdminMonitorView {
 export interface AdminCredentialStatus {
   x: boolean;
   wechat: boolean;
+  zlzchat: boolean;
   web_search: boolean;
   web_search_brave: boolean;
   web_search_tavily: boolean;
@@ -250,6 +251,7 @@ export function monitorDetail(
   if (platform === "trendradar") return `系统内置 · ${cadence}`;
   if (platform === "web_search") return `${webSearchProviderLabel(config)} · ${cadence}`;
   if (platform === "wechat" && config.kind === "keyword_rule") return `公众号关键词 · ${cadence}`;
+  if (platform === "wechat" && config.provider === "zlzchat") return `ZLZChat · ${cadence}`;
   if (platform === "x") {
     const username = typeof config.username === "string" ? config.username.replace(/^@/, "") : "";
     return `${username ? `@${username} · ` : ""}${cadence}`;
@@ -819,6 +821,7 @@ export async function loadAdminCredentialStatus(): Promise<AdminCredentialStatus
   const fallback = {
     x: Boolean(process.env.X_BEARER_TOKEN?.trim()),
     wechat: Boolean(process.env.WERSS_ACCESS_KEY?.trim()),
+    zlzchat: Boolean(process.env.ZLZCHAT_BASE_URL?.trim() && process.env.ZLZCHAT_API_KEY?.trim()),
     web_search_brave: Boolean(process.env.BRAVE_SEARCH_API_KEY?.trim()),
     web_search_tavily: Boolean(process.env.TAVILY_API_KEY?.trim()),
     web_search_serper: Boolean(process.env.SERPER_API_KEY?.trim()),
@@ -835,6 +838,10 @@ export async function loadAdminCredentialStatus(): Promise<AdminCredentialStatus
     return withAny({
       x: Boolean(values.get("X_BEARER_TOKEN")?.trim() || fallback.x),
       wechat: Boolean(values.get("WERSS_ACCESS_KEY")?.trim() || fallback.wechat),
+      zlzchat: Boolean(
+        (values.get("ZLZCHAT_BASE_URL")?.trim() || process.env.ZLZCHAT_BASE_URL?.trim())
+        && (values.get("ZLZCHAT_API_KEY")?.trim() || process.env.ZLZCHAT_API_KEY?.trim()),
+      ),
       web_search_brave: Boolean(values.get("BRAVE_SEARCH_API_KEY")?.trim() || fallback.web_search_brave),
       web_search_tavily: Boolean(values.get("TAVILY_API_KEY")?.trim() || fallback.web_search_tavily),
       web_search_serper: Boolean(values.get("SERPER_API_KEY")?.trim() || fallback.web_search_serper),

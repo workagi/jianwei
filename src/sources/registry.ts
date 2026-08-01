@@ -1,9 +1,11 @@
 import {
   createRuntimeWeRssConnector,
+  createRuntimeZlzChatConnector,
   createRuntimeWebSearchConnector,
   createRuntimeXConnector,
   createRuntimeXaiSearchConnector,
   createWeRssConnector,
+  createZlzChatConnector,
   createWebSearchConnector,
   createXConnector,
   createXaiSearchConnector,
@@ -30,6 +32,7 @@ export const SOURCE_PROVIDER_DESCRIPTORS: readonly SourceProviderDescriptor[] = 
   { id: "x_grok", platform: "x", label: "SuperGrok / X Search", kind: "subscription", supportsPreview: true },
   { id: "x_official", platform: "x", label: "X 官方 API", kind: "api", supportsPreview: true },
   { id: "wechat_werss", platform: "wechat", label: "WeRSS 公众号订阅", kind: "subscription", supportsPreview: true },
+  { id: "wechat_zlzchat", platform: "wechat", label: "ZLZChat 公众号订阅（备选）", kind: "subscription", supportsPreview: true },
   { id: "wechat_keyword", platform: "wechat", label: "公众号关键词规则", kind: "rule", supportsPreview: true },
   { id: "web_brave", platform: "web_search", label: "Brave Search", kind: "api", supportsPreview: true },
   { id: "web_tavily", platform: "web_search", label: "Tavily", kind: "api", supportsPreview: true },
@@ -44,7 +47,10 @@ export function resolveSourceProviderId(
   config: Record<string, unknown>,
 ): SourceProviderId {
   if (platform === "x") return config.provider === "x_grok" ? "x_grok" : "x_official";
-  if (platform === "wechat") return isWechatKeywordRuleConfig(config) ? "wechat_keyword" : "wechat_werss";
+  if (platform === "wechat") {
+    if (isWechatKeywordRuleConfig(config)) return "wechat_keyword";
+    return config.provider === "zlzchat" ? "wechat_zlzchat" : "wechat_werss";
+  }
   if (platform === "web_search") {
     if (config.provider === "tavily") return "web_tavily";
     if (config.provider === "serper") return "web_serper";
@@ -81,9 +87,9 @@ function xProvider(id: Extract<SourceProviderId, `x_${string}`>, connector: XLik
   };
 }
 
-function wechatProvider(connector: WechatLike): SourceProvider {
+function wechatProvider(id: Extract<SourceProviderId, `wechat_${string}`>, connector: WechatLike): SourceProvider {
   return {
-    descriptor: descriptor("wechat_werss"),
+    descriptor: descriptor(id),
     validate: (config) => connector.validate(config as WechatAccountMonitorConfig),
     collect: (config, cursor, context) => connector.collect(config as WechatAccountMonitorConfig, cursor, context),
   };
@@ -136,7 +142,8 @@ export function createWorkerSourceProvider(
   const id = resolveSourceProviderId(platform, config);
   if (id === "x_grok") return xProvider(id, createXaiSearchConnector());
   if (id === "x_official") return xProvider(id, createXConnector());
-  if (id === "wechat_werss") return wechatProvider(createWeRssConnector());
+  if (id === "wechat_werss") return wechatProvider(id, createWeRssConnector());
+  if (id === "wechat_zlzchat") return wechatProvider(id, createZlzChatConnector());
   if (id === "wechat_keyword") return keywordProvider();
   if (id === "trendradar") return trendRadarProvider();
   return webProvider(id, createWebSearchConnector(webProviderName(id)));
@@ -150,7 +157,8 @@ export async function createRuntimeSourceProvider(
   const id = resolveSourceProviderId(platform, config);
   if (id === "x_grok") return xProvider(id, await createRuntimeXaiSearchConnector());
   if (id === "x_official") return xProvider(id, await createRuntimeXConnector());
-  if (id === "wechat_werss") return wechatProvider(await createRuntimeWeRssConnector());
+  if (id === "wechat_werss") return wechatProvider(id, await createRuntimeWeRssConnector());
+  if (id === "wechat_zlzchat") return wechatProvider(id, await createRuntimeZlzChatConnector());
   if (id === "wechat_keyword") return keywordProvider();
   if (id === "trendradar") return trendRadarProvider();
   return webProvider(id, await createRuntimeWebSearchConnector(webProviderName(id)));

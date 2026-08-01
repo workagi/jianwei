@@ -38,7 +38,8 @@ cd jianwei
 cp .env.production.example .env.production
 ```
 
-至少改这些：
+以下各项都必须填写；缺失时 Compose 会在启动前直接报错，避免 Caddy
+因为空证书邮箱进入反复重启：
 
 ```dotenv
 JIANWEI_DOMAIN=你的域名
@@ -133,6 +134,17 @@ docker compose --env-file .env.production -p jianwei -f docker-compose.prod.yml 
 ```
 
 映射只绑定服务器回环地址，不要把 WeRSS 裸露到公网。
+
+### 可选：连接自建 ZLZChat
+
+ZLZChat 不随生产 Compose 安装。若已经单独部署，可在 `.env.production` 或后台「平台连接」配置：
+
+```env
+ZLZCHAT_BASE_URL=http://your-private-zlzchat:805
+ZLZCHAT_API_KEY=replace-with-your-key
+```
+
+该地址必须同时能被 `web` 和 `worker` 容器访问。优先使用同一私有 Docker 网络、内网 IP 或带 HTTPS 的私有入口，不要暴露后台管理端口，也不要连接公开演示站。配置完成后，在单个公众号监控中手动选择 ZLZChat；现有 WeRSS 监控不会被自动迁移。完整说明见 [ZLZChat 备选通道](zlzchat-integration.md)。
 
 ## 6. 热榜 / RSS 来源管理
 

@@ -10,6 +10,7 @@ describe("classifyMonitorFailure", () => {
     ["XAI_X_SEARCH_503", "UPSTREAM_UNAVAILABLE"],
     ["WERSS_FEED_STALE:2026-07-19T10:00:00.000Z", "SOURCE_STALE"],
     ["TAVILY_API_KEY 未配置", "CONFIGURATION_ERROR"],
+    ["ZLZCHAT_WXS_ID_REQUIRED:请填写 wxsId", "CONFIGURATION_ERROR"],
     ["X_USER_NOT_FOUND", "SOURCE_NOT_FOUND"],
     ["BUDGET_EXHAUSTED", "QUOTA_EXHAUSTED"],
   ])("maps %s to %s", (message, code) => {

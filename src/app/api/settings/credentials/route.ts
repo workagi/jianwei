@@ -9,6 +9,8 @@ const KEY_MAP: Record<string, string> = {
   web_search_tavily: "TAVILY_API_KEY",
   web_search_serper: "SERPER_API_KEY",
   wechat: "WERSS_ACCESS_KEY",
+  zlzchat_base_url: "ZLZCHAT_BASE_URL",
+  zlzchat_api_key: "ZLZCHAT_API_KEY",
 };
 
 /**
@@ -47,7 +49,26 @@ export async function PUT(req: Request) {
     const raw = body[platform];
     if (typeof raw === "string") {
       const v = raw.trim();
-      if (v.length > 0) rows.push({ key, value: v });
+      if (v.length > 0) {
+        if (platform === "zlzchat_base_url") {
+          try {
+            const url = new URL(v);
+            if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new Error("invalid");
+            if (url.hostname === "111.229.83.152") {
+              return NextResponse.json(
+                { ok: false, error: "不能把 ZLZChat 配置指向已知公开演示地址；请使用经过安全审计的自建实例。" },
+                { status: 422 },
+              );
+            }
+          } catch {
+            return NextResponse.json(
+              { ok: false, error: "ZLZChat 地址必须是合法的 http/https URL，且不能在 URL 中包含账号密码。" },
+              { status: 422 },
+            );
+          }
+        }
+        rows.push({ key, value: v });
+      }
     }
   }
   if (typeof body.web_search === "string" && body.web_search.trim()) {

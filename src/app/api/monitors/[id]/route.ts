@@ -9,7 +9,7 @@ import {
   isWechatKeywordRuleConfig,
   type WechatAccountMonitorConfig,
 } from "@/connectors/types";
-import { createRuntimeWeRssConnector } from "@/connectors/factory";
+import { createRuntimeWeRssConnector, createRuntimeZlzChatConnector } from "@/connectors/factory";
 import type { ResolvedFeed } from "@/connectors/wechat/werss-connector";
 import { requireWriteAuth } from "@/lib/auth";
 import {
@@ -55,6 +55,7 @@ function resolvedFeedFromWechatConfig(config: WechatAccountMonitorConfig): Resol
 function monitorWechatMpId(row: { config: Record<string, unknown> | null; cursor: Record<string, unknown> | null }): string | undefined {
   const config = row.config ?? {};
   if (isWechatKeywordRuleConfig(config)) return undefined;
+  if (config.provider === "zlzchat") return undefined;
   const cursorMpId = typeof row.cursor?.mpId === "string" ? row.cursor.mpId.trim() : "";
   if (cursorMpId) return cursorMpId;
   const configMpId = typeof config.mpId === "string" ? config.mpId.trim() : "";
@@ -105,6 +106,12 @@ export async function DELETE(
   if (cancelWerss) {
     if (existing.platform !== "wechat") {
       return NextResponse.json({ ok: false, error: "只有微信公众号监控支持同时取消 WeRSS 订阅。" }, { status: 400 });
+    }
+    if ((existing.config as Record<string, unknown> | null)?.provider === "zlzchat") {
+      return NextResponse.json(
+        { ok: false, error: "该监控使用 ZLZChat；见微不会自动删除外部 ZLZChat 订阅，请只删除本地监控。" },
+        { status: 400 },
+      );
     }
     const mpId = monitorWechatMpId(existing);
     if (!mpId) {
@@ -171,8 +178,8 @@ export async function DELETE(
  * Patch a single monitor: update `name` / `pollIntervalMinutes` / `config`.
  * `platform` cannot be changed (the connector + collected history are tied to
  * it). Config is re-validated against the monitor's existing platform schema.
- * For WeChat, changing the article URL re-subscribes the new MP in WeRSS and
- * rewrites the cursor. After any change we reset `nextRunAt` into the smart
+ * For WeChat, changing the source identity validates the selected provider and
+ * rewrites its provider-specific cursor. After any change we reset `nextRunAt` into the smart
  * stagger window so fresh edits are picked up soon without stampeding WeRSS.
  */
 export async function PATCH(
@@ -240,10 +247,39 @@ export async function PATCH(
       update.config = parsed.data;
       update.cursor = {};
     } else if (platform === "wechat") {
-      const prevUrl = (existing.config as { articleUrl?: string } | null)?.articleUrl;
+      const previousConfig = (existing.config ?? {}) as Record<string, unknown>;
+      const prevUrl = typeof previousConfig.articleUrl === "string" ? previousConfig.articleUrl : undefined;
+      const prevProvider = previousConfig.provider === "zlzchat" ? "zlzchat" : "werss";
       const nextConfig = parsed.data as WechatAccountMonitorConfig;
       const nextUrl = nextConfig.articleUrl;
-      if (nextUrl && nextUrl !== prevUrl) {
+      const identityChanged = nextUrl !== prevUrl
+        || nextConfig.provider !== prevProvider
+        || (nextConfig.provider === "zlzchat" && nextConfig.zlzchatWxsId !== previousConfig.zlzchatWxsId);
+      if (identityChanged && nextConfig.provider === "zlzchat") {
+        try {
+          const preview = await (await createRuntimeZlzChatConnector()).validate(nextConfig);
+          const normalizedConfig = {
+            ...(parsed.data as Record<string, unknown>),
+            ...(preview.configPatch ?? {}),
+          };
+          const wxsId = typeof normalizedConfig.zlzchatWxsId === "string" ? normalizedConfig.zlzchatWxsId : undefined;
+          if (!wxsId) throw new Error("ZLZCHAT_WXS_ID_REQUIRED");
+          update.cursor = { zlzchatWxsId: wxsId };
+          update.config = normalizedConfig;
+          const mpName = usefulWechatName(preview.displayName);
+          if (!body.name?.trim() && isAutoWechatName(existing.name) && mpName) update.name = mpName;
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          return NextResponse.json(
+            {
+              ok: false,
+              error: "ZLZChat 绑定失败，请检查自建服务地址、API Key 和 wxsId。",
+              detail: message,
+            },
+            { status: 502 },
+          );
+        }
+      } else if (identityChanged) {
         const resolvedFeed = resolvedFeedFromWechatConfig(nextConfig);
         if (resolvedFeed === null) {
           // Keep editing consistent with creation: changing to a fresh article URL

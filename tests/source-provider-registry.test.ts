@@ -6,6 +6,7 @@ describe("source provider registry", () => {
     ["x", {}, "x_official"],
     ["x", { provider: "x_grok" }, "x_grok"],
     ["wechat", { kind: "account", articleUrl: "https://mp.weixin.qq.com/s/a" }, "wechat_werss"],
+    ["wechat", { kind: "account", provider: "zlzchat", articleUrl: "https://mp.weixin.qq.com/s/a" }, "wechat_zlzchat"],
     ["wechat", { kind: "keyword_rule", query: "AI Agent" }, "wechat_keyword"],
     ["web_search", { provider: "brave", query: "AI" }, "web_brave"],
     ["web_search", { provider: "tavily", query: "AI" }, "web_tavily"],

@@ -66,6 +66,10 @@ export function MonitorList({
       {monitors.map((monitor) => {
         const Icon = iconMap[monitor.platform] ?? AtSign;
         const isSystemManaged = monitor.platform === "trendradar";
+        const supportsWerssCancel = monitor.platform === "wechat"
+          && monitor.config.kind !== "keyword_rule"
+          && monitor.config.provider !== "zlzchat";
+        const isZlzChatMonitor = monitor.platform === "wechat" && monitor.config.provider === "zlzchat";
         const confirming = deleteTarget?.id === monitor.id;
         return (
           <Fragment key={monitor.id}>
@@ -131,7 +135,7 @@ export function MonitorList({
                       只有未被其他监控任务共同收录的内容会被删除；该操作不可恢复。
                     </small>
                   )}
-                  {monitor.platform === "wechat" && (
+                  {supportsWerssCancel && (
                     <label className="delete-confirm-check">
                       <input
                         type="checkbox"
@@ -142,10 +146,13 @@ export function MonitorList({
                       同时取消 WeRSS 后台订阅
                     </label>
                   )}
-                  {monitor.platform === "wechat" && (
+                  {supportsWerssCancel && (
                     <small>
                       默认只删除见微监控；只有确认这个公众号不再被其他任务使用时，才勾选取消 WeRSS 订阅。
                     </small>
+                  )}
+                  {isZlzChatMonitor && (
+                    <small>这里只移除见微监控；外部 ZLZChat 订阅需在其后台单独管理。</small>
                   )}
                   {error && <small className="delete-confirm-error">{error}</small>}
                 </div>

@@ -4,6 +4,7 @@ import { BraveConnector } from "./web/brave-connector";
 import { SerperConnector } from "./web/serper-connector";
 import { TavilyConnector } from "./web/tavily-connector";
 import { WeRssConnector } from "./wechat/werss-connector";
+import { ZlzChatConnector } from "./wechat/zlzchat-connector";
 import type { WebSearchMonitorConfig } from "./types";
 import { loadApiCredentials } from "@/db/queries";
 import { resolveXaiAccessToken } from "@/lib/xai-oauth";
@@ -39,6 +40,18 @@ export function createWeRssConnector(): WeRssConnector {
     fallbackBaseUrl: process.env.WECHAT_FALLBACK_BASE_URL,
     maxFeedStaleHours: Number(process.env.WERSS_MAX_FEED_STALE_HOURS ?? "8"),
   });
+}
+
+export function createZlzChatConnector(): ZlzChatConnector {
+  return new ZlzChatConnector(
+    process.env.ZLZCHAT_BASE_URL ?? "",
+    process.env.ZLZCHAT_API_KEY ?? "",
+    fetch,
+    {
+      timeoutMs: Number(process.env.ZLZCHAT_TIMEOUT_SECONDS ?? "15") * 1000,
+      pageSize: Number(process.env.ZLZCHAT_PAGE_SIZE ?? "30"),
+    },
+  );
 }
 
 async function runtimeCredential(key: string): Promise<string | undefined> {
@@ -84,5 +97,16 @@ export async function createRuntimeWeRssConnector(): Promise<WeRssConnector> {
     directFallbackEnabled: directFallback !== "false",
     fallbackBaseUrl,
     maxFeedStaleHours: Number(process.env.WERSS_MAX_FEED_STALE_HOURS ?? "8"),
+  });
+}
+
+export async function createRuntimeZlzChatConnector(): Promise<ZlzChatConnector> {
+  const [baseUrl, apiKey] = await Promise.all([
+    runtimeCredential("ZLZCHAT_BASE_URL"),
+    runtimeCredential("ZLZCHAT_API_KEY"),
+  ]);
+  return new ZlzChatConnector(baseUrl ?? "", apiKey ?? "", fetch, {
+    timeoutMs: Number(process.env.ZLZCHAT_TIMEOUT_SECONDS ?? "15") * 1000,
+    pageSize: Number(process.env.ZLZCHAT_PAGE_SIZE ?? "30"),
   });
 }

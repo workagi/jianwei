@@ -659,6 +659,8 @@ const CREDENTIAL_KEYS = [
   "TAVILY_API_KEY",
   "SERPER_API_KEY",
   "WERSS_ACCESS_KEY",
+  "ZLZCHAT_BASE_URL",
+  "ZLZCHAT_API_KEY",
   "WECHAT_DIRECT_FALLBACK_ENABLED",
   "WECHAT_FALLBACK_BASE_URL",
   "SUMMARY_PROVIDER",
@@ -832,6 +834,7 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
   const providerConcurrency: Record<string, number> = {
     // WeChat: independent concurrency per provider type
     werss: 1,
+    zlzchat: 1,
     wechat: 1,
     wechat_fallback: 1,
     // X: API rate limits are tight
@@ -1037,8 +1040,6 @@ async function maybeRetryFailedContentAnalysis(now = Date.now()): Promise<void> 
     workerLog.warn("analysis.retry.failed", { error });
   }
 }
-const RUN_PROGRESS_STALE_MS = 10 * 60_000;
-
 type DbExecutor = Pick<typeof db, "update">;
 
 async function markRunProgress(

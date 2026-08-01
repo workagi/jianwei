@@ -58,6 +58,7 @@ pnpm audit:open-source -- --history
 | 项目 | 许可证 | 集成方式 | 边界 |
 | --- | --- | --- | --- |
 | WeRSS / we-mp-rss | MIT | 独立 Docker 服务 | 通过 HTTP/API 通信 |
+| ZLZChat | 未提供明确许可证 | 用户自行部署的可选兼容接口 | 不复制、不打包、不默认启动，仅通过 HTTP/API 通信 |
 | TrendRadar | GPL-3.0 | 独立 Docker/MCP Sidecar | 不复制源码，不链接进主程序 |
 | wechat-download-api | AGPL-3.0 | 可选 Docker profile | 不复制源码，只调用兼容 HTTP 接口 |
 

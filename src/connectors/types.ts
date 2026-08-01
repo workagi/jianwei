@@ -13,12 +13,14 @@ export const xMonitorSchema = z.object({
 export const wechatAccountMonitorSchema = z.object({
   kind: z.literal("account").default("account"),
   articleUrl: z.url().refine((value) => new URL(value).hostname === "mp.weixin.qq.com", "必须是公众号文章链接"),
-  provider: z.literal("werss").default("werss"),
+  provider: z.enum(["werss", "zlzchat"]).default("werss"),
   mpId: z.string().trim().optional(),
   mpName: z.string().trim().optional(),
   mpBiz: z.string().trim().optional(),
   mpCover: z.string().trim().optional(),
   mpIntro: z.string().trim().optional(),
+  /** ZLZChat's stable public-account identity. Required for an existing subscription. */
+  zlzchatWxsId: z.string().trim().min(1).optional(),
 });
 
 export const wechatKeywordMonitorSchema = z.object({
@@ -88,7 +90,7 @@ export interface NormalizedItem {
   text: string;
   contentHtml?: string;
   /** Which WeChat full-text channel produced contentHtml. */
-  contentProvider?: "werss" | "direct" | "wechat_download_api";
+  contentProvider?: "werss" | "zlzchat" | "direct" | "wechat_download_api";
   /** Full-text retrieval outcome; independent from list/article collection. */
   contentFetchStatus?: "success" | "failed";
   contentFetchError?: string;
