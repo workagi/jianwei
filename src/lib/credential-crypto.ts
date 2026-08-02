@@ -3,6 +3,15 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:
 /** Legacy prefix for credentials encrypted without key versioning. */
 const LEGACY_PREFIX = "enc:v1:";
 const PREFIX_TEMPLATE = "enc:v2:";
+const KEY_ID_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
+
+interface ParsedEncryptedCredential {
+  version: "v1" | "v2";
+  keyId?: string;
+  ivText: string;
+  tagText: string;
+  encryptedText: string;
+}
 
 function encryptionKey(): Buffer {
   const configured = process.env.APP_ENCRYPTION_KEY?.trim();
@@ -29,33 +38,76 @@ function activeKeyId(): string {
   return process.env.APP_ENCRYPTION_ACTIVE_KEY_ID?.trim() || "v1";
 }
 
-function currentPrefix(): string {
-  return `${PREFIX_TEMPLATE}${activeKeyId()}:`;
-}
-
 type KeyMap = Map<string, Buffer>;
-let _keyMap: KeyMap | undefined;
 
 function loadKeyMap(): KeyMap {
-  if (_keyMap) return _keyMap;
   const map = new Map<string, Buffer>();
   const json = process.env.APP_ENCRYPTION_KEYS_JSON?.trim();
   if (json) {
     try {
-      const entries = JSON.parse(json);
-      for (const [keyId, keyB64] of Object.entries(entries)) {
-        if (typeof keyB64 !== "string") continue;
-        const buf = Buffer.from(keyB64, "base64");
-        if (buf.length === 32) map.set(keyId, buf);
+      const entries = JSON.parse(json) as unknown;
+      if (!entries || typeof entries !== "object" || Array.isArray(entries)) {
+        throw new Error("key map must be an object");
       }
-    } catch { /* ignore malformed JSON */ }
+      for (const [keyId, keyB64] of Object.entries(entries)) {
+        if (!KEY_ID_PATTERN.test(keyId) || typeof keyB64 !== "string") {
+          throw new Error(`invalid encryption key entry: ${keyId}`);
+        }
+        const buf = Buffer.from(keyB64, "base64");
+        const canonical = buf.toString("base64").replace(/=+$/, "");
+        if (buf.length !== 32 || canonical !== keyB64.replace(/=+$/, "")) {
+          throw new Error(`encryption key ${keyId} must be a 32-byte Base64 value`);
+        }
+        map.set(keyId, buf);
+      }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`APP_ENCRYPTION_KEYS_JSON is invalid: ${detail}`);
+    }
   }
-  _keyMap = map;
   return map;
 }
 
+function validBase64Url(value: string, expectedBytes?: number): boolean {
+  if (!/^[A-Za-z0-9_-]*$/.test(value)) return false;
+  try {
+    const decoded = Buffer.from(value, "base64url");
+    return expectedBytes === undefined || decoded.length === expectedBytes;
+  } catch {
+    return false;
+  }
+}
+
+function parseEncryptedCredential(value: string): ParsedEncryptedCredential | null {
+  let version: ParsedEncryptedCredential["version"];
+  let keyId: string | undefined;
+  let body: string;
+  if (value.startsWith(LEGACY_PREFIX)) {
+    version = "v1";
+    body = value.slice(LEGACY_PREFIX.length);
+  } else if (value.startsWith(PREFIX_TEMPLATE)) {
+    version = "v2";
+    const afterPrefix = value.slice(PREFIX_TEMPLATE.length);
+    const colonIndex = afterPrefix.indexOf(":");
+    if (colonIndex <= 0) return null;
+    keyId = afterPrefix.slice(0, colonIndex);
+    if (!KEY_ID_PATTERN.test(keyId)) return null;
+    body = afterPrefix.slice(colonIndex + 1);
+  } else {
+    return null;
+  }
+
+  const parts = body.split(":");
+  if (parts.length !== 3) return null;
+  const [ivText, tagText, encryptedText] = parts;
+  if (!validBase64Url(ivText, 12) || !validBase64Url(tagText, 16) || !validBase64Url(encryptedText)) {
+    return null;
+  }
+  return { version, keyId, ivText, tagText, encryptedText };
+}
+
 export function isEncryptedCredential(value: string): boolean {
-  return value.startsWith(LEGACY_PREFIX) || value.startsWith(PREFIX_TEMPLATE);
+  return parseEncryptedCredential(value) !== null;
 }
 
 /**
@@ -72,16 +124,17 @@ function activeEncryptionKey(): { id: string; key: Buffer } {
   if (keyMap.size > 0) {
     const key = keyMap.get(keyId);
     if (!key) {
-      if (process.env.NODE_ENV === "production") {
-        throw new Error(
-          `APP_ENCRYPTION_ACTIVE_KEY_ID "${keyId}" not found in APP_ENCRYPTION_KEYS_JSON. ` +
-          "Refusing to encrypt with an unknown key ID.",
-        );
-      }
-      // Dev fallback: use the legacy key
-      return { id: keyId, key: encryptionKey() };
+      throw new Error(
+        `APP_ENCRYPTION_ACTIVE_KEY_ID "${keyId}" not found in APP_ENCRYPTION_KEYS_JSON. ` +
+        "Refusing to encrypt with an unknown key ID.",
+      );
     }
     return { id: keyId, key };
+  }
+  if (keyId !== "v1") {
+    throw new Error(
+      `APP_ENCRYPTION_ACTIVE_KEY_ID "${keyId}" requires APP_ENCRYPTION_KEYS_JSON`,
+    );
   }
   return { id: "v1", key: encryptionKey() };
 }
@@ -98,33 +151,26 @@ export function encryptCredential(value: string): string {
 }
 
 export function decryptCredential(value: string): string {
-  const isLegacy = value.startsWith(LEGACY_PREFIX);
-  if (!isLegacy && !value.startsWith(PREFIX_TEMPLATE)) return value;
+  const parsed = parseEncryptedCredential(value);
+  if (!parsed) return value;
 
   let key: Buffer;
-  let parts: string[];
-
-  if (isLegacy) {
+  if (parsed.version === "v1") {
     key = encryptionKey();
-    parts = value.slice(LEGACY_PREFIX.length).split(":");
   } else {
-    // Format: enc:v2:<keyId>:<iv>:<tag>:<ciphertext>
-    const afterPrefix = value.slice(PREFIX_TEMPLATE.length);
-    const colonIdx = afterPrefix.indexOf(":");
-    if (colonIdx === -1) throw new Error("Stored API credential has an invalid encrypted format");
-    const keyId = afterPrefix.slice(0, colonIdx);
     const keyMap = loadKeyMap();
-    key = keyMap.get(keyId) ?? encryptionKey();
-    parts = afterPrefix.slice(colonIdx + 1).split(":");
+    const versionedKey = keyMap.get(parsed.keyId!);
+    if (!versionedKey) {
+      throw new Error(`Stored API credential references unknown encryption key "${parsed.keyId}"`);
+    }
+    key = versionedKey;
   }
 
-  if (parts.length !== 3) throw new Error("Stored API credential has an invalid encrypted format");
-  const [ivText, tagText, encryptedText] = parts;
   try {
-    const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(ivText, "base64url"));
-    decipher.setAuthTag(Buffer.from(tagText, "base64url"));
+    const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(parsed.ivText, "base64url"));
+    decipher.setAuthTag(Buffer.from(parsed.tagText, "base64url"));
     return Buffer.concat([
-      decipher.update(Buffer.from(encryptedText, "base64url")),
+      decipher.update(Buffer.from(parsed.encryptedText, "base64url")),
       decipher.final(),
     ]).toString("utf8");
   } catch {

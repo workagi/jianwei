@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { NormalizedItem } from "@/connectors/types";
 import {
   deriveRetentionDecision,
+  deriveMonitorRetention,
   normalizeRelevanceScore,
   normalizeRetentionReason,
 } from "@/lib/content-retention";
@@ -66,5 +67,28 @@ describe("content retention", () => {
     expect(normalizeRetentionReason("包含可核对的论文研究信息")).toBeUndefined();
     expect(normalizeRetentionReason("包含有明确主题的观点解读")).toBeUndefined();
     expect(normalizeRetentionReason("来自已配置监控任务的可核对信息")).toBeUndefined();
+  });
+
+  it("treats empty rule entries as absent and keeps hard gates deterministic", () => {
+    const result = deriveMonitorRetention({
+      keywords: ["", "  AI  ", "AI"],
+      requiredKeywords: ["", "AI"],
+      excludeKeywords: ["", "招聘"],
+    }, {
+      contentType: "product_update",
+      topicTags: ["AI"],
+      title: "AI 产品更新",
+      bodyText: "发布了新的 API 能力。",
+      informationValueScore: 70,
+    });
+    expect(result.shouldKeep).toBe(true);
+
+    const blocked = deriveMonitorRetention({ excludeKeywords: ["", "招聘"] }, {
+      contentType: "product_update",
+      topicTags: [],
+      title: "AI 招聘信息",
+      bodyText: "招聘工程师。",
+    });
+    expect(blocked.shouldKeep).toBe(false);
   });
 });

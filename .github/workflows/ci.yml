@@ -69,7 +69,6 @@ jobs:
 
       - name: Evaluate content rules
         run: pnpm content:evaluate
-        continue-on-error: true
 
       - name: ShellCheck
         run: |
@@ -116,10 +115,15 @@ jobs:
         run: docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.ci.yml up -d --build --wait
       - name: Verify health endpoints
         run: |
+          healthy=0
           for i in $(seq 1 10); do
-            curl -sf http://localhost:3000/api/health && break
+            if curl -sf http://localhost:3000/api/health; then
+              healthy=1
+              break
+            fi
             sleep 3
           done
+          test "$healthy" -eq 1
       - name: Verify login page
         run: curl -sf http://localhost:3000/admin | grep -q "登录" && echo "Login page OK"
       - name: Collect logs on failure
@@ -202,10 +206,15 @@ jobs:
           docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.ci.yml up -d --build --wait
       - name: Wait for web
         run: |
+          healthy=0
           for i in $(seq 1 15); do
-            curl -sf http://localhost:3000/api/health && break
+            if curl -sf http://localhost:3000/api/health; then
+              healthy=1
+              break
+            fi
             sleep 2
           done
+          test "$healthy" -eq 1
       - name: Install pnpm
         uses: pnpm/action-setup@v6
         with:

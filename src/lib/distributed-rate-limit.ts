@@ -1,5 +1,6 @@
 import { db } from "@/db";
 import { sql } from "drizzle-orm";
+import { abortableDelay } from "@/lib/abort-signal";
 
 const localNextAllowedAt = new Map<string, number>();
 
@@ -8,10 +9,6 @@ function shouldUseMemoryBackend(): boolean {
   if (configured === "memory") return true;
   if (configured === "database") return false;
   return process.env.NODE_ENV === "test";
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function reserveMemorySlot(key: string, intervalMs: number): Promise<number> {
@@ -46,13 +43,18 @@ async function reserveDatabaseSlot(key: string, intervalMs: number): Promise<num
  * the database, then wait until that slot. Tests use the deterministic memory
  * backend unless explicitly configured otherwise.
  */
-export async function waitForDistributedRateLimit(key: string, intervalMs: number): Promise<void> {
+export async function waitForDistributedRateLimit(
+  key: string,
+  intervalMs: number,
+  signal?: AbortSignal,
+): Promise<void> {
   if (intervalMs <= 0) return;
+  signal?.throwIfAborted();
   const grantedAt = shouldUseMemoryBackend()
     ? await reserveMemorySlot(key, intervalMs)
     : await reserveDatabaseSlot(key, intervalMs);
   const waitMs = grantedAt - Date.now();
-  if (waitMs > 0) await sleep(waitMs);
+  if (waitMs > 0) await abortableDelay(waitMs, signal);
 }
 
 export function resetDistributedRateLimitForTests(): void {

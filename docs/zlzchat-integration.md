@@ -16,8 +16,8 @@
 1. 按 ZLZChat 上游说明在独立主机、容器或私有网络中部署，并在其后台启用文章定时同步。
 2. 在见微「平台连接」填写 `ZLZCHAT_BASE_URL` 和 `ZLZCHAT_API_KEY`。地址应是见微 `web`、`worker` 容器都能访问的私有地址。
 3. 新建「微信公众号」监控，把采集通道改为 `ZLZChat · 外置备选`。
-4. 粘贴公众号文章链接并先点「预览公众号」。预览会在 ZLZChat 中创建订阅；首次订阅可以自动识别，如果该公众号已经存在于 ZLZChat，需从其后台复制 `wxsId`，避免见微猜错绑定。
-5. 确认预览中的公众号名称和文章正确后再保存。
+4. 粘贴公众号文章链接。已有订阅时先从 ZLZChat 后台复制 `wxsId`，填入后再点「预览公众号」；预览只读，不会改变 ZLZChat 数据。
+5. 新公众号可以不填 `wxsId` 直接保存，见微会在保存动作中显式调用一次订阅接口；如果 ZLZChat 返回“已存在”，请复制该公众号的 `wxsId` 后重试。确认名称和文章正确后再继续使用。
 
 也可以使用环境变量：
 
@@ -26,9 +26,15 @@ ZLZCHAT_BASE_URL=http://zlzchat:805
 ZLZCHAT_API_KEY=replace-with-your-key
 ZLZCHAT_TIMEOUT_SECONDS=15
 ZLZCHAT_PAGE_SIZE=30
+ZLZCHAT_MAX_PAGES=20
+ZLZCHAT_ALLOWED_ORIGINS=http://zlzchat:805
 ```
 
+私网地址默认拒绝访问；使用 Docker 服务名、内网 IP 等私有地址时，必须把其**精确 origin（协议 + 主机 + 端口）**加入部署级 `ZLZCHAT_ALLOWED_ORIGINS`，多个值用逗号分隔。该白名单只应写在部署环境中，不能由普通后台请求动态扩大。环回、链路本地、云元数据和其他特殊地址始终拒绝，ZLZChat 响应的重定向也不会被跟随。
+
 不要在 URL 中携带用户名、密码或 API Key。API Key 会单独保存并加密；请求错误和见微日志不会输出带 Key 的完整请求地址。ZLZChat 的接口契约要求把 Key 放在查询参数中，因此其反向代理和访问日志也应关闭查询串记录或对 `key` 做脱敏。
+
+首次采集只以最新一页建立近期基线，不会自动导入公众号全部历史。后续采集会保存稳定文章边界并逐页回溯，直到找到上次已见文章，避免停机期间新增数量超过一页时漏采。若积压超过 `ZLZCHAT_MAX_PAGES`，本轮会以 `ZLZCHAT_BACKLOG_EXCEEDED` 失败且不推进游标；确认上游正常后可临时提高页数上限再重试。
 
 ## 稳定性策略
 
@@ -49,4 +55,7 @@ ZLZCHAT_PAGE_SIZE=30
 | `ZLZCHAT_WXS_ID_REQUIRED` | 到 ZLZChat 后台复制该公众号的 `wxsId` |
 | `ZLZCHAT_RATE_LIMITED` | 降低采集频率，等待上游风险窗口结束 |
 | `ZLZCHAT_CIRCUIT_OPEN` | 上游连续失败，等待熔断窗口结束并检查 ZLZChat 日志 |
+| `ZLZCHAT_PRIVATE_ORIGIN_NOT_ALLOWED` | 将自建实例的精确 origin 加入部署级 `ZLZCHAT_ALLOWED_ORIGINS` |
+| `ZLZCHAT_BASE_URL_UNSAFE` / `ZLZCHAT_REDIRECT_FORBIDDEN` | 检查地址、DNS 与反向代理，禁止指向特殊地址或返回重定向 |
+| `ZLZCHAT_BACKLOG_EXCEEDED` | 临时提高 `ZLZCHAT_MAX_PAGES`，成功追平后再恢复原值 |
 | 已绑定但没有文章 | 确认 ZLZChat 的定时同步任务已启用且微信读书账号可用 |

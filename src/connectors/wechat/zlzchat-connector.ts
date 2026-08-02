@@ -1,4 +1,9 @@
 import { wechatAccountMonitorSchema, type CollectionResult, type CollectContext, type ConnectorPreview, type NormalizedItem, type WechatAccountMonitorConfig } from "@/connectors/types";
+import {
+  assertSafeZlzChatEndpoint,
+  normalizeZlzChatBaseUrl,
+  type ZlzChatDnsLookup,
+} from "@/lib/zlzchat-endpoint";
 
 type FetchLike = typeof fetch;
 
@@ -30,6 +35,11 @@ interface CircuitState {
   openUntil: number;
 }
 
+interface ZlzChatPage<T> {
+  rows: T[];
+  total?: number;
+}
+
 const circuits = new Map<string, CircuitState>();
 const TRANSIENT_RETRY_DELAY_MS = 300;
 
@@ -45,16 +55,31 @@ function numberValue(value: unknown): number | undefined {
 
 function rowsFromEnvelope(payload: unknown): unknown[] {
   if (Array.isArray(payload)) return payload;
-  if (!payload || typeof payload !== "object") return [];
+  if (!payload || typeof payload !== "object") {
+    throw new Error("ZLZCHAT_SCHEMA_MISMATCH:expected a list envelope");
+  }
   const root = payload as Record<string, unknown>;
   if (Array.isArray(root.rows)) return root.rows;
+  if (Array.isArray(root.list)) return root.list;
   if (Array.isArray(root.data)) return root.data;
   if (root.data && typeof root.data === "object") {
     const data = root.data as Record<string, unknown>;
     if (Array.isArray(data.rows)) return data.rows;
+    if (Array.isArray(data.list)) return data.list;
     if (Array.isArray(data.records)) return data.records;
   }
-  return [];
+  throw new Error("ZLZCHAT_SCHEMA_MISMATCH:expected rows/list/records");
+}
+
+function totalFromEnvelope(payload: unknown): number | undefined {
+  if (!payload || typeof payload !== "object") return undefined;
+  const root = payload as Record<string, unknown>;
+  const rootTotal = numberValue(root.total);
+  if (rootTotal !== undefined) return rootTotal;
+  if (root.data && typeof root.data === "object") {
+    return numberValue((root.data as Record<string, unknown>).total);
+  }
+  return undefined;
 }
 
 function envelopeMessage(payload: unknown): string {
@@ -62,13 +87,33 @@ function envelopeMessage(payload: unknown): string {
   const root = payload as Record<string, unknown>;
   const nested = root.data && typeof root.data === "object"
     ? stringValue((root.data as Record<string, unknown>).msg)
+      ?? stringValue((root.data as Record<string, unknown>).message)
     : undefined;
-  return stringValue(root.msg) ?? nested ?? "";
+  return stringValue(root.msg) ?? stringValue(root.message) ?? nested ?? "";
 }
 
 function envelopeCode(payload: unknown): number | undefined {
   if (!payload || typeof payload !== "object") return undefined;
-  return numberValue((payload as Record<string, unknown>).code);
+  const root = payload as Record<string, unknown>;
+  const rootCode = numberValue(root.code);
+  const nestedCode = root.data && typeof root.data === "object"
+    ? numberValue((root.data as Record<string, unknown>).code)
+    : undefined;
+  // Some deployments wrap an application error in an HTTP-success envelope
+  // (`root.code=200`, `data.code=500`). Prefer the nested non-success code so
+  // callers cannot mistake a failed sync for an empty successful response.
+  if (nestedCode !== undefined && nestedCode !== 0 && nestedCode !== 200) return nestedCode;
+  if (rootCode !== undefined) return rootCode;
+  return nestedCode;
+}
+
+function envelopeExplicitFailure(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  const root = payload as Record<string, unknown>;
+  for (const value of [root.success, root.ok]) {
+    if (typeof value === "boolean" && !value) return true;
+  }
+  return false;
 }
 
 function providerError(message: string): Error | null {
@@ -82,26 +127,7 @@ function providerError(message: string): Error | null {
   return null;
 }
 
-function normalizeBaseUrl(raw: string): string {
-  if (!raw.trim()) throw new Error("ZLZCHAT_BASE_URL_MISSING");
-  let url: URL;
-  try {
-    url = new URL(raw.trim());
-  } catch {
-    throw new Error("ZLZCHAT_BASE_URL_INVALID");
-  }
-  if (!(["http:", "https:"] as string[]).includes(url.protocol) || url.username || url.password) {
-    throw new Error("ZLZCHAT_BASE_URL_INVALID");
-  }
-  if (url.hostname === "111.229.83.152") {
-    throw new Error("ZLZCHAT_PUBLIC_DEMO_FORBIDDEN");
-  }
-  url.search = "";
-  url.hash = "";
-  return url.toString().replace(/\/$/, "");
-}
-
-function parseDate(value: unknown): Date {
+function parseDate(value: unknown, fallback = new Date()): Date {
   const numeric = numberValue(value);
   if (numeric !== undefined) {
     const date = new Date(numeric < 10_000_000_000 ? numeric * 1000 : numeric);
@@ -115,7 +141,10 @@ function parseDate(value: unknown): Date {
     const date = new Date(normalized);
     if (!Number.isNaN(date.getTime())) return date;
   }
-  return new Date(0);
+  // Invalid upstream dates must not silently become 1970-01-01.  A current
+  // fallback keeps the item visible and sortable while preserving the raw
+  // provider payload for later reconciliation.
+  return fallback;
 }
 
 function stripHtml(value: string): string {
@@ -176,6 +205,10 @@ function toArticle(row: unknown): ZlzChatArticle | null {
   };
 }
 
+function articleKey(article: ZlzChatArticle): string | undefined {
+  return article.articlesId ?? article.originalId ?? articleUrl(article);
+}
+
 function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) return Promise.reject(signal.reason ?? new Error("ZLZCHAT_ABORTED"));
   return new Promise((resolve, reject) => {
@@ -192,8 +225,11 @@ export class ZlzChatConnector {
   private readonly apiKey: string;
   private readonly timeoutMs: number;
   private readonly pageSize: number;
+  private readonly maxPages: number;
   private readonly failureThreshold: number;
   private readonly circuitOpenMs: number;
+  private readonly allowedOrigins?: string;
+  private readonly dnsLookup?: ZlzChatDnsLookup;
 
   constructor(
     baseUrl: string,
@@ -202,17 +238,23 @@ export class ZlzChatConnector {
     options: {
       timeoutMs?: number;
       pageSize?: number;
+      maxPages?: number;
       failureThreshold?: number;
       circuitOpenMs?: number;
+      allowedOrigins?: string;
+      dnsLookup?: ZlzChatDnsLookup;
     } = {},
   ) {
-    this.base = normalizeBaseUrl(baseUrl);
+    this.base = normalizeZlzChatBaseUrl(baseUrl);
     this.apiKey = apiKey.trim();
     if (!this.apiKey) throw new Error("ZLZCHAT_API_KEY_MISSING");
     this.timeoutMs = Math.max(1_000, options.timeoutMs ?? 15_000);
     this.pageSize = Math.min(100, Math.max(1, options.pageSize ?? 30));
+    this.maxPages = Math.min(100, Math.max(1, options.maxPages ?? 20));
     this.failureThreshold = Math.max(1, options.failureThreshold ?? 3);
     this.circuitOpenMs = Math.max(10_000, options.circuitOpenMs ?? 10 * 60_000);
+    this.allowedOrigins = options.allowedOrigins;
+    this.dnsLookup = options.dnsLookup;
   }
 
   private requestUrl(path: string, query: Record<string, string | number | undefined>): URL {
@@ -252,23 +294,32 @@ export class ZlzChatConnector {
       const timeout = AbortSignal.timeout(this.timeoutMs);
       const requestSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
       try {
+        await assertSafeZlzChatEndpoint(this.base, {
+          allowedOrigins: this.allowedOrigins,
+          lookup: this.dnsLookup,
+        });
         const response = await this.fetcher(this.requestUrl(path, query), {
           method: "GET",
           headers: { Accept: "application/json" },
           signal: requestSignal,
           cache: "no-store",
+          redirect: "manual",
         });
+        if (response.status >= 300 && response.status < 400) throw new Error("ZLZCHAT_REDIRECT_FORBIDDEN");
         if (response.status === 401 || response.status === 403) throw new Error(`ZLZCHAT_AUTH_REQUIRED:${response.status}`);
         if (response.status === 429) throw new Error("ZLZCHAT_RATE_LIMITED:429");
         if (response.status >= 500) throw new Error(`ZLZCHAT_UNAVAILABLE:${response.status}`);
         if (!response.ok) throw new Error(`ZLZCHAT_REQUEST_FAILED:${response.status}`);
         const payload = await response.json() as unknown;
-        const knownError = providerError(envelopeMessage(payload));
-        if (knownError) throw knownError;
+        if (envelopeExplicitFailure(payload)) {
+          throw new Error(`ZLZCHAT_INVALID_RESPONSE:${envelopeMessage(payload) || "success=false"}`);
+        }
         const code = envelopeCode(payload);
         if (code !== undefined && code !== 0 && code !== 200) {
           throw new Error(`ZLZCHAT_INVALID_RESPONSE:${code}:${envelopeMessage(payload) || "unknown"}`);
         }
+        const knownError = providerError(envelopeMessage(payload));
+        if (knownError) throw knownError;
         this.recordSuccess();
         return payload;
       } catch (error) {
@@ -297,16 +348,77 @@ export class ZlzChatConnector {
     return rowsFromEnvelope(payload).map(toFeed).filter((feed): feed is ZlzChatFeed => feed !== null);
   }
 
-  private async articles(wxsId: string, signal?: AbortSignal): Promise<ZlzChatArticle[]> {
+  private async articlesPage(wxsId: string, pageNum: number, signal?: AbortSignal): Promise<ZlzChatPage<ZlzChatArticle>> {
     const payload = await this.request("getFeedArticleList", {
       wxsId,
-      pageNum: 1,
+      pageNum,
       pageSize: this.pageSize,
       orderByColumn: "publish_time",
       isAsc: "desc",
       searchKey: "",
     }, signal);
-    return rowsFromEnvelope(payload).map(toArticle).filter((article): article is ZlzChatArticle => article !== null);
+    return {
+      rows: rowsFromEnvelope(payload).map(toArticle).filter((article): article is ZlzChatArticle => article !== null),
+      total: totalFromEnvelope(payload),
+    };
+  }
+
+  private async latestArticles(wxsId: string, signal?: AbortSignal): Promise<ZlzChatArticle[]> {
+    return (await this.articlesPage(wxsId, 1, signal)).rows;
+  }
+
+  private async articlesSince(
+    wxsId: string,
+    previousNewestKey: string | undefined,
+    signal?: AbortSignal,
+  ): Promise<{ articles: ZlzChatArticle[]; newestKey?: string }> {
+    // A newly-created monitor establishes a recent baseline from page one.
+    // Walking an account's entire history here can make a large, existing feed
+    // impossible to initialize when it exceeds the safety cap. Subsequent runs
+    // have a durable boundary and must walk every page until they reach it.
+    if (!previousNewestKey) {
+      const firstPage = await this.articlesPage(wxsId, 1, signal);
+      const seen = new Set<string>();
+      const articles = firstPage.rows.filter((article) => {
+        const key = articleKey(article);
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      return { articles, newestKey: firstPage.rows.map(articleKey).find(Boolean) };
+    }
+
+    const collected: ZlzChatArticle[] = [];
+    const seen = new Set<string>();
+    let newestKey: string | undefined;
+    let reachedPreviousBoundary = false;
+    let reachedEnd = false;
+
+    for (let pageNum = 1; pageNum <= this.maxPages; pageNum += 1) {
+      const page = await this.articlesPage(wxsId, pageNum, signal);
+      if (pageNum === 1) newestKey = page.rows.map(articleKey).find(Boolean);
+
+      for (const article of page.rows) {
+        const key = articleKey(article);
+        if (key === previousNewestKey) {
+          reachedPreviousBoundary = true;
+          break;
+        }
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        collected.push(article);
+      }
+
+      if (reachedPreviousBoundary) break;
+      reachedEnd = page.rows.length < this.pageSize
+        || (page.total !== undefined && pageNum * this.pageSize >= page.total);
+      if (reachedEnd) break;
+    }
+
+    if (!reachedPreviousBoundary && !reachedEnd) {
+      throw new Error("ZLZCHAT_BACKLOG_EXCEEDED");
+    }
+    return { articles: collected, newestKey };
   }
 
   private async resolveFeed(config: WechatAccountMonitorConfig, signal?: AbortSignal): Promise<ZlzChatFeed> {
@@ -337,6 +449,38 @@ export class ZlzChatConnector {
     return added[0];
   }
 
+  private async existingFeed(config: WechatAccountMonitorConfig): Promise<ZlzChatFeed> {
+    if (!config.zlzchatWxsId) {
+      throw new Error("ZLZCHAT_WXS_ID_REQUIRED:请先在 ZLZChat 后台复制该公众号的 wxsId");
+    }
+    return {
+      wxsId: config.zlzchatWxsId,
+      mpName: config.mpName,
+      mpCover: config.mpCover,
+      mpIntro: config.mpIntro,
+    };
+  }
+
+  private async previewForFeed(feed: ZlzChatFeed): Promise<ConnectorPreview> {
+    const items = (await this.latestArticles(feed.wxsId))
+      .map((article) => this.normalized(article, feed))
+      .filter((item): item is NormalizedItem => item !== null)
+      .slice(0, 5);
+    return {
+      displayName: items[0]?.authorName ?? feed.mpName ?? "微信公众号",
+      avatarUrl: feed.mpCover,
+      items,
+      configPatch: {
+        provider: "zlzchat",
+        zlzchatWxsId: feed.wxsId,
+        ...(feed.mpName ? { mpName: feed.mpName } : {}),
+        ...(feed.mpCover ? { mpCover: feed.mpCover } : {}),
+        ...(feed.mpIntro ? { mpIntro: feed.mpIntro } : {}),
+      },
+      warning: items.length ? undefined : "zlzchat 已识别公众号，但暂未同步出文章；请确认 zlzchat 的定时同步任务已启用。",
+    };
+  }
+
   private normalized(article: ZlzChatArticle, feed: ZlzChatFeed): NormalizedItem | null {
     const canonicalUrl = articleUrl(article);
     if (!canonicalUrl) return null;
@@ -363,21 +507,23 @@ export class ZlzChatConnector {
 
   async validate(config: WechatAccountMonitorConfig): Promise<ConnectorPreview> {
     const parsed = wechatAccountMonitorSchema.parse(config);
-    const feed = await this.resolveFeed(parsed);
-    const items = (await this.articles(feed.wxsId)).map((article) => this.normalized(article, feed)).filter((item): item is NormalizedItem => item !== null).slice(0, 5);
-    return {
-      displayName: items[0]?.authorName ?? feed.mpName ?? "微信公众号",
-      avatarUrl: feed.mpCover,
-      items,
-      configPatch: {
-        provider: "zlzchat",
-        zlzchatWxsId: feed.wxsId,
-        ...(feed.mpName ? { mpName: feed.mpName } : {}),
-        ...(feed.mpCover ? { mpCover: feed.mpCover } : {}),
-        ...(feed.mpIntro ? { mpIntro: feed.mpIntro } : {}),
-      },
-      warning: items.length ? undefined : "zlzchat 已识别公众号，但暂未同步出文章；请确认 zlzchat 的定时同步任务已启用。",
-    };
+    if (!parsed.zlzchatWxsId) {
+      return {
+        displayName: parsed.mpName ?? "微信公众号",
+        items: [],
+        warning: "预览不会创建订阅。首次使用请直接保存，见微会显式调用 ZLZChat 订阅接口；已有订阅请先填写 wxsId。",
+      };
+    }
+    return this.previewForFeed(await this.existingFeed(parsed));
+  }
+
+  /** Explicit write operation used only by monitor create/update handlers. */
+  async subscribe(config: WechatAccountMonitorConfig): Promise<ConnectorPreview> {
+    const parsed = wechatAccountMonitorSchema.parse(config);
+    const feed = parsed.zlzchatWxsId
+      ? await this.existingFeed(parsed)
+      : await this.resolveFeed(parsed);
+    return this.previewForFeed(feed);
   }
 
   async collect(
@@ -387,13 +533,18 @@ export class ZlzChatConnector {
   ): Promise<CollectionResult> {
     const parsed = wechatAccountMonitorSchema.parse(config);
     const cursorWxsId = stringValue(cursor.zlzchatWxsId);
-    const feed = await this.resolveFeed({ ...parsed, zlzchatWxsId: cursorWxsId ?? parsed.zlzchatWxsId }, context?.signal);
-    const items = (await this.articles(feed.wxsId, context?.signal)).map((article) => this.normalized(article, feed)).filter((item): item is NormalizedItem => item !== null);
+    const wxsId = cursorWxsId ?? parsed.zlzchatWxsId;
+    if (!wxsId) throw new Error("ZLZCHAT_WXS_ID_REQUIRED:监控尚未绑定 wxsId，请先保存并完成订阅");
+    const feed = await this.existingFeed({ ...parsed, zlzchatWxsId: wxsId });
+    const previousNewestKey = stringValue(cursor.zlzchatNewestArticleKey);
+    const page = await this.articlesSince(feed.wxsId, previousNewestKey, context?.signal);
+    const items = page.articles.map((article) => this.normalized(article, feed)).filter((item): item is NormalizedItem => item !== null);
+    const nextNewestKey = page.newestKey ?? previousNewestKey;
     return {
       items,
       cursor: {
         zlzchatWxsId: feed.wxsId,
-        lastSeenAt: new Date().toISOString(),
+        ...(nextNewestKey ? { zlzchatNewestArticleKey: nextNewestKey } : {}),
       },
     };
   }

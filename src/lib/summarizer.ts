@@ -196,10 +196,13 @@ export function summaryRateLimitKey(provider: Pick<SummaryProvider, "name" | "mo
   return configured || `summary:${provider.name}:${provider.model}`;
 }
 
-async function waitForSummaryRateLimit(provider: SummaryProvider): Promise<void> {
+async function waitForSummaryRateLimit(
+  provider: SummaryProvider,
+  signal?: AbortSignal,
+): Promise<void> {
   const intervalMs = summaryRequestIntervalMs();
   if (intervalMs <= 0) return;
-  await waitForDistributedRateLimit(summaryRateLimitKey(provider), intervalMs);
+  await waitForDistributedRateLimit(summaryRateLimitKey(provider), intervalMs, signal);
 }
 
 /** 按 SUMMARY_PROVIDER 解析 provider；未配置/未知均返回 null（禁用）。 */
@@ -820,7 +823,11 @@ export async function generateTitleTranslations(entries: TitleTranslationInput[]
 }
 
 /** 单篇摘要尝试；返回结构化状态，绝不向上抛出。 */
-export async function generateSummaryAttempt(item: NormalizedItem): Promise<SummaryAttemptResult> {
+export async function generateSummaryAttempt(
+  item: NormalizedItem,
+  signal?: AbortSignal,
+): Promise<SummaryAttemptResult> {
+  signal?.throwIfAborted();
   if (summarySkipPlatforms().has(item.platform)) return { status: "skipped" };
   if (item.platform === "wechat" && !item.contentHtml?.trim()) {
     return {
@@ -839,9 +846,13 @@ export async function generateSummaryAttempt(item: NormalizedItem): Promise<Summ
   const timeoutMs = summaryTimeoutMs();
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    await waitForSummaryRateLimit(provider);
+    await waitForSummaryRateLimit(provider, signal);
+    signal?.throwIfAborted();
     const ctrl = new AbortController();
     timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    const requestSignal = signal
+      ? AbortSignal.any([signal, ctrl.signal])
+      : ctrl.signal;
     const generated = await provider.generate(
       {
         platform: item.platform,
@@ -851,8 +862,9 @@ export async function generateSummaryAttempt(item: NormalizedItem): Promise<Summ
         canonicalUrl: item.canonicalUrl,
         authorName: item.authorName,
       },
-      ctrl.signal,
+      requestSignal,
     );
+    signal?.throwIfAborted();
     const analysis = parseAnalysisResponse(generated.text);
     const fallbackSummary = analysis.summary ? "" : fallbackSummaryFromFullText({
       platform: item.platform,
@@ -879,6 +891,14 @@ export async function generateSummaryAttempt(item: NormalizedItem): Promise<Summ
         }
       : { status: "failed", provider: provider.name, model: provider.model, errorCode: "SUMMARY_EMPTY", errorMessage: "摘要返回为空" };
   } catch (err) {
+    // Lease loss and process shutdown are orchestration decisions, not model
+    // failures. Propagate them so the worker stops the whole ingest attempt
+    // instead of persisting a misleading SUMMARY_TIMEOUT fallback.
+    if (signal?.aborted) {
+      throw signal.reason instanceof Error
+        ? signal.reason
+        : new Error("SUMMARY_CANCELLED");
+    }
     const classified = classifySummaryError(provider.name, err);
     const fields = {
       provider: provider.name,
@@ -902,8 +922,11 @@ export async function generateSummaryAttempt(item: NormalizedItem): Promise<Summ
 }
 
 /** 单篇摘要；兼容旧调用方：任何非成功状态都返回 null。 */
-export async function generateSummary(item: NormalizedItem): Promise<string | null> {
-  const result = await generateSummaryAttempt(item);
+export async function generateSummary(
+  item: NormalizedItem,
+  signal?: AbortSignal,
+): Promise<string | null> {
+  const result = await generateSummaryAttempt(item, signal);
   return result.status === "success" ? result.summary ?? null : null;
 }
 
@@ -911,12 +934,15 @@ export async function generateSummary(item: NormalizedItem): Promise<string | nu
  * 批量生成摘要（带并发限制）。返回 `platform|upstreamId` → 摘要 的 Map。
  * 仅对调用方传入的 items 生成，跳过在 SKIP_PLATFORMS 中的平台；异常项静默跳过。
  */
-export async function generateSummaries(items: NormalizedItem[]): Promise<Map<string, string>> {
-  const { summaries } = await generateSummariesWithStats(items);
+export async function generateSummaries(
+  items: NormalizedItem[],
+  signal?: AbortSignal,
+): Promise<Map<string, string>> {
+  const { summaries } = await generateSummariesWithStats(items, signal);
   return summaries;
 }
 
-export async function generateSummariesWithStats(items: NormalizedItem[]): Promise<{
+export async function generateSummariesWithStats(items: NormalizedItem[], signal?: AbortSignal): Promise<{
   summaries: Map<string, string>;
   analyses: Map<string, ContentAnalysis>;
   attempts: Map<string, SummaryAttemptResult>;
@@ -939,9 +965,10 @@ export async function generateSummariesWithStats(items: NormalizedItem[]): Promi
   let sawDisabled = false;
   const worker = async (): Promise<void> => {
     while (cursor < items.length) {
+      signal?.throwIfAborted();
       const idx = cursor++;
       const item = items[idx];
-      const result = await generateSummaryAttempt(item);
+      const result = await generateSummaryAttempt(item, signal);
       attempts.set(summaryKey(item), result);
       stats.inputTokens = (stats.inputTokens ?? 0) + (result.inputTokens ?? 0);
       stats.outputTokens = (stats.outputTokens ?? 0) + (result.outputTokens ?? 0);

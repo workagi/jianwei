@@ -1,4 +1,4 @@
-import { db } from "@/db";
+import { db, sql as postgresClient } from "@/db";
 import { monitors, collectionRuns, runtimeHealth, usageLedger } from "@/db/schema";
 import { loadApiCredentials } from "@/db/queries";
 import { and, eq, isNull, lte, or, sql } from "drizzle-orm";
@@ -15,6 +15,7 @@ import type {
   CollectContext,
   WebSearchMonitorConfig,
 } from "@/connectors/types";
+import type { PreparedIngest } from "@/ingestion/ingest-items";
 import type { MonitorRules } from "@/lib/content-retention";
 import { isWechatKeywordRuleConfig } from "@/connectors/types";
 import { createWorkerSourceProvider } from "@/sources/registry";
@@ -29,9 +30,23 @@ import {
   type UsageBudgetReservation,
 } from "@/lib/usage-budget";
 import { createStructuredLogger } from "@/lib/structured-log";
-import { classifyMonitorFailure } from "@/lib/monitor-error";
-import { claimMonitor, getLeaseWorkerId, getMonitorLeaseMs, type ClaimedMonitor } from "./lease-manager";
-import { cleanupStaleRunningRuns } from "./stale-run-reaper";
+import {
+  classifyMonitorFailure,
+  monitorFailureAccounting,
+} from "@/lib/monitor-error";
+import {
+  claimMonitor,
+  getLeaseWorkerId,
+  getMonitorLeaseMs,
+  getWorkerHealthService,
+  retryLeaseRenewal,
+  type ClaimedMonitor,
+} from "./lease-manager";
+import {
+  cleanupStaleRunningRuns,
+  staleRunReaperIntervalMs,
+} from "./stale-run-reaper";
+import { deriveWorkerRuntimeStatus } from "@/lib/system-health";
 
 // Cost per 1000 billable units. Brave's published rate is $3 / 1k queries; X has
 // no stable public rate, so it defaults to 0 and can be overridden.
@@ -46,7 +61,34 @@ const BUDGET_ENABLED = Number.isFinite(MONTHLY_BUDGET_USD) && MONTHLY_BUDGET_USD
 const MONITOR_DISABLE_AFTER_FAILURES = Number(process.env.WORKER_DISABLE_MONITOR_AFTER_FAILURES ?? "5") || 0;
 const WORKER_CONCURRENCY = Math.max(1, Number(process.env.WORKER_CONCURRENCY ?? "4") || 0);
 const WORKER_HEARTBEAT_FILE = process.env.WORKER_HEARTBEAT_FILE ?? "/tmp/jianwei-worker-heartbeat";
+const WORKER_DEGRADED_AFTER_POLL_FAILURES = Math.max(
+  1,
+  Number(process.env.WORKER_DEGRADED_AFTER_POLL_FAILURES) || 3,
+);
+const WORKER_DEGRADED_AFTER_COLLECTION_FAILURES = Math.max(
+  1,
+  Number(process.env.WORKER_DEGRADED_AFTER_COLLECTION_FAILURES) || 3,
+);
 const workerLog = createStructuredLogger({ service: "worker", workerId: getLeaseWorkerId() });
+let pollStartedAt: Date | null = null;
+let lastPollStartedAt: Date | null = null;
+let lastPollCompletedAt: Date | null = null;
+let lastSuccessfulPollAt: Date | null = null;
+let lastPollErrorName: string | null = null;
+let consecutivePollFailures = 0;
+let lastCollectionSuccessAt: Date | null = null;
+let lastCollectionFailureAt: Date | null = null;
+let consecutiveCollectionFailures = 0;
+
+function recordCollectionSuccess(now = new Date()): void {
+  lastCollectionSuccessAt = now;
+  consecutiveCollectionFailures = 0;
+}
+
+function recordCollectionFailure(now = new Date()): void {
+  lastCollectionFailureAt = now;
+  consecutiveCollectionFailures += 1;
+}
 
 interface GatherInput {
   platform: PlatformType;
@@ -302,7 +344,18 @@ async function startCollectionRun(monitor: { id?: string; monitorId?: string; ne
   return { runId: existing.id, runKey, attemptToken, alreadySucceeded: false };
 }
 
-async function runMonitor(claimed: ClaimedMonitor, claimedEpoch: number, shutdownSignal?: AbortSignal): Promise<void> {
+function isLeaseLossAbort(signal?: AbortSignal): boolean {
+  const reason = signal?.reason;
+  const message = reason instanceof Error ? reason.message : String(reason ?? "");
+  return /LEASE_(?:LOST|RENEWAL_UNCONFIRMED)/i.test(message);
+}
+
+async function runMonitor(
+  claimed: ClaimedMonitor,
+  claimedEpoch: number,
+  taskSignal?: AbortSignal,
+  globalShutdownSignal?: AbortSignal,
+): Promise<void> {
   const startedAt = Date.now();
   const { runId, runKey, attemptToken, alreadySucceeded } = await startCollectionRun(claimed);
   const runLog = workerLog.child({
@@ -341,6 +394,7 @@ async function runMonitor(claimed: ClaimedMonitor, claimedEpoch: number, shutdow
   }
 
   let budgetReservationKey: string | undefined;
+  let preparedForCleanup: PreparedIngest | undefined;
   try {
     runLog.info("collection.started", {
       scheduledFor: claimed.nextRunAt,
@@ -372,7 +426,7 @@ async function runMonitor(claimed: ClaimedMonitor, claimedEpoch: number, shutdow
       }, { signal, runId, deadline: new Date(Date.now() + gatherTimeout) }),
       gatherTimeout,
       claimed.platform,
-      shutdownSignal,
+      taskSignal,
     );
     // Provider and model work stays outside a database transaction. Only the
     // Connector finished.
@@ -385,7 +439,9 @@ async function runMonitor(claimed: ClaimedMonitor, claimedEpoch: number, shutdow
       matchedQuery: monitorMatchedQuery(claimed),
       runId,
       monitorRules: extractMonitorRules(claimed),
+      signal: taskSignal,
     });
+    preparedForCleanup = prepared;
     const summaryInputTokens = prepared.summary.inputTokens ?? 0;
     // Analysis complete, ready to commit.
     await markRunProgress(runId, attemptToken, "ingesting");
@@ -517,6 +573,9 @@ async function runMonitor(claimed: ClaimedMonitor, claimedEpoch: number, shutdow
       }
       return committed;
     });
+    // The transaction completed the claim rows atomically with the document
+    // commit. Do not try to release them if a later logging operation fails.
+    preparedForCleanup = undefined;
 
     runLog.info("collection.succeeded", {
       durationMs: Date.now() - startedAt,
@@ -533,9 +592,21 @@ async function runMonitor(claimed: ClaimedMonitor, claimedEpoch: number, shutdow
       summaryEstimatedCostUsd: summaryCost,
       nextRunAt,
     });
+    recordCollectionSuccess();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    if (shutdownSignal?.aborted) {
+    if (preparedForCleanup?.analysisClaims.length) {
+      try {
+        await createDrizzleIngestRepository().releaseDocumentAnalyses?.(preparedForCleanup.analysisClaims);
+      } catch (releaseError) {
+        workerLog.error("document_analysis.claim_release_failed", {
+          monitorId: claimed.monitorId,
+          error: releaseError,
+        });
+      }
+      preparedForCleanup = undefined;
+    }
+    if (globalShutdownSignal?.aborted && !isLeaseLossAbort(taskSignal)) {
       await db.transaction(async (tx) => {
         await releaseUsageReservation(tx, budgetReservationKey);
         await tx.update(monitors).set({ leaseOwner: null, leaseUntil: null }).where(and(
@@ -550,13 +621,19 @@ async function runMonitor(claimed: ClaimedMonitor, claimedEpoch: number, shutdow
           errorMessage: "Worker stopped before this run finished.",
         }).where(and(eq(collectionRuns.id, runId), eq(collectionRuns.attemptToken, attemptToken)));
       });
-      throw shutdownSignal.reason instanceof Error
-        ? shutdownSignal.reason
+      throw globalShutdownSignal.reason instanceof Error
+        ? globalShutdownSignal.reason
         : new Error("WORKER_SHUTDOWN");
     }
     const budgetRetryAt = nextBudgetRetryAt(message);
     const failure = classifyMonitorFailure(message);
-    const failureCount = budgetRetryAt ? claimed.failureCount : claimed.failureCount + 1;
+    const accounting = monitorFailureAccounting({
+      currentFailureCount: claimed.failureCount,
+      failure,
+      plannedPause: Boolean(budgetRetryAt),
+    });
+    if (accounting.countForWorkerHealth) recordCollectionFailure();
+    const failureCount = accounting.failureCount;
     if (budgetRetryAt) {
       nextRunAt = budgetRetryAt;
     } else if (failure.retryAfterMinutes) {
@@ -832,11 +909,11 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
   // Provider-level bulkhead: prevent a single slow provider (e.g. WeChat)
   // from consuming all concurrency slots and starving other monitors.
   const providerConcurrency: Record<string, number> = {
-    // WeChat: independent concurrency per provider type
-    werss: 1,
+    // WeRSS and its browser-backed full-text fallback share one local
+    // collection resource. ZLZChat is a separate HTTP service and gets its
+    // own bucket.
+    "wechat-browser": 1,
     zlzchat: 1,
-    wechat: 1,
-    wechat_fallback: 1,
     // X: API rate limits are tight
     x: 1,
     x_grok: 1,
@@ -860,12 +937,38 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
     const provider = typeof cfg?.provider === "string" ? cfg.provider : null;
     // web_search platform has per-provider limits (brave/tavily/serper)
     if (monitor.platform === "web_search" && provider) return provider;
-    // wechat: distinguish werss vs wechat_fallback
-    if (monitor.platform === "wechat" && provider) return provider;
+    // All WeRSS account monitors (including its direct full-text fallback)
+    // share the browser/resource bucket. ZLZChat is independent.
+    if (monitor.platform === "wechat") return provider === "zlzchat" ? "zlzchat" : "wechat-browser";
     // x: distinguish x_grok vs x_official
     if (monitor.platform === "x" && provider) return provider;
     // Fall back to platform name
     return monitor.platform || "default";
+  }
+
+  // The due query is ordered by time, but a burst of one provider must not
+  // occupy the whole 100-row window and starve every other provider. Pick one
+  // task per provider in round-robin order while retaining oldest-first order
+  // inside each provider bucket.
+  const dueByProvider = new Map<string, Array<typeof due[number]>>();
+  for (const monitor of due) {
+    const key = providerKey(monitor);
+    const bucket = dueByProvider.get(key) ?? [];
+    bucket.push(monitor);
+    dueByProvider.set(key, bucket);
+  }
+  const fairDue: Array<typeof due[number]> = [];
+  let fairIndex = 0;
+  while (true) {
+    let added = false;
+    for (const bucket of dueByProvider.values()) {
+      const monitor = bucket[fairIndex];
+      if (!monitor) continue;
+      fairDue.push(monitor);
+      added = true;
+    }
+    if (!added) break;
+    fairIndex += 1;
   }
 
   function providerAtCapacity(key: string): boolean {
@@ -873,7 +976,7 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
     return (providerActive.get(key) ?? 0) >= limit;
   }
 
-  for (const monitor of due) {
+  for (const monitor of fairDue) {
     if (shutdownSignal?.aborted) break;
 
     const pKey = providerKey(monitor);
@@ -883,6 +986,7 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
       if (shutdownSignal?.aborted) break;
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
+    if (shutdownSignal?.aborted) break;
 
     // Skip if this provider is already at its concurrency limit.
     // The monitor stays unclaimed and will be retried next poll cycle.
@@ -899,41 +1003,48 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
     // decrement in .finally() signals a free slot to waiting iterations.
     void (async () => {
     const leaseController = new AbortController();
+    const taskSignal = shutdownSignal
+      ? AbortSignal.any([shutdownSignal, leaseController.signal])
+      : leaseController.signal;
     let leaseRenewalRunning = false;
     const leaseRenewalTimer = setInterval(() => {
       if (leaseRenewalRunning) return;
       leaseRenewalRunning = true;
-      db.update(monitors)
-      .set({
-        leaseUntil: new Date(Date.now() + getMonitorLeaseMs()),
-      })
-      .where(and(
-        eq(monitors.id, monitor.id),
-        eq(monitors.leaseOwner, getLeaseWorkerId()),
-        eq(monitors.leaseEpoch, claimedEpoch),
-      ))
-      .returning({ id: monitors.id })
-      .then((rows) => {
-        if (rows.length === 0) {
-          leaseController.abort(new Error("LEASE_LOST"));
-          workerLog.error("monitor.lease_renewal.lost", {
+      retryLeaseRenewal(async () => {
+        const rows = await db.update(monitors)
+          .set({
+            leaseUntil: new Date(Date.now() + getMonitorLeaseMs()),
+          })
+          .where(and(
+            eq(monitors.id, monitor.id),
+            eq(monitors.leaseOwner, getLeaseWorkerId()),
+            eq(monitors.leaseEpoch, claimedEpoch),
+          ))
+          .returning({ id: monitors.id });
+        return rows.length === 1;
+      }, { signal: taskSignal })
+        .then((renewed) => {
+          if (!renewed) {
+            leaseController.abort(new Error("LEASE_LOST"));
+            workerLog.error("monitor.lease_renewal.lost", {
+              monitorId: claimed.monitorId,
+              platform: claimed.platform,
+            });
+          }
+        })
+        .catch((error) => {
+          if (taskSignal.aborted) return;
+          leaseController.abort(new Error("LEASE_RENEWAL_UNCONFIRMED", { cause: error }));
+          workerLog.error("monitor.lease_renewal.failed", {
             monitorId: claimed.monitorId,
             platform: claimed.platform,
+            error,
           });
-        }
-      })
-      .catch((error) => workerLog.warn("monitor.lease_renewal.failed", {
-        monitorId: claimed.monitorId,
-        platform: claimed.platform,
-        error,
-      }))
+        })
         .finally(() => { leaseRenewalRunning = false; });
     }, Math.min(60_000, Math.max(5_000, Math.floor(getMonitorLeaseMs() / 3))));
-    const taskSignal = shutdownSignal
-      ? AbortSignal.any([shutdownSignal, leaseController.signal])
-      : leaseController.signal;
     try {
-      await runMonitor(claimed, claimedEpoch, taskSignal);
+      await runMonitor(claimed, claimedEpoch, taskSignal, shutdownSignal);
     } finally {
       clearInterval(leaseRenewalTimer);
       // Release the lease only if we still own it (epoch matches).
@@ -980,16 +1091,36 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
 }
 
 export async function markWorkerHeartbeat(now = new Date()): Promise<void> {
+  const status = deriveWorkerRuntimeStatus({
+    consecutivePollFailures,
+    pollFailureThreshold: WORKER_DEGRADED_AFTER_POLL_FAILURES,
+    consecutiveCollectionFailures,
+    collectionFailureThreshold: WORKER_DEGRADED_AFTER_COLLECTION_FAILURES,
+    lastCollectionFailureAt,
+  });
+  const detail = {
+    pid: process.pid,
+    workerId: getLeaseWorkerId(),
+    pollStartedAt: pollStartedAt?.toISOString() ?? null,
+    lastPollStartedAt: lastPollStartedAt?.toISOString() ?? null,
+    lastPollCompletedAt: lastPollCompletedAt?.toISOString() ?? null,
+    lastSuccessfulPollAt: lastSuccessfulPollAt?.toISOString() ?? null,
+    lastPollErrorName,
+    consecutivePollFailures,
+    lastCollectionSuccessAt: lastCollectionSuccessAt?.toISOString() ?? null,
+    lastCollectionFailureAt: lastCollectionFailureAt?.toISOString() ?? null,
+    consecutiveCollectionFailures,
+  };
   await Promise.all([
     writeFile(WORKER_HEARTBEAT_FILE, now.toISOString(), "utf8"),
     db.insert(runtimeHealth).values({
-      service: "worker:" + getLeaseWorkerId(),
-      status: "ok",
+      service: getWorkerHealthService(),
+      status,
       lastHeartbeatAt: now,
-      detail: { pid: process.pid, workerId: getLeaseWorkerId() },
+      detail,
     }).onConflictDoUpdate({
       target: runtimeHealth.service,
-      set: { status: "ok", lastHeartbeatAt: now, detail: { pid: process.pid, workerId: getLeaseWorkerId() } },
+      set: { status, lastHeartbeatAt: now, detail },
     }),
   ]);
 }
@@ -1104,33 +1235,62 @@ async function main(): Promise<void> {
     monitorLeaseSeconds: getMonitorLeaseMs() / 1000,
   });
   await markWorkerHeartbeat();
-  let heartbeatRunning = false;
-  const heartbeatTimer = setInterval(() => {
-    if (heartbeatRunning) return;
-    heartbeatRunning = true;
-    markWorkerHeartbeat()
+  let heartbeatPromise: Promise<void> | null = null;
+  const startHeartbeat = () => {
+    if (heartbeatPromise) return;
+    heartbeatPromise = markWorkerHeartbeat()
       .catch((error) => workerLog.warn("worker.heartbeat.failed", { error }))
-      .finally(() => { heartbeatRunning = false; });
+      .finally(() => { heartbeatPromise = null; });
+  };
+  const heartbeatTimer = setInterval(() => {
+    startHeartbeat();
   }, 15_000);
-  try {
-    const cleaned = await cleanupStaleRunningRuns(getMonitorLeaseMs(), workerLog);
-    if (cleaned) workerLog.warn("collection.stale_runs.cleaned", { cleaned });
-  } catch (err) {
-    workerLog.warn("collection.stale_runs.cleanup_failed", { error: err });
-  }
+  let staleReaperPromise: Promise<void> | null = null;
+  const startStaleReaper = () => {
+    if (staleReaperPromise) return;
+    staleReaperPromise = cleanupStaleRunningRuns(getMonitorLeaseMs(), workerLog)
+      .then((cleaned) => {
+        if (cleaned) workerLog.warn("collection.stale_runs.cleaned", { cleaned });
+      })
+      .catch((error) => workerLog.warn("collection.stale_runs.cleanup_failed", { error }))
+      .finally(() => { staleReaperPromise = null; });
+  };
+  startStaleReaper();
+  if (staleReaperPromise) await staleReaperPromise;
+  const staleReaperTimer = setInterval(startStaleReaper, staleRunReaperIntervalMs());
   while (!stopped) {
+    pollStartedAt = new Date();
+    lastPollStartedAt = pollStartedAt;
     try {
       const count = await runOnce(shutdownController.signal);
-      await markWorkerHeartbeat();
+      const completedAt = new Date();
+      lastPollCompletedAt = completedAt;
+      lastSuccessfulPollAt = completedAt;
+      lastPollErrorName = null;
+      consecutivePollFailures = 0;
       workerLog.info("worker.poll.completed", { claimedMonitorCount: count });
     } catch (err) {
+      lastPollCompletedAt = new Date();
+      lastPollErrorName = err instanceof Error ? err.name : "UnknownError";
+      consecutivePollFailures += 1;
       workerLog.error("worker.poll.failed", { error: err });
     }
+    pollStartedAt = null;
+    await markWorkerHeartbeat()
+      .catch((error) => workerLog.warn("worker.heartbeat.failed", { error }));
     // 以 1s 粒度等待，便于收到 SIGTERM 时快速退出。
     const deadline = Date.now() + POLL_INTERVAL_MS;
     while (Date.now() < deadline && !stopped) await sleep(1000);
   }
   clearInterval(heartbeatTimer);
+  clearInterval(staleReaperTimer);
+  await Promise.allSettled([
+    ...(heartbeatPromise ? [heartbeatPromise] : []),
+    ...(staleReaperPromise ? [staleReaperPromise] : []),
+  ]);
+  process.off("SIGINT", stop);
+  process.off("SIGTERM", stop);
+  await postgresClient.end({ timeout: 5 });
   workerLog.info("worker.stopped");
 }
 

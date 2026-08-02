@@ -59,11 +59,30 @@ function resolvedFeedFromWechatConfig(config: WechatAccountMonitorConfig): Resol
   };
 }
 
-export async function GET() {
+export async function GET(req: Request) {
+  const denied = await requireWriteAuth(req);
+  if (denied) return denied;
+
   if (!process.env.DATABASE_URL) {
     return NextResponse.json({ ok: false, error: "DATABASE_URL 未配置" }, { status: 503 });
   }
-  const rows = await db.select().from(monitors).orderBy(desc(monitors.updatedAt));
+  const rows = await db
+    .select({
+      id: monitors.id,
+      platform: monitors.platform,
+      name: monitors.name,
+      config: monitors.config,
+      enabled: monitors.enabled,
+      pollIntervalMinutes: monitors.pollIntervalMinutes,
+      lastSuccessAt: monitors.lastSuccessAt,
+      nextRunAt: monitors.nextRunAt,
+      failureCount: monitors.failureCount,
+      lastError: monitors.lastError,
+      createdAt: monitors.createdAt,
+      updatedAt: monitors.updatedAt,
+    })
+    .from(monitors)
+    .orderBy(desc(monitors.updatedAt));
   return NextResponse.json({ ok: true, monitors: rows });
 }
 
@@ -107,8 +126,9 @@ export async function POST(req: Request) {
   //   quickly without re-running the slow by_article resolver;
   // - without preview: create the local monitor immediately and let the worker
   //   perform the slow resolve+subscribe in the background on its first run.
-  // ZLZChat is validated before insert because its open API cannot safely infer
-  // an already-subscribed feed without a stable wxsId.
+  // ZLZChat subscription is an explicit write operation during save. Preview
+  // remains read-only, so creating a monitor is the only path that can call
+  // addFeedUrl when the user has not supplied an existing wxsId.
   // Keyword rules are local DB rules over already-collected WeChat articles.
   let cursor: Record<string, unknown> = {};
   let normalizedConfig = parsed.data as Record<string, unknown>;
@@ -117,7 +137,10 @@ export async function POST(req: Request) {
     const config = parsed.data as Extract<WechatMonitorConfig, { kind: "account" }>;
     if (config.provider === "zlzchat") {
       try {
-        const preview = await (await createRuntimeZlzChatConnector()).validate(config);
+        const connector = await createRuntimeZlzChatConnector();
+        const preview = config.zlzchatWxsId
+          ? await connector.validate(config)
+          : await connector.subscribe(config);
         normalizedConfig = { ...normalizedConfig, ...(preview.configPatch ?? {}) };
         const wxsId = typeof normalizedConfig.zlzchatWxsId === "string" ? normalizedConfig.zlzchatWxsId : undefined;
         if (!wxsId) throw new Error("ZLZCHAT_WXS_ID_REQUIRED");

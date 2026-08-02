@@ -19,12 +19,38 @@ export interface MonitorFailure {
   retryable: boolean;
   retryAfterMinutes?: number;
   disableEligible: boolean;
+  /** False for internal coordination waits that are not provider failures. */
+  countsAsFailure?: boolean;
+}
+
+export function monitorFailureAccounting(input: {
+  currentFailureCount: number;
+  failure: MonitorFailure;
+  plannedPause?: boolean;
+}): { failureCount: number; countForWorkerHealth: boolean } {
+  const counts = !input.plannedPause && input.failure.countsAsFailure !== false;
+  return {
+    failureCount: counts ? input.currentFailureCount + 1 : input.currentFailureCount,
+    countForWorkerHealth: counts,
+  };
 }
 
 /** Convert provider-specific error strings into a stable operational contract. */
 export function classifyMonitorFailure(message: string): MonitorFailure {
   const value = message.trim();
   const upper = value.toUpperCase();
+  // Lease loss is an internal coordination event, not a provider failure.
+  // It must be retried without increasing the monitor's failure count or
+  // triggering the automatic suspension circuit.
+  if (/LEASE_(?:LOST|RENEWAL_UNCONFIRMED)/.test(upper)) {
+    return {
+      code: "RUN_INTERRUPTED",
+      retryable: true,
+      retryAfterMinutes: 10,
+      disableEligible: false,
+      countsAsFailure: false,
+    };
+  }
   if (/RUN_INTERRUPTED|WORKER_SHUTDOWN|TEST_CANCELLED/.test(upper)) {
     return { code: "RUN_INTERRUPTED", retryable: true, retryAfterMinutes: 10, disableEligible: false };
   }
@@ -34,6 +60,24 @@ export function classifyMonitorFailure(message: string): MonitorFailure {
   if (/WERSS_FEED_(?:STALE|NEVER_SYNCED)/.test(upper)) {
     return { code: "SOURCE_STALE", retryable: true, disableEligible: false };
   }
+  if (/DOCUMENT_ANALYSIS_IN_PROGRESS/.test(upper)) {
+    return {
+      code: "UPSTREAM_UNAVAILABLE",
+      retryable: true,
+      retryAfterMinutes: 10,
+      disableEligible: false,
+      countsAsFailure: false,
+    };
+  }
+  if (/ZLZCHAT_BACKLOG_EXCEEDED/.test(upper)) {
+    return { code: "UPSTREAM_UNAVAILABLE", retryable: true, retryAfterMinutes: 10, disableEligible: false };
+  }
+  // Evaluate explicit configuration codes before the generic FORBIDDEN auth
+  // matcher. Otherwise ZLZCHAT_REDIRECT_FORBIDDEN is misclassified as a
+  // credential failure merely because its stable code contains that word.
+  if (/API_KEY.*(?:未配置|REQUIRED|MISSING)|ZLZCHAT_(?:BASE_URL_(?:MISSING|INVALID|UNSAFE)|PRIVATE_ORIGIN_NOT_ALLOWED|PUBLIC_DEMO_FORBIDDEN|REDIRECT_FORBIDDEN|ALLOWED_ORIGINS_INVALID|WXS_ID_REQUIRED)|CONFIG(?:URATION)?_(?:REQUIRED|INVALID)|UNKNOWN_SOURCE_PROVIDER|APP_ENCRYPTION_KEY/.test(upper)) {
+    return { code: "CONFIGURATION_ERROR", retryable: false, disableEligible: true };
+  }
   if (/SUPERGROK_AUTH|NOT_ENTITLED|(?:^|[_: ])(?:401|403)(?:$|[_: ])|AUTH_REQUIRED|UNAUTHORIZED|FORBIDDEN|TOKEN_(?:EXPIRED|INVALID)/.test(upper)) {
     return { code: "AUTH_REQUIRED", retryable: false, disableEligible: true };
   }
@@ -42,9 +86,6 @@ export function classifyMonitorFailure(message: string): MonitorFailure {
   }
   if (/TIMEOUT|TIMED_OUT|ABORTERROR/.test(upper)) {
     return { code: "COLLECTION_TIMEOUT", retryable: true, retryAfterMinutes: 10, disableEligible: false };
-  }
-  if (/API_KEY.*(?:未配置|REQUIRED|MISSING)|ZLZCHAT_(?:BASE_URL_MISSING|BASE_URL_INVALID|PUBLIC_DEMO_FORBIDDEN|WXS_ID_REQUIRED)|CONFIG(?:URATION)?_(?:REQUIRED|INVALID)|UNKNOWN_SOURCE_PROVIDER|APP_ENCRYPTION_KEY/.test(upper)) {
-    return { code: "CONFIGURATION_ERROR", retryable: false, disableEligible: true };
   }
   if (/FETCH FAILED|NETWORK|UND_ERR|ECONN|ENOTFOUND|EAI_AGAIN|SOCKET|DNS/.test(upper)) {
     return { code: "NETWORK_ERROR", retryable: true, retryAfterMinutes: 10, disableEligible: false };

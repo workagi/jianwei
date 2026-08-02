@@ -14,7 +14,11 @@ import { resolveXaiAccessToken } from "@/lib/xai-oauth";
  * Shared by the worker dispatch loop and the /api/monitors/validate route so
  * the credential wiring lives in exactly one file.
  */
-const WERSS_DEFAULT = process.env.WERSS_BASE_URL ?? "http://werss:8001";
+function werssBaseUrl(): string {
+  // Credentials and sidecar settings can be refreshed from the admin panel
+  // while the worker stays alive; do not freeze this value at module import.
+  return process.env.WERSS_BASE_URL ?? "http://werss:8001";
+}
 
 export function createXConnector(): XConnector {
   return new XConnector(process.env.X_BEARER_TOKEN ?? "");
@@ -35,7 +39,7 @@ export function createWebSearchConnector(provider: WebSearchMonitorConfig["provi
 }
 
 export function createWeRssConnector(): WeRssConnector {
-  return new WeRssConnector(WERSS_DEFAULT, process.env.WERSS_ACCESS_KEY, fetch, {
+  return new WeRssConnector(werssBaseUrl(), process.env.WERSS_ACCESS_KEY, fetch, {
     directFallbackEnabled: process.env.WECHAT_DIRECT_FALLBACK_ENABLED !== "false",
     fallbackBaseUrl: process.env.WECHAT_FALLBACK_BASE_URL,
     maxFeedStaleHours: Number(process.env.WERSS_MAX_FEED_STALE_HOURS ?? "8"),
@@ -50,6 +54,7 @@ export function createZlzChatConnector(): ZlzChatConnector {
     {
       timeoutMs: Number(process.env.ZLZCHAT_TIMEOUT_SECONDS ?? "15") * 1000,
       pageSize: Number(process.env.ZLZCHAT_PAGE_SIZE ?? "30"),
+      maxPages: Number(process.env.ZLZCHAT_MAX_PAGES ?? "20"),
     },
   );
 }
@@ -93,7 +98,7 @@ export async function createRuntimeWeRssConnector(): Promise<WeRssConnector> {
     runtimeCredential("WECHAT_DIRECT_FALLBACK_ENABLED"),
     runtimeCredential("WECHAT_FALLBACK_BASE_URL"),
   ]);
-  return new WeRssConnector(WERSS_DEFAULT, accessKey, fetch, {
+  return new WeRssConnector(werssBaseUrl(), accessKey, fetch, {
     directFallbackEnabled: directFallback !== "false",
     fallbackBaseUrl,
     maxFeedStaleHours: Number(process.env.WERSS_MAX_FEED_STALE_HOURS ?? "8"),
@@ -108,5 +113,6 @@ export async function createRuntimeZlzChatConnector(): Promise<ZlzChatConnector>
   return new ZlzChatConnector(baseUrl ?? "", apiKey ?? "", fetch, {
     timeoutMs: Number(process.env.ZLZCHAT_TIMEOUT_SECONDS ?? "15") * 1000,
     pageSize: Number(process.env.ZLZCHAT_PAGE_SIZE ?? "30"),
+    maxPages: Number(process.env.ZLZCHAT_MAX_PAGES ?? "20"),
   });
 }

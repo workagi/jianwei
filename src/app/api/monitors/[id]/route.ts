@@ -257,7 +257,10 @@ export async function PATCH(
         || (nextConfig.provider === "zlzchat" && nextConfig.zlzchatWxsId !== previousConfig.zlzchatWxsId);
       if (identityChanged && nextConfig.provider === "zlzchat") {
         try {
-          const preview = await (await createRuntimeZlzChatConnector()).validate(nextConfig);
+          const connector = await createRuntimeZlzChatConnector();
+          const preview = nextConfig.zlzchatWxsId
+            ? await connector.validate(nextConfig)
+            : await connector.subscribe(nextConfig);
           const normalizedConfig = {
             ...(parsed.data as Record<string, unknown>),
             ...(preview.configPatch ?? {}),

@@ -12,10 +12,6 @@ RUN pnpm install --frozen-lockfile
 FROM base AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
-# esbuild is a transitive dependency; pnpm's isolated linker won't expose its bin.
-# Link it manually so build:worker can find it.
-RUN ESBUILD_BIN=$(find /app/node_modules/.pnpm -name esbuild -type f -path '*/bin/esbuild' 2>/dev/null | head -1) && \
-    if [ -n "$ESBUILD_BIN" ]; then ln -sf "$ESBUILD_BIN" /usr/local/bin/esbuild; fi
 COPY . .
 RUN mkdir -p public && pnpm build && pnpm build:worker
 

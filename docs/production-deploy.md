@@ -62,6 +62,10 @@ openssl rand -hex 32
 注意：后台保存的模型、搜索、X 与 WeRSS API 密钥会用 `APP_ENCRYPTION_KEY`
 进行 AES-256-GCM 加密。后续不要直接更换该值，否则已有凭据无法解密；迁移服务器时必须连同它安全迁移。
 
+`DOCUMENT_ANALYSIS_CLAIM_LEASE_MINUTES` 默认是 `30`。它用于避免多个 Worker
+同时为同一篇文章重复调用模型；通常无需调整。若单批模型处理稳定超过 30 分钟，
+应先缩小采集批次，再按实际最长耗时提高该值（允许范围 5–120 分钟）。
+
 ## 4. 启动生产服务
 
 ```bash
@@ -142,9 +146,10 @@ ZLZChat 不随生产 Compose 安装。若已经单独部署，可在 `.env.produ
 ```env
 ZLZCHAT_BASE_URL=http://your-private-zlzchat:805
 ZLZCHAT_API_KEY=replace-with-your-key
+ZLZCHAT_ALLOWED_ORIGINS=http://your-private-zlzchat:805
 ```
 
-该地址必须同时能被 `web` 和 `worker` 容器访问。优先使用同一私有 Docker 网络、内网 IP 或带 HTTPS 的私有入口，不要暴露后台管理端口，也不要连接公开演示站。配置完成后，在单个公众号监控中手动选择 ZLZChat；现有 WeRSS 监控不会被自动迁移。完整说明见 [ZLZChat 备选通道](zlzchat-integration.md)。
+该地址必须同时能被 `web` 和 `worker` 容器访问。私网实例还必须把精确 origin 写入部署级 `ZLZCHAT_ALLOWED_ORIGINS`；这是 SSRF 防护白名单，不能省略，也不要配置比实际服务更宽的地址范围。优先使用同一私有 Docker 网络、内网 IP 或带 HTTPS 的私有入口，不要暴露后台管理端口，也不要连接公开演示站。配置完成后，在单个公众号监控中手动选择 ZLZChat；现有 WeRSS 监控不会被自动迁移。完整说明见 [ZLZChat 备选通道](zlzchat-integration.md)。
 
 ## 6. 热榜 / RSS 来源管理
 
@@ -263,7 +268,7 @@ curl -fsS https://你的域名/api/health
 验收标准：
 
 - `postgres`、`web`、`worker`、`werss`、`trendradar`、`trendradar-mcp`、`trendradar-refresh` 均已启动。
-- `/api/health` 返回 `ok: true`，且 `database`、`worker` 均为 `ok`。
+- `/api/health` 返回 `ok: true`，且 `database`、`worker` 均为 `ok`。多 Worker 部署会汇总所有实例；只要有实例停止心跳，`worker` 会变为 `delayed` 并返回 HTTP 503，不会被另一台正常实例掩盖。
 - 能打开 `/admin` 并登录。
 - WeRSS 通过 SSH 隧道完成扫码后，能订阅一个公众号。
 - 添加一个监控后，能在首页看到首次采集结果。

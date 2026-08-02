@@ -276,7 +276,7 @@ flowchart TD
 | API | 用途 |
 | --- | --- |
 | `/api/auth/login`、`/logout`、`/password` | 后台登录、退出和修改密码 |
-| `/api/monitors`、`/api/monitors/[id]` | 监控任务 CRUD |
+| `/api/monitors`、`/api/monitors/[id]` | 监控任务 CRUD（读写均需管理员会话或 Bearer Token） |
 | `/api/monitors/validate` | 来源验证和预览 |
 | `/api/settings/credentials` | 平台 API 凭据 |
 | `/api/settings/summary` | 模型配置 |
@@ -287,7 +287,7 @@ flowchart TD
 | `/api/settings/trendradar-interests` | 领域兴趣和排除规则 |
 | `/api/settings/xai-oauth` | SuperGrok / xAI 授权状态 |
 | `/api/bookmarks` | 收藏状态 |
-| `/api/health` | Web、数据库和 worker 健康状态 |
+| `/api/health` | Web、数据库和 worker 健康状态；多 Worker 会汇总实例并暴露 `workers.total/healthy/degraded/delayed/unknown` |
 
 写操作使用后台登录会话或 Bearer API Token 鉴权。
 
@@ -328,7 +328,7 @@ information-monitor/
 - 后台鉴权：`ADMIN_USERNAME`、`ADMIN_PASSWORD`、`ADMIN_API_TOKEN`。
 - 平台连接：X、搜索、WeRSS、TrendRadar、xAI。
 - 模型：Provider、Base URL、API Key、模型名、并发、RPM、输入上限和成本。
-- Worker：轮询、任务租约、超时、失败阈值和独立心跳。
+- Worker：轮询、任务租约、文档分析 claim（默认 30 分钟）、超时、失败阈值和独立心跳。
 - 公众号全文：直连开关、备用采集器和补抓批次。
 
 完整字段、默认值和说明以两个 example 文件为准。
@@ -464,7 +464,7 @@ docker compose config
 pnpm content:evaluate
 ```
 
-命令会分别输出内容类型、主题标签和信息流准入准确率；任何回归都会以非零状态退出并阻断 CI。修改分类、标签、榜单兴趣规则或 RSS 开关时，应同步增加或修正样本，不能通过删除失败样本来迁就规则。
+命令会分别输出内容类型、主题标签和信息流准入准确率；当前黄金集是回归基线，不等于已经达到通用语义分类能力。低于代码中记录的 accuracy / macro F1 基线会以非零状态退出并阻断 CI。修改分类、标签、榜单兴趣规则或 RSS 开关时，应同步增加或修正样本，不能通过降低门槛或删除失败样本来迁就规则。
 
 ## 18. 第三方依赖与升级风险
 

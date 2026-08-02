@@ -2,6 +2,15 @@ import type { PlatformType } from "@/connectors/types";
 import { deriveItemClassification, type ContentTypeId } from "@/lib/item-tags";
 import { passesTrendRadarReaderGate } from "@/lib/trendradar-interest-filter";
 
+/**
+ * Release regression floor shared by the CLI evaluator and the Vitest suite.
+ * This is a measured floor for the current rule-based classifier, not a claim
+ * that the rules are production-grade semantic classification. Raising it
+ * requires improving the golden set and classifier together.
+ */
+export const CONTENT_RULE_MIN_ACCURACY = 0.64;
+export const CONTENT_RULE_MIN_MACRO_F1 = 0.63;
+
 export interface ContentRuleEvaluationCase {
   id: string;
   platform: PlatformType;
@@ -11,6 +20,8 @@ export interface ContentRuleEvaluationCase {
   bodyText: string;
   expectedContentType?: ContentTypeId;
   requiredTopicTags?: string[];
+  /** Legacy fixture name retained during the golden-set migration. */
+  expectedTopicTags?: string[];
   forbiddenTopicTags?: string[];
   expectedReaderVisible?: boolean;
   note?: string;
@@ -46,11 +57,46 @@ function ratio(passed: number, total: number): number {
 }
 
 function getRequiredTags(c: ContentRuleEvaluationCase): string[] {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (c as any).requiredTopicTags ?? (c as any).expectedTopicTags ?? [];
+  return c.requiredTopicTags ?? c.expectedTopicTags ?? [];
 }
 function getForbiddenTags(c: ContentRuleEvaluationCase): string[] {
   return c.forbiddenTopicTags ?? [];
+}
+
+/**
+ * Older golden-set rows used category labels in the topic-tag field. Runtime
+ * topic tags are intentionally entity/topic oriented, so evaluate those
+ * labels against the persisted content type instead of silently treating a
+ * valid category expectation as a missing topic entity. Exact runtime tags
+ * still win, which keeps this compatibility layer harmless for real topics.
+ */
+const SEMANTIC_TAG_CONTENT_TYPES: Record<string, ContentTypeId> = {
+  "产品": "product_update",
+  "产品动态": "product_update",
+  "应用": "product_update",
+  "模型": "model_release",
+  "模型发布": "model_release",
+  "大模型": "model_release",
+  "行业": "industry_business",
+  "行业商业": "industry_business",
+  "论文": "research",
+  "论文研究": "research",
+  "教程": "tutorial",
+  "实践教程": "tutorial",
+  "政策": "policy_safety",
+  "政策安全": "policy_safety",
+  "安全": "policy_safety",
+  "观点": "opinion",
+  "观点解读": "opinion",
+};
+
+function matchesTopicExpectation(
+  classification: ReturnType<typeof deriveItemClassification>,
+  expected: string,
+): boolean {
+  if (classification.topicTags.includes(expected)) return true;
+  const semanticType = SEMANTIC_TAG_CONTENT_TYPES[expected];
+  return semanticType !== undefined && classification.contentType === semanticType;
 }
 
 export function evaluateContentRules(cases: ContentRuleEvaluationCase[]): ContentRuleEvaluationReport {
@@ -86,7 +132,7 @@ export function evaluateContentRules(cases: ContentRuleEvaluationCase[]): Conten
 
     for (const tag of getRequiredTags(testCase)) {
       tagAssertions += 1;
-      if (classification.topicTags.includes(tag)) tagPassed += 1;
+      if (matchesTopicExpectation(classification, tag)) tagPassed += 1;
       else failures.push({
         id: testCase.id,
         dimension: "required_tag",
@@ -155,20 +201,18 @@ export function evaluateContentRules(cases: ContentRuleEvaluationCase[]): Conten
   }
 
   const perCategory: Record<string, { tp: number; fp: number; fn: number; precision: number; recall: number; f1: number }> = {};
-  let totalPrecision = 0;
-  let totalRecall = 0;
+  let totalF1 = 0;
   let categoryCount = 0;
   for (const [cat, { tp, fp, fn }] of Object.entries(categoryMatrix)) {
     const precision = tp + fp > 0 ? Number((tp / (tp + fp)).toFixed(4)) : 0;
     const recall = tp + fn > 0 ? Number((tp / (tp + fn)).toFixed(4)) : 0;
     const f1 = precision + recall > 0 ? Number(((2 * precision * recall) / (precision + recall)).toFixed(4)) : 0;
     perCategory[cat] = { tp, fp, fn, precision, recall, f1 };
-    totalPrecision += precision;
-    totalRecall += recall;
+    totalF1 += f1;
     categoryCount += 1;
   }
   const macroF1 = categoryCount > 0
-    ? Number(((2 * (totalPrecision / categoryCount) * (totalRecall / categoryCount)) / ((totalPrecision / categoryCount) + (totalRecall / categoryCount))).toFixed(4))
+    ? Number((totalF1 / categoryCount).toFixed(4))
     : 0;
 
   // Warn about cases that produce zero assertions (likely missing expectations)

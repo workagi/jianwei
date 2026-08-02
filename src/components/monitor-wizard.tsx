@@ -473,7 +473,7 @@ export function MonitorWizard({
             </select>
             <small className="field-hint">
               {form.wechatProvider === "zlzchat"
-                ? "需先在“平台连接”填写你自建的 ZLZChat 地址和 API Key；预览会在 ZLZChat 中创建订阅，它故障时不会拖住 WeRSS。"
+                ? "需先在“平台连接”填写你自建的 ZLZChat 地址和 API Key；预览只读，首次保存时才会显式创建订阅。"
                 : "使用内置 WeRSS 侧车解析并订阅公众号。"}
             </small>
           </label>
@@ -507,7 +507,7 @@ export function MonitorWizard({
                 onChange={(e) => set("zlzchatWxsId", e.target.value)}
               />
               <small className="field-hint">
-                新公众号可留空自动识别；如果 ZLZChat 已订阅过该公众号，必须从其后台复制 wxsId，避免错误绑定。
+                新公众号可留空，保存时会显式创建订阅；如果 ZLZChat 已订阅过该公众号，必须从其后台复制 wxsId，避免重复绑定。
               </small>
             </label>
           )}

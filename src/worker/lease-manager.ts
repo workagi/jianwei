@@ -1,6 +1,7 @@
 import { and, eq, isNull, lte, or, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { monitors } from "@/db/schema";
+import { abortableDelay } from "@/lib/abort-signal";
 
 type MonitorRow = typeof monitors.$inferSelect;
 import { createStructuredLogger } from "@/lib/structured-log";
@@ -8,6 +9,13 @@ import { createStructuredLogger } from "@/lib/structured-log";
 const WORKER_ID =
   process.env.WORKER_ID?.trim() ||
   `${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+const CONFIGURED_WORKER_ID = Boolean(process.env.WORKER_ID?.trim());
+// A single-worker install should reuse one health row after a restart. When
+// WORKER_ID is explicitly configured (for replicas), each instance gets its
+// own row so the health endpoint can aggregate them independently.
+const WORKER_HEALTH_SERVICE = CONFIGURED_WORKER_ID
+  ? `worker:${WORKER_ID}`
+  : "worker";
 const MONITOR_LEASE_MS =
   (Number(process.env.WORKER_MONITOR_LEASE_SECONDS) || 1800) * 1000;
 
@@ -116,6 +124,39 @@ export function getLeaseWorkerId(): string {
   return WORKER_ID;
 }
 
+export function getWorkerHealthService(): string {
+  return WORKER_HEALTH_SERVICE;
+}
+
 export function getMonitorLeaseMs(): number {
   return MONITOR_LEASE_MS;
+}
+
+/**
+ * Retry a lease-renewal query a small, bounded number of times. Returning
+ * false means the fenced row no longer belongs to this worker; throwing means
+ * ownership could not be confirmed before work continues.
+ */
+export async function retryLeaseRenewal(
+  renewal: () => Promise<boolean>,
+  options: {
+    maxAttempts?: number;
+    retryDelayMs?: number;
+    signal?: AbortSignal;
+  } = {},
+): Promise<boolean> {
+  const maxAttempts = Math.max(1, options.maxAttempts ?? 2);
+  const retryDelayMs = Math.max(0, options.retryDelayMs ?? 250);
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    options.signal?.throwIfAborted();
+    try {
+      return await renewal();
+    } catch (error) {
+      lastError = error;
+      if (attempt >= maxAttempts) break;
+      if (retryDelayMs > 0) await abortableDelay(retryDelayMs, options.signal);
+    }
+  }
+  throw new Error("LEASE_RENEWAL_UNCONFIRMED", { cause: lastError });
 }

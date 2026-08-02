@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireWriteAuth } from "@/lib/auth";
 import { loadApiCredentials, saveApiCredentials } from "@/db/queries";
+import { assertSafeZlzChatEndpoint } from "@/lib/zlzchat-endpoint";
 
 // 平台标识 -> 实际环境变量名（与 factory.ts / docker-compose 保持一致）。
 const KEY_MAP: Record<string, string> = {
@@ -50,24 +51,23 @@ export async function PUT(req: Request) {
     if (typeof raw === "string") {
       const v = raw.trim();
       if (v.length > 0) {
+        let value = v;
         if (platform === "zlzchat_base_url") {
           try {
-            const url = new URL(v);
-            if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new Error("invalid");
-            if (url.hostname === "111.229.83.152") {
-              return NextResponse.json(
-                { ok: false, error: "不能把 ZLZChat 配置指向已知公开演示地址；请使用经过安全审计的自建实例。" },
-                { status: 422 },
-              );
-            }
-          } catch {
+            value = await assertSafeZlzChatEndpoint(v);
+          } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error);
             return NextResponse.json(
-              { ok: false, error: "ZLZChat 地址必须是合法的 http/https URL，且不能在 URL 中包含账号密码。" },
+              {
+                ok: false,
+                error: "ZLZChat 地址无效或不符合网络安全策略；私网实例必须加入部署级 ZLZCHAT_ALLOWED_ORIGINS 白名单。",
+                detail,
+              },
               { status: 422 },
             );
           }
         }
-        rows.push({ key, value: v });
+        rows.push({ key, value });
       }
     }
   }

@@ -4,6 +4,7 @@ import {
   ingest,
   type IngestItemRow,
   type IngestMatchLink,
+  type IngestMatchObservation,
   type IngestRepository,
   type IngestSourceObservation,
 } from "@/ingestion/ingest-items";
@@ -14,6 +15,7 @@ class WorkflowRepository implements IngestRepository {
   rows: IngestItemRow[] = [];
   links: IngestMatchLink[] = [];
   sources: IngestSourceObservation[] = [];
+  observations: IngestMatchObservation[] = [];
 
   async upsertItems(rows: IngestItemRow[]) {
     this.rows.push(...rows);
@@ -41,13 +43,20 @@ class WorkflowRepository implements IngestRepository {
     return links.length;
   }
 
+  async insertMatchObservations(observations: IngestMatchObservation[]) {
+    this.observations.push(...observations);
+    return observations.length;
+  }
+
   async findExistingSourceKeys(
     _unused: Array<{ platform: string; sourceProvider: string; upstreamId: string }>,
   ): Promise<Set<string>> {
+    void _unused;
     return new Set();
   }
 
   async findExistingCanonicalUrls(_unused: string[]): Promise<Set<string>> {
+    void _unused;
     return new Set();
   }
 }

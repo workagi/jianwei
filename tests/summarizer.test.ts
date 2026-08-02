@@ -350,6 +350,29 @@ describe("summarizer providers", () => {
     expect(result.errorCode).toBe("SUMMARY_RATE_LIMITED");
   });
 
+  it("propagates caller cancellation through an in-flight model request", async () => {
+    process.env.SUMMARY_PROVIDER = "openai_compatible";
+    process.env.SUMMARY_BASE_URL = "https://example.com/v1";
+    process.env.SUMMARY_API_KEY = "custom-key";
+    process.env.SUMMARY_MODEL = "compatible-model";
+    process.env.SUMMARY_SKIP_PLATFORMS = "";
+    const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        const requestSignal = init?.signal;
+        if (!requestSignal) return reject(new Error("missing model abort signal"));
+        if (requestSignal.aborted) return reject(requestSignal.reason);
+        requestSignal.addEventListener("abort", () => reject(requestSignal.reason), { once: true });
+      }));
+    globalThis.fetch = fetchMock as typeof fetch;
+    const controller = new AbortController();
+
+    const pending = generateSummaryAttempt(item(), controller.signal);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    controller.abort(new Error("LEASE_LOST"));
+
+    await expect(pending).rejects.toThrow("LEASE_LOST");
+  });
+
   it("uses a clean local full-text fallback for WeChat when model output is unusable", async () => {
     process.env.SUMMARY_PROVIDER = "openai_compatible";
     process.env.SUMMARY_BASE_URL = "https://example.com/v1";

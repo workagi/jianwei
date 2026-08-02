@@ -164,9 +164,30 @@ describe.skipIf(!RUN_DB_TESTS)("multi-worker chaos", () => {
       .where(eq(items.canonicalUrl, canonicalUrl));
     expect(docs).toHaveLength(1);
 
-    // Both source items should be registered
+    // Register the two provider observations against the winning document.
+    await repo.upsertSourceItems([
+      {
+        itemId: resultA[0].id,
+        platform: "web_search",
+        sourceProvider: "chaos-test",
+        upstreamId: rowsA[0].upstreamId,
+        sourceUrl: canonicalUrl,
+        rawPayload: {},
+        publishedAt: new Date(),
+      },
+      {
+        itemId: resultB[0].id,
+        platform: "web_search",
+        sourceProvider: "chaos-test",
+        upstreamId: rowsB[0].upstreamId,
+        sourceUrl: canonicalUrl,
+        rawPayload: {},
+        publishedAt: new Date(),
+      },
+    ]);
     const sources = await db.select().from(sourceItems)
       .where(eq(sourceItems.sourceProvider, "chaos-test"));
+    expect(sources).toHaveLength(2);
   });
 
   it("stale run cleanup: leaves active runs alone", async () => {
@@ -199,6 +220,7 @@ describe.skipIf(!RUN_DB_TESTS)("multi-worker chaos", () => {
 
     // Run stale cleanup
     const cleaned = await cleanupStaleRunningRuns(300_000, log);
+    expect(cleaned).toBe(0);
 
     // The run should NOT be cleaned because the monitor has a valid lease
     const run = await db.select().from(collectionRuns)

@@ -21,6 +21,14 @@ function keywordPattern(kw: string): RegExp {
   return new RegExp(escaped, "i");
 }
 
+function normalizedKeywords(values: string[] | undefined): string[] {
+  return [...new Set(
+    (values ?? [])
+      .map((value) => value.trim())
+      .filter(Boolean),
+  )];
+}
+
 export function normalizeRelevanceScore(value: unknown): number | undefined {
   const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
   if (!Number.isFinite(parsed)) return undefined;
@@ -134,7 +142,7 @@ export function deriveMonitorRetention(monitor: MonitorRules, doc: {
   // ═══ Gate: hard rejection ════════════════════════════════════════════════
   // Excluded keywords: if any appear in the document text, reject immediately.
   // This is a hard Gate — excluded content should never appear in the feed.
-  const excludeKeywords = monitor.excludeKeywords ?? [];
+  const excludeKeywords = normalizedKeywords(monitor.excludeKeywords);
   const matchedExcludes = excludeKeywords.filter((kw) => {
     return keywordPattern(kw).test(haystack);
   });
@@ -148,7 +156,7 @@ export function deriveMonitorRetention(monitor: MonitorRules, doc: {
 
   // Required keywords: if configured but zero matches against the document,
   // reject. Multiple required keywords use AND semantics — all must appear.
-  const requiredKeywords = monitor.requiredKeywords ?? [];
+  const requiredKeywords = normalizedKeywords(monitor.requiredKeywords);
   if (requiredKeywords.length > 0) {
     const matchedRequired = requiredKeywords.filter((kw) => {
       return keywordPattern(kw).test(haystack);
@@ -168,7 +176,7 @@ export function deriveMonitorRetention(monitor: MonitorRules, doc: {
 
   // Keyword hit bonus: each monitor keyword matched in the document signals
   // stronger relevance. Missing keywords don't penalize the base score.
-  const keywords = monitor.keywords ?? [];
+  const keywords = normalizedKeywords(monitor.keywords);
   const keywordHits = keywords.filter((kw) => {
     return keywordPattern(kw).test(haystack);
   }).length;
@@ -182,11 +190,11 @@ export function deriveMonitorRetention(monitor: MonitorRules, doc: {
 
   // Content type match bonus: if the monitor targets specific content types
   // and the document matches, boost relevance.
-  const ctFilters = monitor.contentTypeFilters ?? [];
+  const ctFilters = normalizedKeywords(monitor.contentTypeFilters);
   const ctBonus = ctFilters.length > 0 && ctFilters.includes(doc.contentType) ? 15 : 0;
 
   // Topic tag overlap bonus.
-  const topicFilters = (monitor.topicFilters ?? []).map((t) => t.toLowerCase());
+  const topicFilters = normalizedKeywords(monitor.topicFilters).map((t) => t.toLowerCase());
   const topicHits = doc.topicTags.filter((t) => topicFilters.includes(t.toLowerCase())).length;
   const topicBonus = Math.min(15, topicHits * 8);
 
@@ -213,4 +221,3 @@ export function deriveMonitorRetention(monitor: MonitorRules, doc: {
 
   return { shouldKeep: true, relevanceScore: score, retentionReason: reason };
 }
-

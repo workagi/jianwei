@@ -1,14 +1,17 @@
 import { describe, it, expect } from "vitest";
 import {
   commitPreparedIngest,
+  documentAnalysisClaimLeaseMinutes,
   ingest,
   prepareIngest,
   safePublishedAt,
   toItemRows,
   type IngestItemRow,
   type IngestMatchLink,
+  type IngestMatchObservation,
   type IngestRepository,
   type IngestSourceObservation,
+  type DocumentAnalysisClaim,
 } from "@/ingestion/ingest-items";
 import type { NormalizedItem } from "@/connectors/types";
 
@@ -31,6 +34,9 @@ class MemRepo implements IngestRepository {
   itemRows: IngestItemRow[] = [];
   sourceRows: IngestSourceObservation[] = [];
   matchLinks: IngestMatchLink[] = [];
+  matchObservations: IngestMatchObservation[] = [];
+  completedClaims = 0;
+  releasedClaims = 0;
 
   async upsertItems(rows: IngestItemRow[]) {
     const returned = rows.map((r, i) => ({
@@ -59,13 +65,20 @@ class MemRepo implements IngestRepository {
     return links.length;
   }
 
+  async insertMatchObservations(observations: IngestMatchObservation[]) {
+    this.matchObservations.push(...observations);
+    return observations.length;
+  }
+
   async findExistingSourceKeys(
     _unused_sources: Array<{ platform: string; sourceProvider: string; upstreamId: string }>,
   ): Promise<Set<string>> {
+    void _unused_sources;
     return new Set();
   }
 
   async findExistingCanonicalUrls(_unused_urls: string[]): Promise<Set<string>> {
+    void _unused_urls;
     return new Set();
   }
 
@@ -74,12 +87,35 @@ class MemRepo implements IngestRepository {
     analysisVersion: string;
     ownerWorkerId: string;
     leaseMinutes: number;
-  }): Promise<boolean> {
-    return true;
+  }): Promise<DocumentAnalysisClaim | null> {
+    return {
+      id: "claim-1",
+      canonicalUrlHash: _unused_input.canonicalUrlHash,
+      analysisVersion: _unused_input.analysisVersion,
+      ownerWorkerId: _unused_input.ownerWorkerId,
+      claimToken: "claim-token-1",
+    };
+  }
+
+  async completeDocumentAnalyses(claims: Array<{ id: string }>) {
+    this.completedClaims += claims.length;
+    return claims.length;
+  }
+
+  async releaseDocumentAnalyses(claims: Array<{ id: string }>) {
+    this.releasedClaims += claims.length;
+    return claims.length;
   }
 }
 
 describe("toItemRows", () => {
+  it("uses a bounded 30-minute document-analysis claim lease by default", () => {
+    expect(documentAnalysisClaimLeaseMinutes(undefined)).toBe(30);
+    expect(documentAnalysisClaimLeaseMinutes("1")).toBe(5);
+    expect(documentAnalysisClaimLeaseMinutes("45")).toBe(45);
+    expect(documentAnalysisClaimLeaseMinutes("999")).toBe(120);
+  });
+
   it("canonicalizes tracking params and dedupes by upstream id", () => {
     const rows = toItemRows([makeItem(), makeItem()]);
     expect(rows).toHaveLength(1);
@@ -107,6 +143,35 @@ describe("toItemRows", () => {
     ]);
     expect(rows).toHaveLength(1);
     expect(rows[0].canonicalUrl).toBe("https://mp.weixin.qq.com/s/znF4CNSMGPNxJ9CZuH04JQ");
+  });
+
+  it("keeps the richest representation when duplicate canonical URLs share a batch", () => {
+    const rows = toItemRows([
+      makeItem({
+        upstreamId: "short",
+        canonicalUrl: "https://example.com/quality",
+        title: undefined,
+        text: "摘要",
+      }),
+      makeItem({
+        upstreamId: "full",
+        canonicalUrl: "https://example.com/quality?utm_source=rss",
+        title: "完整文章标题",
+        text: "这是一段明显更完整的文章正文，包含事实、背景和结论。",
+        contentHtml: "<article><p>完整正文</p><p>第二段事实</p></article>",
+        contentFetchStatus: "success",
+        imageUrls: ["https://example.com/cover.jpg"],
+      }),
+    ]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      upstreamId: "full",
+      title: "完整文章标题",
+      contentFetchStatus: "success",
+      imageUrls: ["https://example.com/cover.jpg"],
+    });
+    expect(rows[0].bodyText).toContain("更完整");
   });
 
   it("passes trendradar platform through unchanged", () => {
@@ -195,6 +260,8 @@ describe("ingest", () => {
     expect(repo.itemRows).toHaveLength(1);
     expect(repo.sourceRows).toHaveLength(1);
     expect(repo.matchLinks).toHaveLength(1);
+    expect(repo.matchObservations).toHaveLength(1);
+    expect(repo.completedClaims).toBe(1);
   });
 
   it("upserts items and links them to the monitor", async () => {
@@ -211,6 +278,86 @@ describe("ingest", () => {
     expect(repo.matchLinks.every((m) => m.monitorId === "m1")).toBe(true);
     expect(repo.matchLinks.every((m) => Boolean(m.sourceItemId))).toBe(true);
     expect(repo.matchLinks.every((m) => m.retentionStatus === "kept")).toBe(true);
+    expect(repo.matchObservations).toHaveLength(2);
+    expect(repo.completedClaims).toBe(2);
+  });
+
+  it("routes the canonical quality winner instead of an earlier short duplicate", async () => {
+    const repo = new MemRepo();
+    await ingest(repo, {
+      monitorId: "m1",
+      items: [
+        makeItem({
+          upstreamId: "short-first",
+          canonicalUrl: "https://example.com/routed-quality",
+          title: undefined,
+          text: "摘要",
+        }),
+        makeItem({
+          upstreamId: "full-second",
+          canonicalUrl: "https://example.com/routed-quality?utm_source=rss",
+          title: "完整文章标题",
+          text: "这是应该进入分析路由的完整正文，包含足够多的事实细节。",
+          contentHtml: "<article><p>完整正文</p><p>事实细节</p></article>",
+          contentFetchStatus: "success",
+        }),
+      ],
+    });
+
+    expect(repo.itemRows).toHaveLength(1);
+    expect(repo.itemRows[0]).toMatchObject({
+      upstreamId: "full-second",
+      analysisStatus: "disabled",
+    });
+    expect(repo.completedClaims).toBe(1);
+  });
+
+  it("fails closed when the document-analysis claim store is unavailable", async () => {
+    class FailingClaimRepo extends MemRepo {
+      async claimDocumentAnalysis(): Promise<never> {
+        throw new Error("claim database unavailable");
+      }
+    }
+    const repo = new FailingClaimRepo();
+
+    await expect(prepareIngest(repo, {
+      items: [makeItem()],
+      monitorId: "m1",
+    })).rejects.toThrow("claim database unavailable");
+    expect(repo.itemRows).toHaveLength(0);
+    expect(repo.completedClaims).toBe(0);
+  });
+
+  it("releases partial batch claims and retries when another owner is analyzing a document", async () => {
+    class ContendedClaimRepo extends MemRepo {
+      claimCalls = 0;
+      async claimDocumentAnalysis(input: {
+        canonicalUrlHash: string;
+        analysisVersion: string;
+        ownerWorkerId: string;
+      }) {
+        this.claimCalls += 1;
+        if (this.claimCalls === 2) return null;
+        return {
+          id: "claim-owned",
+          canonicalUrlHash: input.canonicalUrlHash,
+          analysisVersion: input.analysisVersion,
+          ownerWorkerId: input.ownerWorkerId,
+          claimToken: "claim-token-owned",
+        };
+      }
+    }
+    const repo = new ContendedClaimRepo();
+
+    await expect(prepareIngest(repo, {
+      monitorId: "m1",
+      items: [
+        makeItem({ upstreamId: "claim-a", canonicalUrl: "https://example.com/claim-a" }),
+        makeItem({ upstreamId: "claim-b", canonicalUrl: "https://example.com/claim-b" }),
+      ],
+    })).rejects.toThrow("DOCUMENT_ANALYSIS_IN_PROGRESS");
+    expect(repo.releasedClaims).toBe(1);
+    expect(repo.itemRows).toHaveLength(0);
   });
 
   it("stores hard Gate rejections as audit-only matches", async () => {
@@ -228,6 +375,50 @@ describe("ingest", () => {
     expect(repo.matchLinks).toHaveLength(1);
     expect(repo.matchLinks[0].retentionStatus).toBe("gate_blocked");
     expect(repo.matchLinks[0].relevanceScore).toBe(-1);
+  });
+
+  it("evaluates monitor rules against the persisted canonical analysis", async () => {
+    class CanonicalDocumentRepo extends MemRepo {
+      override async upsertItems(rows: IngestItemRow[]) {
+        this.itemRows.push(...rows);
+        return [{
+          id: "canonical-document",
+          platform: rows[0].platform as NormalizedItem["platform"],
+          upstreamId: rows[0].upstreamId,
+          canonicalUrl: rows[0].canonicalUrl,
+          title: "OpenAI model release",
+          bodyText: "OpenAI released a new model with verified details.",
+          aiSummary: "Canonical model analysis",
+          contentType: "model_release",
+          topicTags: ["OpenAI"],
+          informationValueScore: 93,
+          analysisStatus: "success",
+          analysisVersion: "v2",
+        }];
+      }
+    }
+    const repo = new CanonicalDocumentRepo();
+
+    await commitPreparedIngest(repo, {
+      input: {
+        items: [makeItem({ title: "Unrelated snippet", text: "unrelated" })],
+        monitorId: "m1",
+        monitorRules: {
+          keywords: [],
+          requiredKeywords: ["OpenAI"],
+          excludeKeywords: [],
+        },
+      },
+      rows: [toItemRows([makeItem({ title: "Unrelated snippet", text: "unrelated" })])[0]],
+      summary: { status: "not_applicable", attempted: 0, succeeded: 0, failed: 0 },
+      analysisClaims: [],
+    });
+
+    expect(repo.matchLinks[0]).toMatchObject({
+      retentionStatus: "kept",
+      analysisStatus: "success",
+      analysisVersion: "v2",
+    });
   });
 
   it("returns zeros for an empty batch", async () => {
@@ -273,6 +464,7 @@ describe("ingest", () => {
       "trendradar",
     ]);
     expect(repo.matchLinks).toHaveLength(1);
+    expect(repo.matchObservations).toHaveLength(2);
   });
 
   it("treats the same upstream id on another platform as a new item", async () => {

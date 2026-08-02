@@ -125,8 +125,13 @@ export function buildContentRouteOutcome(
 }
 
 /** Route a batch through the configured model once and return an outcome for every item. */
-export async function routeContentItems(items: NormalizedItem[]): Promise<ContentRouteBatch> {
-  const { attempts, stats } = await generateSummariesWithStats(items);
+export async function routeContentItems(
+  items: NormalizedItem[],
+  signal?: AbortSignal,
+): Promise<ContentRouteBatch> {
+  signal?.throwIfAborted();
+  const { attempts, stats } = await generateSummariesWithStats(items, signal);
+  signal?.throwIfAborted();
   const outcomes = new Map<string, ContentRouteOutcome>();
   for (const item of items) {
     const attempt = attempts.get(summaryKey(item)) ?? { status: "skipped" as const };

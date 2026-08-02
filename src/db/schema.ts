@@ -1,6 +1,7 @@
 import {
   bigint,
   boolean,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -167,6 +168,7 @@ export const sourceItems = pgTable("source_items", {
   lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   uniqueIndex("source_items_identity_uidx").on(table.platform, table.sourceProvider, table.upstreamId),
+  uniqueIndex("source_items_id_item_uidx").on(table.id, table.itemId),
   index("source_items_item_seen_idx").on(table.itemId, table.lastSeenAt),
   index("source_items_platform_seen_idx").on(table.platform, table.lastSeenAt),
 ]);
@@ -196,6 +198,11 @@ export const itemMatches = pgTable("item_matches", {
   index("item_matches_monitor_status_seen_idx").on(table.monitorId, table.retentionStatus, table.firstSeenAt),
   index("item_matches_source_item_idx").on(table.sourceItemId),
   index("item_matches_monitor_relevance_idx").on(table.monitorId, table.relevanceScore),
+  foreignKey({
+    name: "item_matches_source_document_fk",
+    columns: [table.sourceItemId, table.itemId],
+    foreignColumns: [sourceItems.id, sourceItems.itemId],
+  }),
 ]);
 
 /**
@@ -206,6 +213,7 @@ export const itemMatches = pgTable("item_matches", {
  */
 export const monitorMatchObservations = pgTable("monitor_match_observations", {
   id: uuid("id").primaryKey().defaultRandom(),
+  observationKey: text("observation_key").notNull(),
   matchItemId: uuid("match_item_id").notNull(),
   matchMonitorId: uuid("match_monitor_id").notNull(),
   sourceItemId: uuid("source_item_id").references(() => sourceItems.id, { onDelete: "set null" }),
@@ -217,9 +225,17 @@ export const monitorMatchObservations = pgTable("monitor_match_observations", {
   index("match_observations_match_idx").on(table.matchItemId, table.matchMonitorId),
   index("match_observations_source_idx").on(table.sourceItemId),
   index("match_observations_run_idx").on(table.collectionRunId),
-  uniqueIndex("match_observations_run_match_source_uidx").on(
-    table.matchItemId, table.matchMonitorId, table.sourceItemId, table.collectionRunId,
-  ),
+  uniqueIndex("match_observations_key_uidx").on(table.observationKey),
+  foreignKey({
+    name: "match_observations_match_fk",
+    columns: [table.matchItemId, table.matchMonitorId],
+    foreignColumns: [itemMatches.itemId, itemMatches.monitorId],
+  }).onDelete("cascade"),
+  foreignKey({
+    name: "match_observations_source_document_fk",
+    columns: [table.sourceItemId, table.matchItemId],
+    foreignColumns: [sourceItems.id, sourceItems.itemId],
+  }),
 ]);
 
 /**
@@ -233,6 +249,7 @@ export const documentAnalysisClaims = pgTable("document_analysis_claims", {
   canonicalUrlHash: text("canonical_url_hash").notNull(),
   analysisVersion: text("analysis_version").notNull(),
   ownerWorkerId: text("owner_worker_id").notNull(),
+  claimToken: text("claim_token").notNull(),
   status: text("status").notNull().default("claimed"),
   claimedAt: timestamp("claimed_at", { withTimezone: true }).notNull().defaultNow(),
   completedAt: timestamp("completed_at", { withTimezone: true }),
