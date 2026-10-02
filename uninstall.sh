@@ -110,12 +110,12 @@ show_named_resources "网络" "$NETWORK_IDS"
 if ! $DRY_RUN; then
   if [ -n "$CONTAINER_IDS" ]; then
     while IFS= read -r container_id; do
-      [ -n "$container_id" ] && docker container rm -f "$container_id" 2>/dev/null || true
+      if [ -n "$container_id" ]; then docker container rm -f "$container_id" 2>/dev/null || true; fi
     done <<< "$CONTAINER_IDS"
   fi
   if [ -n "$NETWORK_IDS" ]; then
     while IFS= read -r network_id; do
-      [ -n "$network_id" ] && docker network rm "$network_id" 2>/dev/null || true
+      if [ -n "$network_id" ]; then docker network rm "$network_id" 2>/dev/null || true; fi
     done <<< "$NETWORK_IDS"
   fi
   ok "本项目容器和网络已清理"
@@ -130,7 +130,7 @@ if $DRY_RUN; then
   info "预览：跳过数据卷删除"
 elif confirm "删除以上数据卷？这将永久删除所有监控数据和配置！"; then
   while IFS= read -r volume_name; do
-    [ -n "$volume_name" ] && docker volume rm "$volume_name" 2>/dev/null || true
+    if [ -n "$volume_name" ]; then docker volume rm "$volume_name" 2>/dev/null || true; fi
   done <<< "$VOLUME_NAMES"
   ok "数据卷已删除"
 else
@@ -151,7 +151,7 @@ else
     info "预览：跳过镜像删除"
   elif confirm "删除以上镜像？"; then
     while IFS= read -r image_id; do
-      [ -n "$image_id" ] && docker image rm "$image_id" 2>/dev/null || true
+      if [ -n "$image_id" ]; then docker image rm "$image_id" 2>/dev/null || true; fi
     done <<< "$IMAGE_IDS"
     ok "镜像已删除"
   else
