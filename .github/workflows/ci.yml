@@ -70,8 +70,8 @@ jobs:
       - name: Audit public-release safety
         run: pnpm audit:open-source -- --history
 
-      - name: Audit production dependencies
-        run: pnpm audit --prod --audit-level high
+      - name: Audit dependencies
+        run: pnpm audit --audit-level high
 
       - name: Evaluate content rules
         run: pnpm content:evaluate
