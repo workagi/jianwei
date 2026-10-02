@@ -102,9 +102,10 @@
 > ```
 > WeRSS 基础镜像若无法从 `ghcr.io` 拉取，可通过南京大学镜像中转：
 > ```bash
-> docker pull ghcr.nju.edu.cn/rachelos/we-mp-rss:latest
-> docker tag ghcr.nju.edu.cn/rachelos/we-mp-rss:latest ghcr.io/rachelos/we-mp-rss:latest
+> docker pull ghcr.nju.edu.cn/rachelos/we-mp-rss@sha256:af771f21b3f7958a5dea16911fba050a6d7b92eac2fb2499c467c1b11f07ef34
+> docker tag ghcr.nju.edu.cn/rachelos/we-mp-rss@sha256:af771f21b3f7958a5dea16911fba050a6d7b92eac2fb2499c467c1b11f07ef34 jianwei-werss-upstream:pinned
 > ```
+> 然后把 `.env` 中的 `WERSS_UPSTREAM_IMAGE` 改为 `jianwei-werss-upstream:pinned` 再启动。不要改回浮动的 `latest`，否则同一份 Jianwei 代码可能在不同日期构建出不同结果。
 
 - Git。
 
@@ -121,7 +122,7 @@ cd jianwei
 `start.sh` 首次运行会：
 
 1. 复制 `.env.example` 为 `.env`。
-2. 自动生成后台初始密码、API Token 和加密密钥。
+2. 写入固定的首次登录密码 `admin@123`，并随机生成只供程序使用的 API Token 和加密密钥。
 3. 检查 Docker 与 Compose 配置。
 4. 构建并启动数据库、Web、worker、WeRSS 和 TrendRadar。
 5. 提示仍未配置的平台凭据。
@@ -272,6 +273,18 @@ flowchart LR
 
 模型失败内容会记录状态并进入小批量重试，不会一次性重跑全部历史内容造成费用失控。
 
+### 规则分类的真实边界
+
+不配置模型时，见微仍然可以完成采集、去重、关键词 Gate 和信息流汇总；本地内容类型与主题规则是可解释、低成本的兜底，不等于高精度语义模型。`pnpm content:evaluate` 会同时显示当前实测结果、CI 防回归底线（64% accuracy / 63% macro F1）和更高的发布质量目标（80% / 75%）。未达到质量目标时，项目会明确显示 `QUALITY GAP`，不会把“CI 没退步”包装成“分类已经准确”。如果你依赖摘要、中文标题或细分类别，建议在后台启用模型 API。
+
+## v0.2.0：事件与模型用量
+
+Worker在后台保存事件归属，精选页直接读取已保存的事件。不同版本号或明确日期的发布不会仅凭相似标题合并；需要纠错时可用 `pnpm events split <item-id>` 人工拆分。
+
+新分析、补跑和标题翻译共享 `MODEL_DAILY_REQUEST_LIMIT`（默认每日1000次，北京时间零点重置）。已收到的模型响应先保存，重试可复用；结果不明时暂停重复付费，后台会显示请求与费用待确认状态。费用金额仍取决于模型单价和tokens，不由请求上限保证。
+
+正式升级与限制见 [v0.2.0发布说明](docs/releases/v0.2.0.md)，发版步骤见 [版本发布](docs/release-process.md)。
+
 ## 采集频率与智能错峰
 
 后台提供三组频率：
@@ -321,6 +334,8 @@ docker compose down
 ./uninstall.sh --yes     # 一键全部删除，跳过确认
 ./uninstall.sh --clean   # 只删容器和数据卷，保留项目文件和镜像
 ```
+
+卸载脚本只按当前 Compose 项目的精确 Docker 标签删除资源，不按名称模糊匹配，也不会执行全局 Docker builder 清理；同一台机器上的其他项目不会被连带删除。`--yes` 只是跳过确认，不会扩大删除范围。可先运行 `./uninstall.sh --dry-run` 查看将处理的资源。
 
 开发检查：
 

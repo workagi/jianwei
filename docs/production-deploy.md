@@ -47,8 +47,9 @@ ACME_EMAIL=你的邮箱
 POSTGRES_PASSWORD=强随机密码
 APP_ENCRYPTION_KEY=32字节base64随机值
 ADMIN_USERNAME=admin
-ADMIN_PASSWORD=强登录密码
+ADMIN_PASSWORD=admin@123
 ADMIN_API_TOKEN=强随机令牌
+ADMIN_SESSION_SECRET=独立的32字节以上随机值
 TRENDRADAR_REFRESH_TOKEN=强随机令牌
 ```
 
@@ -58,6 +59,12 @@ TRENDRADAR_REFRESH_TOKEN=强随机令牌
 openssl rand -base64 32
 openssl rand -hex 32
 ```
+
+首次登录固定使用 `admin / admin@123`，便于新用户直接进入面板；请在首次
+登录后立即到后台修改密码。`ADMIN_SESSION_SECRET` 只在服务内部用于签发
+登录会话，用户不需要输入；它必须与 `ADMIN_PASSWORD`、`ADMIN_API_TOKEN`
+使用不同的随机值。缺失时生产 Compose 会拒绝启动，避免出现“页面正常但
+无法登录”的半可用状态。
 
 注意：后台保存的模型、搜索、X 与 WeRSS API 密钥会用 `APP_ENCRYPTION_KEY`
 进行 AES-256-GCM 加密。后续不要直接更换该值，否则已有凭据无法解密；迁移服务器时必须连同它安全迁移。
@@ -177,10 +184,8 @@ ZLZCHAT_ALLOWED_ORIGINS=http://your-private-zlzchat:805
 推荐每晚执行一次：
 
 ```bash
-mkdir -p backups
-
-docker compose --env-file .env.production -p jianwei -f docker-compose.prod.yml exec -T postgres \
-  pg_dump -U monitor -d monitor > backups/postgres-$(date +%F).sql
+# PostgreSQL：生成 custom-format dump，并在容器内验证可恢复性
+./scripts/backup-db.sh backups
 
 docker run --rm \
   -v jianwei_werss-data:/data:ro \
@@ -200,6 +205,18 @@ docker run --rm \
 
 tar czf backups/trendradar-config-$(date +%F).tgz infra/trendradar/config
 ```
+
+数据库恢复前先确认 `.env.production` 和 `APP_ENCRYPTION_KEY` 已恢复到原值，然后执行：
+
+```bash
+./scripts/restore-db.sh backups/jianwei-YYYYMMDDTHHMMSSZ.dump
+```
+
+恢复脚本会临时停止同一 Compose 项目中的 web 和 worker，使用 `pg_restore`
+在单个事务中替换数据库内容，完成后再启动应用。至少每月在一台临时服务器上
+做一次真实恢复演练；只检查备份文件存在并不能证明它可以恢复。
+脚本默认选择 Compose 项目 `jianwei`；如果部署时使用了其他 `-p` 名称，
+执行备份或恢复前设置 `JIANWEI_COMPOSE_PROJECT=你的项目名`。
 
 如果 compose 项目名不是 `jianwei`，volume 名会不同。用下面命令确认真实名称：
 

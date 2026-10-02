@@ -40,12 +40,15 @@ export function safePublishedAt(value: Date, now = new Date()): Date {
 }
 
 function safeCanonicalUrl(raw: string | undefined, platform: string, upstreamId: string): string {
+  const orphan = () => `signaldeck:orphan:${encodeURIComponent(platform)}:${encodeURIComponent(upstreamId)}`;
   const trimmed = raw?.trim() ?? "";
-  if (!trimmed) return `signaldeck:orphan:${platform}:${upstreamId}`;
+  if (!trimmed) return orphan();
   try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return orphan();
     return canonicalizeUrl(trimmed);
   } catch {
-    return trimmed;
+    return orphan();
   }
 }
 
@@ -307,6 +310,7 @@ export async function prepareIngest(
           row.contentType = outcome.contentType;
           row.topicTags = outcome.topicTags;
           row.informationValueScore = outcome.relevanceScore;
+          row.editorialReason = outcome.retentionSource === "model" ? outcome.retentionReason : null;
           row.analysisStatus = outcome.status;
           row.analysisProvider = outcome.provider ?? null;
           row.analysisModel = outcome.model ?? null;
@@ -361,6 +365,7 @@ export async function commitPreparedIngest(
   ]));
   const rowByUpstream = new Map(rows.map((r) => [`${r.platform}|${r.upstreamId}`, r]));
   const rowByUrl = new Map(rows.map((r) => [r.canonicalUrl, r]));
+  const documentById = new Map(upserted.map((document) => [document.id, document]));
   const documentByUrl = new Map(upserted.map((document) => [document.canonicalUrl, document]));
   const documentByLegacySource = new Map(
     upserted.map((document) => [sourceKey(document.platform, document.upstreamId), document]),
@@ -404,6 +409,13 @@ export async function commitPreparedIngest(
       observation.sourceProvider,
       observation.upstreamId,
     ));
+    if (storedSource && storedSource.itemId !== observation.itemId) {
+      // The repository rejected a source identity rebind. Do not manufacture
+      // a match that combines the old document binding with the new
+      // observation's URL/raw payload. The conflict remains visible in the
+      // structured repository warning and can be reconciled explicitly.
+      continue;
+    }
     const itemId = storedSource?.itemId ?? observation.itemId;
     const observationKey = matchObservationKey({
       matchItemId: itemId,
@@ -422,7 +434,8 @@ export async function commitPreparedIngest(
       rawPayload: observation.rawPayload,
     });
     if (linksByItem.has(itemId)) continue;
-    const canonicalDocument = documentByUrl.get(observation.sourceUrl)
+    const canonicalDocument = documentById.get(itemId)
+      ?? documentByUrl.get(observation.sourceUrl)
       ?? documentByLegacySource.get(sourceKey(observation.platform, observation.upstreamId));
     const row = rowByIdentity.get(sourceIdentity(
       observation.platform,

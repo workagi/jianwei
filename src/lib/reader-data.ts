@@ -17,7 +17,7 @@ import {
 import { passesTrendRadarReaderGate } from "@/lib/trendradar-interest-filter";
 import { TRENDRADAR_PLATFORM_CATALOG } from "@/lib/trendradar-config";
 import { formatPollInterval } from "@/lib/monitor-schedule";
-import { deriveRetentionDecision, normalizeRetentionReason } from "@/lib/content-retention";
+import { deriveRetentionDecision, normalizeRetentionReason, normalizeRelevanceScore } from "@/lib/content-retention";
 import { normalizeSummaryForDisplay } from "@/lib/summarizer";
 import { buildFeaturedFeed, type RelatedEventSource } from "@/lib/content-clustering";
 import { createStructuredLogger } from "@/lib/structured-log";
@@ -68,6 +68,7 @@ export interface ReaderItem {
   match: string;
   bookmarked: boolean;
   relatedSources?: RelatedEventSource[];
+  eventId?: string;
 }
 
 export interface AdminMonitorView {
@@ -445,7 +446,7 @@ function itemStatusBadge(row: {
   return undefined;
 }
 
-function mapRow(row: {
+export function mapRow(row: {
   id: string;
   platform: PlatformType;
   authorName: string | null;
@@ -455,6 +456,8 @@ function mapRow(row: {
   translatedTitle?: string | null;
   bodyText: string;
   aiSummary?: string | null;
+  editorialReason?: string | null;
+  eventId?: string | null;
   contentType?: string | null;
   topicTags?: string[] | null;
   retentionReason?: string | null;
@@ -529,10 +532,11 @@ function mapRow(row: {
     contentType,
     contentTypeLabel: getContentTypeLabel(contentType) ?? "观点解读",
     tags,
-    score: retention.relevanceScore,
+    score: normalizeRelevanceScore(row.relevanceScore) ?? retention.relevanceScore,
     // 规则回退仍用于后台筛选和评分，但不伪装成面向读者的推荐文案。
     // 前台仅展示模型基于具体内容生成的客观推荐理由。
-    whyKept: readerRecommendationReason({ reason: row.retentionReason, source: row.retentionSource }),
+    whyKept: normalizeRetentionReason(row.editorialReason) ?? readerRecommendationReason({ reason: row.retentionReason, source: row.retentionSource }),
+    eventId: row.eventId ?? undefined,
     match: row.matchReason ?? "",
     bookmarked: Boolean(row.bookmarked),
   };
@@ -671,13 +675,13 @@ export async function loadReaderFeed(filter: {
 
     if (filter.mode === "featured") {
       const platforms = dbFilter.platform ? [dbFilter.platform] : READER_PLATFORMS;
-      const platformCounts = await Promise.all(platforms.map((platform) => countItems({ ...dbFilter, platform })));
       const rows = (
-        await Promise.all(platforms.map((platform, index) =>
+        await Promise.all(platforms.map((platform) =>
           getItems({
             ...dbFilter,
             platform,
-            limit: Math.min(Math.max(platformCounts[index], DEFAULT_PLATFORM_WINDOW), MAX_LOCAL_FILTER_SCAN),
+            featuredOnly: true,
+            limit: 300,
           }),
         ))
       ).flat();
@@ -686,6 +690,7 @@ export async function loadReaderFeed(filter: {
       );
       const featuredItems = buildFeaturedFeed(filteredRows.map(mapRow), {
         balancePlatforms: !dbFilter.platform,
+        persisted: true,
       });
       return feedResult({
         items: featuredItems,

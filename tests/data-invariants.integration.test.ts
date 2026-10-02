@@ -185,15 +185,24 @@ describeDatabase("source_items itemId is immutable after first binding", () => {
       authorName: undefined,
       authorHandle: undefined,
       avatarUrl: undefined,
-      rawPayload: {},
+      rawPayload: { document: "B" },
       publishedAt: new Date(),
     }];
     const stored = await repo.upsertSourceItems(observations);
 
-    // Verify itemId is still docA (immutable binding)
+    // Verify the entire evidence row is still docA. A partial update would
+    // create a cross-document source chain (itemId=A, URL/payload=B).
     expect(stored.length).toBe(1);
     expect(stored[0].itemId).toBe(docA.id);
     expect(stored[0].itemId).not.toBe(docB.id);
+    const [persistedSource] = await db.select({
+      itemId: sourceItems.itemId,
+      sourceUrl: sourceItems.sourceUrl,
+      rawPayload: sourceItems.rawPayload,
+    }).from(sourceItems).where(eq(sourceItems.upstreamId, sourceId));
+    expect(persistedSource.itemId).toBe(docA.id);
+    expect(persistedSource.sourceUrl).toBe(url1);
+    expect(persistedSource.rawPayload).not.toMatchObject({ document: "B" });
   });
 });
 

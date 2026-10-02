@@ -11,6 +11,7 @@ export interface ClusterableReaderItem {
   score: number;
   whyKept: string;
   date: string;
+  eventId?: string;
 }
 
 export interface RelatedEventSource {
@@ -67,12 +68,31 @@ function sharedMeaningfulTags(left: string[], right: string[]): number {
     .filter((tag) => tag.length >= 2 && !GENERIC_TAGS.has(tag) && normalized.has(tag)).length;
 }
 
+/** Product versions and explicit dates are identity evidence, not stop words. */
+export function conflictingEventIdentity(left: string, right: string): boolean {
+  const identities = (title: string) => {
+    const result = new Map<string, Set<string>>();
+    for (const match of title.normalize("NFKC").toLowerCase().matchAll(/\b([a-z][a-z0-9]*(?:[- ][a-z]+)*)[- ]?v?(\d+(?:\.\d+)*(?:[-a-z0-9]*)?)/g)) {
+      const versions = result.get(match[1]) ?? new Set<string>();
+      versions.add(match[2]);
+      result.set(match[1], versions);
+    }
+    const dates = [...title.matchAll(/\b20\d{2}[-/]\d{1,2}[-/]\d{1,2}\b/g)].map((match) => match[0].split(/[-/]/).map(Number).join("-"));
+    if (dates.length) result.set("date", new Set(dates));
+    return result;
+  };
+  const a = identities(left);
+  const b = identities(right);
+  return [...a].some(([entity, versions]) => b.has(entity) && ![...versions].some((version) => b.get(entity)!.has(version)));
+}
+
 export function isLikelySameEvent(
   left: ClusterableReaderItem,
   right: ClusterableReaderItem,
   maxDistanceMs = 60 * 60 * 60 * 1_000,
 ): boolean {
   if (left.source === right.source && left.platform === right.platform) return false;
+  if (conflictingEventIdentity(left.title, right.title)) return false;
   if (Math.abs(timestamp(left.date) - timestamp(right.date)) > maxDistanceMs) return false;
   const leftTitle = normalizeEventTitle(left.title);
   const rightTitle = normalizeEventTitle(right.title);
@@ -90,7 +110,10 @@ function primaryValue(item: ClusterableReaderItem): number {
 export function clusterReaderItems<T extends ClusterableReaderItem>(items: T[]): Array<T & { relatedSources: RelatedEventSource[] }> {
   const groups: T[][] = [];
   for (const item of items) {
-    const group = groups.find((candidate) => candidate.some((member) => isLikelySameEvent(member, item)));
+    const group = groups.find((candidate) =>
+      candidate.every((member) => !conflictingEventIdentity(member.title, item.title))
+      && candidate.some((member) => isLikelySameEvent(member, item)),
+    );
     if (group) group.push(item);
     else groups.push([item]);
   }
@@ -114,9 +137,32 @@ export function clusterReaderItems<T extends ClusterableReaderItem>(items: T[]):
     .sort((a, b) => timestamp(b.date) - timestamp(a.date));
 }
 
+/** Reads persisted identities only. Missing background assignments remain separate cards. */
+export function groupPersistedEvents<T extends ClusterableReaderItem>(items: T[]): Array<T & { relatedSources: RelatedEventSource[] }> {
+  const groups = new Map<string, T[]>();
+  for (const item of items) {
+    const key = item.eventId ?? `item:${item.id}`;
+    const group = groups.get(key) ?? [];
+    group.push(item);
+    groups.set(key, group);
+  }
+  return [...groups.values()].map((group) => {
+    const ordered = [...group].sort((a, b) => primaryValue(b) - primaryValue(a) || timestamp(b.date) - timestamp(a.date));
+    const primary = ordered[0];
+    const seen = new Set([`${primary.platform}:${primary.source.toLowerCase()}`]);
+    const relatedSources = ordered.slice(1).flatMap((item) => {
+      const key = `${item.platform}:${item.source.toLowerCase()}`;
+      if (seen.has(key)) return [];
+      seen.add(key);
+      return [{ platform: item.platform, source: item.source, title: item.title, url: item.url }];
+    });
+    return { ...primary, relatedSources };
+  }).sort((a, b) => timestamp(b.date) - timestamp(a.date));
+}
+
 export function buildFeaturedFeed<T extends ClusterableReaderItem>(
   items: T[],
-  options: { maxItems?: number; balancePlatforms?: boolean } = {},
+  options: { maxItems?: number; balancePlatforms?: boolean; persisted?: boolean } = {},
 ): Array<T & { relatedSources: RelatedEventSource[] }> {
   const maxItems = options.maxItems ?? 36;
   const eligible = items.filter((item) =>
@@ -125,7 +171,7 @@ export function buildFeaturedFeed<T extends ClusterableReaderItem>(
       && item.excerpt.trim().length >= 20
       && item.whyKept.trim().length >= 12,
   );
-  const clustered = clusterReaderItems(eligible);
+  const clustered = options.persisted ? groupPersistedEvents(eligible) : clusterReaderItems(eligible);
   if (!options.balancePlatforms) return clustered.slice(0, maxItems);
 
   const softLimit = Math.max(4, Math.ceil(maxItems / 4));

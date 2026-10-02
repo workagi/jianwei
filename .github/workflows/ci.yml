@@ -64,8 +64,14 @@ jobs:
       - name: Verify database migrations
         run: pnpm db:migrate && pnpm db:seed
 
+      - name: Check migration metadata and schema drift
+        run: pnpm db:check
+
       - name: Audit public-release safety
         run: pnpm audit:open-source -- --history
+
+      - name: Audit production dependencies
+        run: pnpm audit --prod --audit-level high
 
       - name: Evaluate content rules
         run: pnpm content:evaluate
@@ -73,7 +79,19 @@ jobs:
       - name: ShellCheck
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
-          shellcheck start.sh scripts/test-upgrade.sh uninstall.sh
+          shellcheck start.sh uninstall.sh scripts/test-upgrade.sh scripts/backup-db.sh scripts/restore-db.sh scripts/check-schema-drift.sh
+
+      - name: Verify first-run credentials
+        run: |
+          tmp_dir="$(mktemp -d)"
+          cp start.sh .env.example "$tmp_dir/"
+          (cd "$tmp_dir" && bash start.sh init)
+          grep -qx 'ADMIN_USERNAME=admin' "$tmp_dir/.env"
+          grep -qx 'ADMIN_PASSWORD=admin@123' "$tmp_dir/.env"
+          ! grep -q '__GENERATE__\|__GEN__' "$tmp_dir/.env"
+          session_secret="$(sed -n 's/^ADMIN_SESSION_SECRET=//p' "$tmp_dir/.env")"
+          test -n "$session_secret"
+          test "$session_secret" != 'admin@123'
       - name: Lint
         run: pnpm lint
 
@@ -126,6 +144,24 @@ jobs:
           test "$healthy" -eq 1
       - name: Verify login page
         run: curl -sf http://localhost:3000/admin | grep -q "登录" && echo "Login page OK"
+      - name: Verify backup and restore round trip
+        run: |
+          backup_dir="$(mktemp -d)"
+          docker compose exec -T postgres psql -U monitor -d monitor -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE TABLE backup_restore_probe (value text PRIMARY KEY);
+          INSERT INTO backup_restore_probe VALUES ('restore-ok');
+          SQL
+          ./scripts/backup-db.sh "$backup_dir"
+          backup_file="$(find "$backup_dir" -maxdepth 1 -name 'jianwei-*.dump' -type f | head -1)"
+          test -n "$backup_file"
+          docker compose exec -T postgres psql -U monitor -d monitor -v ON_ERROR_STOP=1 \
+            -c 'DROP TABLE backup_restore_probe'
+          printf 'YES\n' | ./scripts/restore-db.sh "$backup_file"
+          restored="$(docker compose exec -T postgres psql -U monitor -d monitor -Atc \
+            'SELECT value FROM backup_restore_probe')"
+          test "$restored" = 'restore-ok'
+          docker compose exec -T postgres psql -U monitor -d monitor -v ON_ERROR_STOP=1 \
+            -c 'DROP TABLE backup_restore_probe'
       - name: Collect logs on failure
         if: failure()
         run: docker compose logs --tail=100

@@ -129,21 +129,23 @@ export async function verifySessionCookie(value: string): Promise<string | null>
 
   const parts = payload.split(":");
   // payload: username:iat:exp:sid:format[:dbVersion]
-  if (parts.length < 5) return null;
+  if (parts.length !== 6) return null;
   const [username, iatStr, expStr, , format, dbVersionStr] = parts;
 
   const now = Math.floor(Date.now() / 1000);
   const iat = Number(iatStr);
-  if (Number.isFinite(iat) && iat > now + 300) return null; // clock skew guard
   const exp = Number(expStr);
-  if (!Number.isFinite(exp) || exp < now) return null;
+  if (username !== getAdminUsername()) return null;
+  if (format !== "v4") return null;
+  if (!Number.isFinite(iat) || iat > now + 300) return null; // clock skew guard
+  if (!Number.isFinite(exp) || exp < now || exp <= iat) return null;
 
-  // v4+ sessions carry a DB version; reject if the DB has been bumped since.
-  if (format === "v4" || format === "v3") {
-    const payloadVersion = Number(dbVersionStr);
-    const currentVersion = await adminSessionVersion();
-    if (Number.isFinite(payloadVersion) && payloadVersion < currentVersion) return null;
-  }
+  // Every v4 session carries the exact DB revocation version. Missing, future,
+  // or stale versions are all invalid; accepting a version merely because it
+  // is greater than the current value would weaken the revocation protocol.
+  const payloadVersion = Number(dbVersionStr);
+  const currentVersion = await adminSessionVersion();
+  if (!Number.isInteger(payloadVersion) || payloadVersion !== currentVersion) return null;
 
   const secret = await effectiveAdminSessionSecret();
   if (!secret) return null;

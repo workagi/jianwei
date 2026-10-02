@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import { PlugZap } from "lucide-react";
 import { AdminAccountActions, AdminLogin } from "@/components/admin-auth";
 import { AdminContentPipeline } from "@/components/admin-content-pipeline";
+import { AdminModelUsage } from "@/components/admin-model-usage";
 import { WechatContentSettings } from "@/components/admin-wechat-content";
 import { CredentialsManager } from "@/components/admin-credentials";
 import { AdminXaiConnection } from "@/components/admin-xai-connection";
@@ -106,6 +107,7 @@ export default async function ConnectorsPage() {
       </section>
 
       <AdminContentPipeline view={pipelineView} />
+      <AdminModelUsage />
 
       <WechatContentSettings
         primaryHealthy={wechatCollected || credentialStatus.wechat}

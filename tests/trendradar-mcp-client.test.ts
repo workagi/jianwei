@@ -52,4 +52,29 @@ describe("TrendRadarMcpClient", () => {
     expect(fetcher).toHaveBeenCalledTimes(3);
     expect(fetcher.mock.calls[2][1]?.headers).toMatchObject({ "Mcp-Session-Id": "session-1" });
   });
+
+  it("shares one initialization across concurrent tool calls", async () => {
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response('event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18"}}\n\n', {
+        status: 200,
+        headers: { "content-type": "text/event-stream", "mcp-session-id": "shared" },
+      }))
+      .mockResolvedValueOnce(new Response("", { status: 202 }))
+      .mockResolvedValueOnce(new Response('event: message\ndata: {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"{\\"success\\":true}"}]}}\n\n', {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      }))
+      .mockResolvedValueOnce(new Response('event: message\ndata: {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"{\\"success\\":true}"}]}}\n\n', {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      }));
+    const client = new TrendRadarMcpClient("http://trendradar-mcp:3333/mcp", fetcher);
+    await expect(Promise.all([
+      client.callTool("get_latest_news"),
+      client.callTool("get_latest_rss"),
+    ])).resolves.toEqual([{ success: true }, { success: true }]);
+    expect(fetcher).toHaveBeenCalledTimes(4);
+    expect(fetcher.mock.calls.filter(([, init]) => String(init?.body).includes('"method":"initialize"')))
+      .toHaveLength(1);
+  });
 });

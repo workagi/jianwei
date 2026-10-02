@@ -1,0 +1,47 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Validate version and release notes
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          const tag = process.env.RELEASE_TAG;
+          if (!/^v\d+\.\d+\.\d+$/.test(tag)) throw new Error('Only stable semantic versions are released');
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          if (tag !== `v${pkg.version}`) throw new Error('Tag and package version differ');
+          if (!fs.existsSync(`docs/releases/${tag}.md`)) throw new Error('Missing reviewed release notes');
+          JS
+          git merge-base --is-ancestor HEAD origin/main
+      - name: Require successful CI for the tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          result="$(gh run list --workflow ci.yml --commit "$RELEASE_SHA" --event push --limit 10 --json conclusion --jq 'map(select(.conclusion == "success")) | length')"
+          test "$result" -gt 0
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release already exists"
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --title "见微 $RELEASE_TAG" --notes-file "docs/releases/$RELEASE_TAG.md"
+          fi

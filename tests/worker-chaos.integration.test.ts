@@ -13,6 +13,8 @@ import { db } from "@/db";
 import { monitors, collectionRuns, items, sourceItems, connectors } from "@/db/schema";
 import { createDrizzleIngestRepository } from "@/ingestion/repositories";
 import { cleanupStaleRunningRuns } from "@/worker/stale-run-reaper";
+import { startCollectionRun } from "@/worker/index";
+import { getLeaseWorkerId } from "@/worker/lease-manager";
 import { createStructuredLogger } from "@/lib/structured-log";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
@@ -51,7 +53,7 @@ describe.skipIf(!RUN_DB_TESTS)("multi-worker chaos", () => {
   afterAll(async () => {
     // Cleanup
     await db.delete(collectionRuns).where(eq(collectionRuns.errorCode, "chaos-test"));
-    await db.delete(monitors).where(eq(monitors.name, "Chaos Test Monitor"));
+    await db.delete(monitors).where(eq(monitors.connectorId, chaosConnectorId));
     await db.delete(connectors).where(eq(connectors.name, "chaos-test-connector"));
     await db.delete(items).where(eq(items.canonicalUrl, "https://chaos-test.example.com/doc"));
     await db.delete(sourceItems).where(eq(sourceItems.sourceProvider, "chaos-test"));
@@ -118,6 +120,41 @@ describe.skipIf(!RUN_DB_TESTS)("multi-worker chaos", () => {
     const committedArr = Array.isArray(committed) ? committed : (committed ? [committed] : []);
     expect(committedArr[0]).toBeDefined();
     expect(committedArr).toHaveLength(1);
+  });
+
+  it("does not let the same lease replace an active collection attempt token", async () => {
+    const monitorId = randomUUID();
+    const nextRunAt = new Date(Date.now() - 5_000);
+    const leaseEpoch = 77;
+    await db.insert(monitors).values({
+      id: monitorId,
+      name: "Chaos Attempt CAS Monitor",
+      platform: "web_search",
+      connectorId: chaosConnectorId,
+      config: { provider: "brave", query: "attempt token" },
+      nextRunAt,
+      leaseOwner: getLeaseWorkerId(),
+      leaseEpoch,
+      leaseUntil: new Date(Date.now() + 300_000),
+    });
+
+    const first = await startCollectionRun({ id: monitorId, nextRunAt, leaseEpoch });
+    expect(first.attemptToken.startsWith(`${leaseEpoch}:`)).toBe(true);
+    await expect(startCollectionRun({ id: monitorId, nextRunAt, leaseEpoch }))
+      .rejects.toThrow("COLLECTION_RUN_ALREADY_CLAIMED");
+
+    await db.update(monitors).set({
+      leaseEpoch: leaseEpoch + 1,
+      leaseOwner: getLeaseWorkerId(),
+      leaseUntil: new Date(Date.now() + 300_000),
+    }).where(eq(monitors.id, monitorId));
+    const takeover = await startCollectionRun({
+      id: monitorId,
+      nextRunAt,
+      leaseEpoch: leaseEpoch + 1,
+    });
+    expect(takeover.attemptToken.startsWith(`${leaseEpoch + 1}:`)).toBe(true);
+    expect(takeover.attemptToken).not.toBe(first.attemptToken);
   });
 
   it("concurrent canonical URL: only one document wins", async () => {

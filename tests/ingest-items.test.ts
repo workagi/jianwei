@@ -123,6 +123,20 @@ describe("toItemRows", () => {
     expect(rows[0].contentHash).toMatch(/^[a-f0-9]{64}$/);
   });
 
+  it("never persists an unsafe external URL scheme as a clickable canonical URL", () => {
+    const unsafe = toItemRows([makeItem({
+      upstreamId: "unsafe/id",
+      canonicalUrl: "javascript:alert(document.cookie)",
+    })]);
+    const malformed = toItemRows([makeItem({
+      upstreamId: "malformed id",
+      canonicalUrl: "not a valid url",
+    })]);
+
+    expect(unsafe[0].canonicalUrl).toBe("signaldeck:orphan:x:unsafe%2Fid");
+    expect(malformed[0].canonicalUrl).toBe("signaldeck:orphan:x:malformed%20id");
+  });
+
   it("keeps distinct upstream ids", () => {
     const rows = toItemRows([makeItem(), makeItem({ upstreamId: "u2", canonicalUrl: "https://x.com/b" })]);
     expect(rows).toHaveLength(2);

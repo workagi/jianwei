@@ -42,7 +42,9 @@ services:
     environment:
       DATABASE_URL: postgres://monitor:${POSTGRES_PASSWORD:-monitor}@postgres:5432/monitor
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-development-only-change-me}
+      MODEL_DAILY_REQUEST_LIMIT: ${MODEL_DAILY_REQUEST_LIMIT:-1000}
       X_BEARER_TOKEN: ${X_BEARER_TOKEN:-}
+      X_API_MAX_PAGES: ${X_API_MAX_PAGES:-20}
       BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
       WERSS_BASE_URL: http://werss:8001
       WERSS_ACCESS_KEY: ${WERSS_ACCESS_KEY:-}
@@ -55,6 +57,7 @@ services:
       WERSS_ADMIN_URL: ${WERSS_ADMIN_URL:-http://localhost:8001/wechat-status}
       # 超过该时长未同步则展示上游停更，而不是把重复旧列表误报为成功。
       WERSS_MAX_FEED_STALE_HOURS: ${WERSS_MAX_FEED_STALE_HOURS:-8}
+      WERSS_MAX_PAGES: ${WERSS_MAX_PAGES:-20}
       WECHAT_DIRECT_FALLBACK_ENABLED: ${WECHAT_DIRECT_FALLBACK_ENABLED:-true}
       # Prefer enhanced collector over WeRSS browser when the sidecar is up.
       WECHAT_FALLBACK_BASE_URL: ${WECHAT_FALLBACK_BASE_URL:-http://wechat-fallback:5000}
@@ -69,12 +72,17 @@ services:
       TRENDRADAR_CONFIG_DIR: /app/trendradar-config
       TRENDRADAR_REFRESH_URL: http://trendradar-refresh:8090/refresh
       TRENDRADAR_REFRESH_TOKEN: ${TRENDRADAR_REFRESH_TOKEN:-development-only-change-me}
+      TRENDRADAR_MCP_TIMEOUT_SECONDS: ${TRENDRADAR_MCP_TIMEOUT_SECONDS:-12}
+      TRENDRADAR_PUBLIC_CACHE_SECONDS: ${TRENDRADAR_PUBLIC_CACHE_SECONDS:-20}
+      TRENDRADAR_PUBLIC_REQUESTS_PER_MINUTE: ${TRENDRADAR_PUBLIC_REQUESTS_PER_MINUTE:-120}
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET:-}
       ADMIN_API_TOKEN: ${ADMIN_API_TOKEN:-}
     ports:
-      - "3000:3000"
+      # Keep the raw Next.js port local. Production traffic must enter through
+      # Caddy so client-IP headers cannot bypass the trusted edge.
+      - "127.0.0.1:3000:3000"
     volumes:
       - ./infra/trendradar/config:/app/trendradar-config
     depends_on:
@@ -101,7 +109,9 @@ services:
     environment:
       DATABASE_URL: postgres://monitor:${POSTGRES_PASSWORD:-monitor}@postgres:5432/monitor
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-development-only-change-me}
+      MODEL_DAILY_REQUEST_LIMIT: ${MODEL_DAILY_REQUEST_LIMIT:-1000}
       X_BEARER_TOKEN: ${X_BEARER_TOKEN:-}
+      X_API_MAX_PAGES: ${X_API_MAX_PAGES:-20}
       BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
       # SuperGrok X Search cost controls (subscription quota, not USD).
       XAI_X_SEARCH_MODEL: ${XAI_X_SEARCH_MODEL:-grok-4-1-fast-non-reasoning}
@@ -121,6 +131,7 @@ services:
       # 自动维护 WeRSS 的公众号更新任务；任务内顺序执行并与监控错峰。
       WERSS_COLLECTION_CRON: "${WERSS_COLLECTION_CRON:-17 */3 * * *}"
       WERSS_MAX_FEED_STALE_HOURS: ${WERSS_MAX_FEED_STALE_HOURS:-8}
+      WERSS_MAX_PAGES: ${WERSS_MAX_PAGES:-20}
       WERSS_AUTH_CHECK_INTERVAL_HOURS: ${WERSS_AUTH_CHECK_INTERVAL_HOURS:-6}
       WERSS_AUTH_REFRESH_BEFORE_HOURS: ${WERSS_AUTH_REFRESH_BEFORE_HOURS:-48}
       WECHAT_DIRECT_FALLBACK_ENABLED: ${WECHAT_DIRECT_FALLBACK_ENABLED:-true}
@@ -195,7 +206,7 @@ services:
     build:
       context: ./infra/werss
       args:
-        WERSS_UPSTREAM_IMAGE: ${WERSS_UPSTREAM_IMAGE:-ghcr.io/rachelos/we-mp-rss:latest}
+        WERSS_UPSTREAM_IMAGE: ${WERSS_UPSTREAM_IMAGE:-ghcr.io/rachelos/we-mp-rss@sha256:af771f21b3f7958a5dea16911fba050a6d7b92eac2fb2499c467c1b11f07ef34}
     # 仅绑定本机回环；WeRSS 后台含授权操作，不应直接对外暴露。
     environment:
       # 改用 web 方式授权：前端出二维码、手机微信扫码完成授权，

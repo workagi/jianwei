@@ -29,7 +29,7 @@ interface WeRssEnvelope<T> {
 }
 interface WeRssArticleList {
   list: WeRssArticle[];
-  total: number;
+  total?: number;
 }
 interface WeRssArticle {
   id?: string;
@@ -76,6 +76,8 @@ export interface WeRssFullTextOptions {
   fallbackBaseUrl?: string;
   /** Mark the upstream feed unhealthy when WeRSS has not synced it recently. */
   maxFeedStaleHours?: number;
+  /** Maximum article-list pages to traverse while catching up to the cursor. */
+  maxCollectionPages?: number;
 }
 
 export interface WeRssCollectionFeed {
@@ -458,7 +460,7 @@ export class WeRssConnector implements Connector<"wechat"> {
     if (!healthy.ok) throw new Error(healthy.message ?? "WERSS_UNAVAILABLE");
     try {
       const resolved = await this.resolveArticle(parsed.articleUrl);
-      const articles = await this.fetchArticles(resolved.mpId, 0, 5);
+      const articles = (await this.fetchArticles(resolved.mpId, 0, 5)).list;
       const fallbackArticle = resolved.article ? [resolved.article] : [];
       const items = (articles.length ? articles : fallbackArticle).map((a) =>
         this.toNormalized(a, resolved.mpId),
@@ -510,12 +512,47 @@ export class WeRssConnector implements Connector<"wechat"> {
       fallbackArticle = resolved.article;
     }
     if (!resolvedFeed) await this.assertFeedRecentlySynced(mpId, context?.signal);
-    // WeRSS returns articles newest-first; always fetch the latest page from
-    // offset 0 so each poll picks up newly published posts. We only persist
-    // mpId in the cursor (dedupe happens on upsert by upstreamId upstream).
+    // WeRSS returns newest-first. On the first poll we intentionally seed from
+    // the latest page. Once a boundary exists, traverse pages until that exact
+    // article is reached; never advance the cursor when the configured backlog
+    // ceiling is exhausted, otherwise older unseen articles would be skipped.
     const limit = 30;
-    const articles = await this.fetchArticles(mpId, 0, limit, context?.signal);
+    const maxPagesRaw = this.fullTextOptions.maxCollectionPages
+      ?? Number(process.env.WERSS_MAX_PAGES ?? "20");
+    const maxPages = Math.min(100, Math.max(1, Number.isFinite(maxPagesRaw) ? maxPagesRaw : 20));
+    const previousBoundary = typeof cursor.latestArticleId === "string"
+      ? cursor.latestArticleId
+      : undefined;
+    const articles: WeRssArticle[] = [];
+    let newestBoundary: string | undefined;
+    let boundaryReached = !previousBoundary;
+    let upstreamExhausted = false;
+
+    for (let page = 0; page < maxPages; page += 1) {
+      const result = await this.fetchArticles(mpId, page * limit, limit, context?.signal);
+      if (page === 0 && result.list[0]) {
+        newestBoundary = this.articleIdentity(result.list[0], mpId);
+      }
+      for (const article of result.list) {
+        if (previousBoundary && this.articleIdentity(article, mpId) === previousBoundary) {
+          boundaryReached = true;
+          break;
+        }
+        articles.push(article);
+      }
+      if (boundaryReached) break;
+      upstreamExhausted = result.list.length < limit
+        || (typeof result.total === "number" && Number.isFinite(result.total)
+          && (page * limit + result.list.length) >= result.total);
+      if (upstreamExhausted) break;
+    }
+
+    if (previousBoundary && !boundaryReached && !upstreamExhausted) {
+      throw new Error(`WERSS_BACKLOG_EXCEEDED:${maxPages}`);
+    }
+
     const sourceArticles = articles.length ? articles : fallbackArticle ? [fallbackArticle] : [];
+    newestBoundary ??= sourceArticles[0] ? this.articleIdentity(sourceArticles[0], mpId) : previousBoundary;
     const items = sourceArticles.map((a) => this.toNormalized(a, mpId));
 
     // 采集轮次只拉列表，不在这里开 WeRSS 无头浏览器补正文。
@@ -528,6 +565,7 @@ export class WeRssConnector implements Connector<"wechat"> {
       items,
       cursor: {
         mpId,
+        ...(newestBoundary ? { latestArticleId: newestBoundary } : {}),
         ...(resolvedFeed?.mpName ? { mpName: resolvedFeed.mpName } : {}),
         ...(resolvedFeed?.mpBiz ? { mpBiz: resolvedFeed.mpBiz } : {}),
         ...(resolvedFeed?.mpCover ? { mpCover: resolvedFeed.mpCover } : {}),
@@ -582,7 +620,7 @@ export class WeRssConnector implements Connector<"wechat"> {
     offset: number,
     limit: number,
     signal?: AbortSignal,
-  ): Promise<WeRssArticle[]> {
+  ): Promise<WeRssArticleList> {
     const url = new URL(`${this.base}/api/v1/wx/articles`);
     url.searchParams.set("mp_id", mpId);
     url.searchParams.set("offset", String(offset));
@@ -592,7 +630,17 @@ export class WeRssConnector implements Connector<"wechat"> {
       signal: signalWithTimeout(signal, 15_000),
     });
     const body = await this.readWeRssEnvelope<WeRssArticleList>(response, "WERSS_FETCH_FAILED");
-    return body.data?.list ?? [];
+    const rawTotal = Number(body.data?.total);
+    return {
+      list: body.data?.list ?? [],
+      ...(Number.isFinite(rawTotal) ? { total: rawTotal } : {}),
+    };
+  }
+
+  private articleIdentity(a: WeRssArticle, mpId: string): string {
+    const canonicalUrl = a.url ?? "";
+    return wechatStableUpstreamId(canonicalUrl, typeof a.id === "string" ? a.id : undefined)
+      ?? `${mpId}:${canonicalUrl || "unknown"}`;
   }
 
   private toNormalized(a: WeRssArticle, mpId: string): NormalizedItem {
@@ -601,9 +649,7 @@ export class WeRssConnector implements Connector<"wechat"> {
     const text = a.description && a.description.trim() ? a.description : (a.title ?? "");
     const contentHtml = a.content_html ?? a.content ?? undefined;
     const canonicalUrl = a.url ?? "";
-    const upstreamId =
-      wechatStableUpstreamId(canonicalUrl, typeof a.id === "string" ? a.id : undefined) ??
-      `${mpId}:${canonicalUrl || "unknown"}`;
+    const upstreamId = this.articleIdentity(a, mpId);
     return {
       platform: "wechat",
       upstreamId,

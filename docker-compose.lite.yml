@@ -38,6 +38,7 @@ services:
     environment:
       DATABASE_URL: postgres://monitor:${POSTGRES_PASSWORD:-monitor}@postgres:5432/monitor
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY}
+      MODEL_DAILY_REQUEST_LIMIT: ${MODEL_DAILY_REQUEST_LIMIT:-1000}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
       ADMIN_API_TOKEN: ${ADMIN_API_TOKEN}
       ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET}
@@ -63,6 +64,7 @@ services:
     environment:
       DATABASE_URL: postgres://monitor:${POSTGRES_PASSWORD:-monitor}@postgres:5432/monitor
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY}
+      MODEL_DAILY_REQUEST_LIMIT: ${MODEL_DAILY_REQUEST_LIMIT:-1000}
       WORKER_MONITOR_LEASE_SECONDS: ${WORKER_MONITOR_LEASE_SECONDS:-1800}
     command: ["pnpm", "worker"]
     depends_on:

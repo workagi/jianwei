@@ -21,6 +21,9 @@
 		# own X-Forwarded-For based on the actual client address.
 		header_up -X-Real-IP
 		header_up -True-Client-IP
+		# Dedicated rate-limit identity. `header_up` overwrites any value
+		# supplied by the public client with Caddy's actual peer address.
+		header_up X-Jianwei-Client-IP {remote_host}
 		# X-Forwarded-For is managed by Caddy's trusted_proxies; do not delete
 		# it here — Caddy will overwrite or append depending on configuration.
 	}

@@ -11,6 +11,7 @@ export interface ItemFilter {
   monitorId?: string;
   since?: Date;
   bookmarkedOnly?: boolean;
+  featuredOnly?: boolean;
   limit?: number;
   offset?: number;
 }
@@ -60,6 +61,11 @@ function itemConditions(filter: ItemFilter): SQL[] {
     );
   }
   if (filter.since) conditions.push(gte(items.publishedAt, filter.since));
+  if (filter.featuredOnly) conditions.push(sql`
+    ${items.informationValueScore} >= 60
+    and length(coalesce(${items.editorialReason}, case when ${items.retentionSource} = 'model' then ${items.retentionReason} end, '')) >= 12
+    and length(coalesce(${items.aiSummary}, '')) >= 20
+  `);
   if (filter.bookmarkedOnly) {
     conditions.push(sql`exists (
       select 1 from ${bookmarks} where ${bookmarks.itemId} = ${items.id}
@@ -137,6 +143,8 @@ export async function getItems(filter: ItemFilter = {}) {
       translatedTitle: items.translatedTitle,
       bodyText: items.bodyText,
       aiSummary: items.aiSummary,
+      editorialReason: items.editorialReason,
+      eventId: sql<string | null>`(select event_id from event_items where item_id = ${items.id})`,
       contentType: items.contentType,
       topicTags: items.topicTags,
       retentionReason: sql<string | null>`coalesce(
@@ -358,7 +366,7 @@ export async function getContentPipelineStats() {
         structured: sql<number>`count(distinct case when nullif(btrim(${items.contentType}), '') is not null and jsonb_array_length(${items.topicTags}) > 0 then ${items.id} end)::int`,
         analysisReady: sql<number>`count(distinct case when ${items.analysisStatus} in ('success', 'partial') then ${items.id} end)::int`,
         analysisFailed: sql<number>`count(distinct case when ${items.analysisStatus} = 'failed' then ${items.id} end)::int`,
-        explained: sql<number>`count(distinct case when ${items.retentionSource} = 'model' and nullif(btrim(${items.retentionReason}), '') is not null and ${items.informationValueScore} is not null then ${items.id} end)::int`,
+        explained: sql<number>`count(distinct case when nullif(btrim(coalesce(${items.editorialReason}, case when ${items.retentionSource} = 'model' then ${items.retentionReason} end)), '') is not null and ${items.informationValueScore} is not null then ${items.id} end)::int`,
         withFullText: sql<number>`count(distinct case when nullif(btrim(${items.contentHtml}), '') is not null then ${items.id} end)::int`,
         fallbackFullText: sql<number>`count(distinct case when nullif(btrim(${items.contentHtml}), '') is not null and ${items.contentProvider} in ('direct', 'wechat_download_api') then ${items.id} end)::int`,
         fullTextFailed: sql<number>`count(distinct case when ${items.contentFetchStatus} = 'failed' then ${items.id} end)::int`,

@@ -99,7 +99,7 @@ export function AdminContentPipeline({ view }: { view: ContentPipelineView }) {
             <span>
               最近 24 小时运行 {view.recent.runs24h} 次
               {(view.recent.summaryAttempted24h > 0 || (view.recent.modelEstimatedCost24h ?? 0) > 0)
-                ? ` · 模型 ${view.recent.summaryAttempted24h} 次 · 估算 $${(view.recent.modelEstimatedCost24h ?? 0).toFixed(4)}`
+                ? ` · 采集链路分析 ${view.recent.summaryAttempted24h} 条（全部调用用量见下方）`
                 : ""}
             </span>
           </div>

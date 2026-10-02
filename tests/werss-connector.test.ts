@@ -300,9 +300,85 @@ describe("WeRssConnector", () => {
       mpBiz: "BIZ_CACHED",
     });
 
-    expect(result.cursor).toEqual({ mpId: "MP_CACHED" });
+    expect(result.cursor).toEqual({ mpId: "MP_CACHED", latestArticleId: "a1" });
     expect(result.items[0].title).toBe("已订阅公众号的新文章");
     expect(paths).toEqual(["/api/v1/wx/articles"]);
+  });
+
+  it("paginates until the previous article boundary before advancing the cursor", async () => {
+    const offsets: number[] = [];
+    const pages = new Map<number, Array<{ id: string; title: string; publish_time: number; mp_id: string }>>([
+      [0, Array.from({ length: 30 }, (_, index) => ({ id: `new-${index}`, title: `新文章 ${index}`, publish_time: 1_800_000_000 - index, mp_id: "MP_PAGED" }))],
+      [30, [
+        { id: "new-30", title: "新文章 30", publish_time: 1_799_999_900, mp_id: "MP_PAGED" },
+        { id: "old-boundary", title: "上次边界", publish_time: 1_799_999_800, mp_id: "MP_PAGED" },
+        { id: "older", title: "更旧文章", publish_time: 1_799_999_700, mp_id: "MP_PAGED" },
+      ]],
+    ]);
+    const fetcher = (async (input: string | URL) => {
+      const url = input instanceof URL ? input : new URL(input);
+      const offset = Number(url.searchParams.get("offset") ?? 0);
+      offsets.push(offset);
+      return response({ code: 0, data: { list: pages.get(offset) ?? [], total: 33 } });
+    }) as typeof fetch;
+    const connector = new WeRssConnector("http://werss:8001", "key:secret", fetcher);
+
+    const result = await connector.collect({
+      kind: "account",
+      provider: "werss",
+      articleUrl: "https://mp.weixin.qq.com/s/paged",
+      mpId: "MP_PAGED",
+    }, { mpId: "MP_PAGED", latestArticleId: "old-boundary" });
+
+    expect(offsets).toEqual([0, 30]);
+    expect(result.items).toHaveLength(31);
+    expect(result.items.some((item) => item.upstreamId === "old-boundary")).toBe(false);
+    expect(result.cursor).toMatchObject({ latestArticleId: "new-0" });
+  });
+
+  it("refuses to advance when the WeRSS backlog exceeds the catch-up ceiling", async () => {
+    const fetcher = (async () => response({
+      code: 0,
+      data: {
+        list: Array.from({ length: 30 }, (_, index) => ({ id: `new-${index}`, title: `新文章 ${index}`, mp_id: "MP_BUSY" })),
+        total: 500,
+      },
+    })) as typeof fetch;
+    const connector = new WeRssConnector(
+      "http://werss:8001",
+      "key:secret",
+      fetcher,
+      { maxCollectionPages: 2 },
+    );
+
+    await expect(connector.collect({
+      kind: "account",
+      provider: "werss",
+      articleUrl: "https://mp.weixin.qq.com/s/busy",
+      mpId: "MP_BUSY",
+    }, { mpId: "MP_BUSY", latestArticleId: "old-boundary" })).rejects.toThrow("WERSS_BACKLOG_EXCEEDED:2");
+  });
+
+  it("treats a full page without total metadata as an incomplete backlog", async () => {
+    const fetcher = (async () => response({
+      code: 0,
+      data: {
+        list: Array.from({ length: 30 }, (_, index) => ({ id: `new-${index}`, title: `新文章 ${index}`, mp_id: "MP_NO_TOTAL" })),
+      },
+    })) as typeof fetch;
+    const connector = new WeRssConnector(
+      "http://werss:8001",
+      "key:secret",
+      fetcher,
+      { maxCollectionPages: 1 },
+    );
+
+    await expect(connector.collect({
+      kind: "account",
+      provider: "werss",
+      articleUrl: "https://mp.weixin.qq.com/s/no-total",
+      mpId: "MP_NO_TOTAL",
+    }, { mpId: "MP_NO_TOTAL", latestArticleId: "old-boundary" })).rejects.toThrow("WERSS_BACKLOG_EXCEEDED:1");
   });
 
   it("marks an existing WeRSS feed stale before accepting an unchanged old list", async () => {

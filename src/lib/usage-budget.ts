@@ -1,11 +1,14 @@
 import { db } from "@/db";
 import { usageLedger, usageReservations } from "@/db/schema";
-import { and, eq, gt, gte, sql } from "drizzle-orm";
+import { and, eq, gt, gte, inArray, sql } from "drizzle-orm";
 
 export type BudgetKind = "monthly_cost" | "daily_quantity";
 
 export interface UsageBudgetReservation {
+  /** Stable key shared by retries of the same scheduled business run. */
   idempotencyKey: string;
+  /** Fences one concrete collection attempt from earlier/later attempts. */
+  reservationToken: string;
   scopeKey: string;
   connectorId: string;
   monitorId: string;
@@ -15,9 +18,15 @@ export interface UsageBudgetReservation {
   kind: BudgetKind;
   limit: number;
   exhaustedError: string;
+  /** Metrics that share one cost ceiling across different connectors. */
+  scopeMetrics?: string[];
 }
 
 type UsageBudgetDatabase = Pick<typeof db, "update">;
+
+function attemptReservationKey(idempotencyKey: string, reservationToken: string): string {
+  return `${idempotencyKey}:attempt:${reservationToken}`;
+}
 
 function reservationTtlMs(): number {
   const minutes = Number(process.env.BUDGET_RESERVATION_TTL_MINUTES);
@@ -43,27 +52,47 @@ export async function reserveUsageBudget(
   return db.transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${reservation.scopeKey}, 0))`);
 
+    // A completed usage row is the durable business idempotency record. Do
+    // not perform another external request merely because this attempt has a
+    // fresh reservation token.
+    const [committedUsage] = await tx
+      .select({ idempotencyKey: usageLedger.idempotencyKey })
+      .from(usageLedger)
+      .where(eq(usageLedger.idempotencyKey, reservation.idempotencyKey))
+      .limit(1);
+    if (committedUsage) return "settled";
+
+    const reservationKey = attemptReservationKey(
+      reservation.idempotencyKey,
+      reservation.reservationToken,
+    );
+
     const [existing] = await tx
       .select({ status: usageReservations.status })
       .from(usageReservations)
-      .where(eq(usageReservations.idempotencyKey, reservation.idempotencyKey))
+      .where(eq(usageReservations.idempotencyKey, reservationKey))
       .limit(1);
     if (existing?.status === "settled") return "settled";
     if (existing?.status === "reserved") {
       await tx.update(usageReservations).set({
         expiresAt: new Date(now.getTime() + reservationTtlMs()),
         updatedAt: now,
-      }).where(eq(usageReservations.idempotencyKey, reservation.idempotencyKey));
+      }).where(eq(usageReservations.idempotencyKey, reservationKey));
       return "reserved";
     }
 
     const start = periodStart(reservation.kind, now);
+    const scopeMetrics = reservation.scopeMetrics
+      ? [...new Set(reservation.scopeMetrics.filter(Boolean))]
+      : [];
     const [committed] = reservation.kind === "monthly_cost"
       ? await tx
         .select({ total: sql<number>`coalesce(sum(${usageLedger.estimatedCost}), 0)` })
         .from(usageLedger)
         .where(and(
-          eq(usageLedger.connectorId, reservation.connectorId),
+          scopeMetrics.length > 0
+            ? inArray(usageLedger.metric, scopeMetrics)
+            : eq(usageLedger.connectorId, reservation.connectorId),
           gte(usageLedger.occurredAt, start),
         ))
       : await tx
@@ -78,7 +107,9 @@ export async function reserveUsageBudget(
         .select({ total: sql<number>`coalesce(sum(${usageReservations.estimatedCost}), 0)` })
         .from(usageReservations)
         .where(and(
-          eq(usageReservations.connectorId, reservation.connectorId),
+          scopeMetrics.length > 0
+            ? inArray(usageReservations.metric, scopeMetrics)
+            : eq(usageReservations.connectorId, reservation.connectorId),
           eq(usageReservations.status, "reserved"),
           gte(usageReservations.createdAt, start),
           gt(usageReservations.expiresAt, now),
@@ -102,7 +133,7 @@ export async function reserveUsageBudget(
     }
 
     await tx.insert(usageReservations).values({
-      idempotencyKey: reservation.idempotencyKey,
+      idempotencyKey: reservationKey,
       connectorId: reservation.connectorId,
       monitorId: reservation.monitorId,
       metric: reservation.metric,
@@ -131,28 +162,33 @@ export async function reserveUsageBudget(
 export async function settleUsageReservation(
   database: UsageBudgetDatabase,
   idempotencyKey: string | undefined,
+  reservationToken: string | undefined,
   now = new Date(),
 ): Promise<void> {
-  if (!idempotencyKey) return;
+  if (!idempotencyKey || !reservationToken) return;
   await database.update(usageReservations).set({
     status: "settled",
     expiresAt: now,
     updatedAt: now,
-  }).where(eq(usageReservations.idempotencyKey, idempotencyKey));
+  }).where(and(
+    eq(usageReservations.idempotencyKey, attemptReservationKey(idempotencyKey, reservationToken)),
+    eq(usageReservations.status, "reserved"),
+  ));
 }
 
 export async function releaseUsageReservation(
   database: UsageBudgetDatabase,
   idempotencyKey: string | undefined,
+  reservationToken: string | undefined,
   now = new Date(),
 ): Promise<void> {
-  if (!idempotencyKey) return;
+  if (!idempotencyKey || !reservationToken) return;
   await database.update(usageReservations).set({
     status: "released",
     expiresAt: now,
     updatedAt: now,
   }).where(and(
-    eq(usageReservations.idempotencyKey, idempotencyKey),
+    eq(usageReservations.idempotencyKey, attemptReservationKey(idempotencyKey, reservationToken)),
     eq(usageReservations.status, "reserved"),
   ));
 }

@@ -71,10 +71,10 @@ pnpm audit:open-source -- --history
 现在默认在本地构建 `jianwei-werss:local`，基础镜像使用：
 
 ```text
-ghcr.io/rachelos/we-mp-rss:latest
+ghcr.io/rachelos/we-mp-rss@sha256:af771f21b3f7958a5dea16911fba050a6d7b92eac2fb2499c467c1b11f07ef34
 ```
 
-高级用户可以通过 `WERSS_IMAGE` 使用自行审核和构建的镜像。构建文件和补丁均包含在仓库中，不再依赖开发者机器上预先存在的私有镜像；需要 Chromium 的全文能力由可选增强通道承担。
+该摘要对应已核对的 amd64/arm64 多架构清单，避免浮动 `latest` 在不同日期生成不同部署。升级摘要前必须重新执行授权、订阅、列表抓取和两种架构的构建冒烟。高级用户可以通过 `WERSS_IMAGE` 使用自行审核和构建的镜像。构建文件和补丁均包含在仓库中，不再依赖开发者机器上预先存在的私有镜像；需要 Chromium 的全文能力由可选增强通道承担。
 
 代码中仍保留少量 `signaldeck` 内部字符串，用于兼容既有数据库键、加密开发默认值和进程锁。这些是历史稳定标识，不代表对外产品名称；为避免升级后重复入库或无法解密，本次不做破坏性改名。
 

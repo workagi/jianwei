@@ -9,6 +9,7 @@
 #   ./start.sh restart   重启
 #   ./start.sh status    查看各服务状态
 #   ./start.sh logs      跟踪 worker + web 日志
+#   ./start.sh init      只初始化 .env，不启动容器
 #   ./start.sh doctor    检查前置依赖（docker / env / creds）
 #
 set -euo pipefail
@@ -157,24 +158,24 @@ ENV
     fi
     ok "已生成程序 API 令牌 ADMIN_API_TOKEN（仅供脚本 / CI 调用）"
   fi
-}
 
   # 若 ADMIN_SESSION_SECRET 仍是占位符或缺失，生成随机会话密钥。
   if grep -q '^ADMIN_SESSION_SECRET=__GENERATE__$' .env 2>/dev/null \
      || ! grep -q '^ADMIN_SESSION_SECRET=' .env 2>/dev/null; then
-    s=
-    s="$(openssl rand -hex 32)"
+    local s
+    s="$(gen_key)"
     if grep -q '^ADMIN_SESSION_SECRET=' .env 2>/dev/null; then
       if sed --version >/dev/null 2>&1; then
         sed -i "s|^ADMIN_SESSION_SECRET=.*|ADMIN_SESSION_SECRET=$s|" .env
       else
-        sed -i '' 's|^ADMIN_SESSION_SECRET=.*|ADMIN_SESSION_SECRET=$s|' .env
+        sed -i '' "s|^ADMIN_SESSION_SECRET=.*|ADMIN_SESSION_SECRET=$s|" .env
       fi
     else
       printf 'ADMIN_SESSION_SECRET=%s\n' "$s" >> .env
     fi
     ok "已生成会话签名密钥 ADMIN_SESSION_SECRET"
   fi
+}
 
 # 安全读取 .env 中某个变量的值（兼容含空格/特殊字符的值，不 source 执行文件内容）
 # 注意：docker compose 自身会读取项目目录的 .env，无需在本脚本里 export 它。
@@ -207,6 +208,7 @@ print_help() {
   ./start.sh restart   重启
   ./start.sh status    查看各服务状态
   ./start.sh logs      跟踪 worker + web 日志
+  ./start.sh init      只初始化 .env，不启动容器
   ./start.sh doctor    检查前置依赖（docker / env / creds）
   ./start.sh -h        显示本帮助
 EOF
@@ -260,6 +262,11 @@ cmd_logs() {
   $DC logs -f --tail=100 worker web
 }
 
+cmd_init() {
+  init_env
+  ok ".env 初始化完成。首次登录：admin / admin@123"
+}
+
 cmd_doctor() {
   check_docker
   info "Docker:  $(docker --version 2>/dev/null || echo unknown)"
@@ -277,6 +284,7 @@ main() {
     restart)         cmd_restart ;;
     status|ps)       cmd_status ;;
     logs)            cmd_logs ;;
+    init)            cmd_init ;;
     doctor)          cmd_doctor ;;
     -h|--help|help)  print_help ;;
     *) err "未知命令: $cmd"; print_help; exit 1 ;;

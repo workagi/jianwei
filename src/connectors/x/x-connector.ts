@@ -21,7 +21,7 @@ interface XResponse<T> {
     tweets?: Array<{ id?: string; text?: string; author_id?: string }>;
     users?: Array<{ id?: string; name?: string; username?: string }>;
   };
-  meta?: { newest_id?: string };
+  meta?: { newest_id?: string; next_token?: string };
   errors?: Array<{ detail?: string; title?: string }>;
 }
 
@@ -110,6 +110,7 @@ export class XConnector implements Connector<"x"> {
     config: XMonitorConfig,
     maxResults: number,
     sinceId?: string,
+    paginationToken?: string,
     signal?: AbortSignal,
   ) {
     // Official API can exclude replies/retweets server-side, but not quote tweets.
@@ -125,6 +126,7 @@ export class XConnector implements Connector<"x"> {
     };
     if (excludes) params.exclude = excludes;
     if (sinceId) params.since_id = sinceId;
+    if (paginationToken) params.pagination_token = paginationToken;
     return this.request<XPost[]>(`users/${user.id}/tweets`, params, signal);
   }
 
@@ -145,20 +147,77 @@ export class XConnector implements Connector<"x"> {
   async collect(config: XMonitorConfig, cursor: Record<string, unknown>, context?: CollectContext): Promise<CollectionResult> {
     const parsed = xMonitorSchema.parse(config);
     const user = await this.resolveUser(parsed.username, context?.signal);
-    const response = await this.timeline(
-      user,
-      parsed,
-      100,
-      typeof cursor.sinceId === "string" ? cursor.sinceId : undefined,
-      context?.signal,
-    );
-    const items = (response.data ?? [])
-      .filter((post) => this.matchesScope(post, parsed))
-      .map((post) => this.normalize(post, user, response.includes));
+    const sinceId = typeof cursor.sinceId === "string" ? cursor.sinceId : undefined;
+    const configuredMaxPages = Number(process.env.X_API_MAX_PAGES ?? "20");
+    const maxPages = Number.isFinite(configuredMaxPages)
+      ? Math.min(100, Math.max(1, Math.floor(configuredMaxPages)))
+      : 20;
+    const items: NormalizedItem[] = [];
+    const seenPaginationTokens = new Set<string>();
+    const storedPaginationToken = typeof cursor.xPaginationToken === "string"
+      ? cursor.xPaginationToken.trim() || undefined
+      : undefined;
+    const paginationSinceId = typeof cursor.xPaginationSinceId === "string"
+      ? cursor.xPaginationSinceId
+      : sinceId;
+    let paginationToken = storedPaginationToken;
+    let newestId = typeof cursor.xPaginationNewestId === "string"
+      ? cursor.xPaginationNewestId
+      : undefined;
+    let billableUnits = 1; // user lookup
+    if (paginationToken) seenPaginationTokens.add(paginationToken);
+
+    for (let page = 0; page < maxPages; page += 1) {
+      const response = await this.timeline(
+        user,
+        parsed,
+        100,
+        paginationSinceId,
+        paginationToken,
+        context?.signal,
+      );
+      if (!newestId) newestId = response.meta?.newest_id;
+      billableUnits += response.data?.length ?? 0;
+      items.push(
+        ...(response.data ?? [])
+          .filter((post) => this.matchesScope(post, parsed))
+          .map((post) => this.normalize(post, user, response.includes)),
+      );
+
+      const nextToken = response.meta?.next_token?.trim();
+      if (!nextToken) {
+        paginationToken = undefined;
+        break;
+      }
+      if (seenPaginationTokens.has(nextToken)) throw new Error("X_API_PAGINATION_LOOP");
+      seenPaginationTokens.add(nextToken);
+      paginationToken = nextToken;
+    }
+
+    // Page ceilings are normal backpressure, not a failed run. Commit the
+    // pages already fetched and persist the opaque X pagination token. The
+    // next poll resumes from that exact page; sinceId advances only after the
+    // backlog is fully drained.
+    const nextCursor = paginationToken
+      ? {
+          userId: user.id,
+          profileName: user.name,
+          sinceId,
+          xPaginationToken: paginationToken,
+          xPaginationSinceId: paginationSinceId,
+          xPaginationNewestId: newestId,
+        }
+      : {
+          userId: user.id,
+          profileName: user.name,
+          sinceId: newestId ?? sinceId,
+        };
     return {
       items,
-      cursor: { userId: user.id, profileName: user.name, sinceId: response.meta?.newest_id ?? cursor.sinceId },
-      billableUnits: items.length + 1,
+      cursor: nextCursor,
+      // X charges for provider rows read, including quotes/replies later
+      // removed by local scope filters. Count raw rows, not retained items.
+      billableUnits,
     };
   }
 
