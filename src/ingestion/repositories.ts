@@ -6,11 +6,13 @@ import {
   sourceItems,
   documentAnalysisClaims,
   monitorMatchObservations,
+  itemRevisions,
 } from "@/db/schema";
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq, inArray, lt, or, sql } from "drizzle-orm";
 import { type PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { createStructuredLogger } from "@/lib/structured-log";
+import { decideContentMerge } from "./content-revisions";
 
 const ingestionLog = createStructuredLogger({ service: "ingestion" });
 
@@ -91,6 +93,13 @@ export interface UpsertedDocument {
   informationValueScore?: number | null;
   analysisStatus?: string | null;
   analysisVersion?: string | null;
+  sourceProvider?: string | null;
+  contentHtml?: string | null;
+  contentFetchStatus?: string | null;
+  contentHash?: string;
+  contentRevision?: number;
+  contentObservedAt?: Date;
+  contentOwnerKey?: string | null;
 }
 
 export interface IngestRepository {
@@ -171,6 +180,7 @@ const ANALYSIS_STATUS_RANK: Record<string, number> = {
 
 export function createDrizzleIngestRepository(
   database: IngestDatabase = db,
+  transactionBound = false,
 ): IngestRepository {
   const loadFinalDocuments = async (urls: string[]): Promise<UpsertedDocument[]> => {
     const uniqueUrls = [...new Set(urls.filter(Boolean))];
@@ -189,6 +199,8 @@ export function createDrizzleIngestRepository(
         informationValueScore: items.informationValueScore,
         analysisStatus: items.analysisStatus,
         analysisVersion: items.analysisVersion,
+        contentHash: items.contentHash,
+        contentRevision: items.contentRevision,
       })
       .from(items)
       .where(inArray(items.canonicalUrl, uniqueUrls));
@@ -202,6 +214,9 @@ export function createDrizzleIngestRepository(
   return {
     async upsertItems(rows) {
       if (rows.length === 0) return [];
+      if (!transactionBound) {
+        return database.transaction((tx) => createDrizzleIngestRepository(tx, true).upsertItems(rows));
+      }
 
       const urls = [
         ...new Set(rows.map((r) => r.canonicalUrl).filter(Boolean)),
@@ -210,16 +225,12 @@ export function createDrizzleIngestRepository(
       const existingByUrl = new Map<string, ExistingRow>();
       if (urls.length) {
         const existing = await database
-          .select({
-            id: items.id,
-            platform: items.platform,
-            upstreamId: items.upstreamId,
-            canonicalUrl: items.canonicalUrl,
-          })
+          .select()
           .from(items)
-          .where(inArray(items.canonicalUrl, urls));
+          .where(inArray(items.canonicalUrl, urls)).for("update");
         for (const row of existing) {
           existingByUrl.set(row.canonicalUrl, {
+            ...row,
             id: row.id,
             platform: row.platform as NormalizedItem["platform"],
             upstreamId: row.upstreamId,
@@ -234,44 +245,47 @@ export function createDrizzleIngestRepository(
         row: IngestItemRow,
         hit: ExistingRow,
       ) => {
-        const incomingBody = row.bodyText.trim();
+        if (row.contentObservedAt && hit.contentObservedAt && row.contentObservedAt < hit.contentObservedAt) return;
+        const decision = decideContentMerge({ ...hit, bodyText: hit.bodyText ?? "" }, row);
+        const revision = (hit.contentRevision ?? 1) + 1;
+        if (decision.changed) {
+          await database.insert(itemRevisions).values([
+            { itemId: hit.id, revision: hit.contentRevision ?? 1, contentHash: hit.contentHash ?? "", title: hit.title, bodyText: hit.bodyText ?? "", contentHtml: hit.contentHtml, changeKind: "baseline" },
+            { itemId: hit.id, revision, contentHash: decision.hash, title: decision.title, bodyText: decision.bodyText, contentHtml: decision.contentHtml, changeKind: decision.kind },
+          ]).onConflictDoNothing();
+        }
         const incomingImages = JSON.stringify(row.imageUrls ?? []);
         const incomingHtml = row.contentHtml?.trim() ?? "";
         const incomingPublishedAt = row.publishedAt.toISOString();
         const incomingContentFetchedAt = row.contentFetchedAt?.toISOString() ?? null;
-        const incomingHtmlWins = sql`(
-          ${items.contentHtml} is null
-          or btrim(${items.contentHtml}) = ''
-          or (
-            ${row.contentFetchStatus === "success"}
-            and ${items.contentFetchStatus} is distinct from 'success'
-          )
-          or length(${incomingHtml}) > length(coalesce(btrim(${items.contentHtml}), ''))
-        )`;
+        const incomingHtmlWins = decision.htmlWins;
 
-        // Content observations merge monotonically. Empty or shorter snippets
-        // cannot erase a title, full body, media list, or successful full-text
-        // payload that another provider already persisted.
+        // Short cross-provider snippets cannot erase owning full text. A newer
+        // complete observation from the owning source may legitimately shorten
+        // or correct it; decision preserves that revision and invalidates analysis.
         await database.update(items).set({
           authorId: sql`coalesce(nullif(btrim(${items.authorId}), ''), nullif(btrim(${row.authorId ?? null}), ''))`,
           authorName: sql`coalesce(nullif(btrim(${items.authorName}), ''), nullif(btrim(${row.authorName ?? null}), ''))`,
           authorHandle: sql`coalesce(nullif(btrim(${items.authorHandle}), ''), nullif(btrim(${row.authorHandle ?? null}), ''))`,
           avatarUrl: sql`coalesce(nullif(btrim(${items.avatarUrl}), ''), nullif(btrim(${row.avatarUrl ?? null}), ''))`,
           sourceProvider: sql`coalesce(nullif(btrim(${items.sourceProvider}), ''), nullif(btrim(${row.sourceProvider ?? null}), ''))`,
-          title: sql`coalesce(nullif(btrim(${items.title}), ''), nullif(btrim(${row.title ?? null}), ''))`,
-          bodyText: sql`case
-            when length(${incomingBody}) > length(btrim(${items.bodyText})) then ${row.bodyText}
-            else ${items.bodyText}
-          end`,
+          title: decision.title,
+          bodyText: decision.bodyText,
+          contentHtml: decision.contentHtml,
+          contentOwnerKey: decision.ownerKey,
           imageUrls: sql`case
             when jsonb_array_length(${incomingImages}::jsonb) > jsonb_array_length(${items.imageUrls})
               then ${incomingImages}::jsonb
             else ${items.imageUrls}
           end`,
-          contentHash: sql`case
-            when length(${incomingBody}) > length(btrim(${items.bodyText})) then ${row.contentHash}
-            else ${items.contentHash}
-          end`,
+          ...(decision.changed ? {
+            contentHash: decision.hash, contentRevision: revision,
+            contentObservedAt: row.contentObservedAt ?? new Date(),
+            aiSummary: null, translatedTitle: null, editorialReason: null, eventSignal: null,
+            informationValueScore: null, analysisInputHash: null,
+            analysisStatus: "pending", analysisAttempts: 0, analyzedAt: null,
+            analysisErrorCode: null, analysisErrorMessage: null,
+          } : {}),
           // Values embedded in a raw SQL expression do not receive Drizzle's
           // timestamp column encoder. Pass ISO text and cast explicitly so the
           // postgres-js driver never receives a bare Date object.
@@ -281,10 +295,9 @@ export function createDrizzleIngestRepository(
             when jsonb_array_length(${items.topicTags}) = 0 then ${JSON.stringify(row.topicTags ?? [])}::jsonb
             else ${items.topicTags}
           end`,
-          informationValueScore: sql`coalesce(${items.informationValueScore}, ${row.informationValueScore ?? null})`,
+          ...(!decision.changed ? { informationValueScore: sql`coalesce(${items.informationValueScore}, ${row.informationValueScore ?? null})` } : {}),
           ...(incomingHtml
             ? {
-                contentHtml: sql`case when ${incomingHtmlWins} then ${row.contentHtml} else ${items.contentHtml} end`,
                 contentProvider: sql`case when ${incomingHtmlWins} then ${row.contentProvider ?? null} else ${items.contentProvider} end`,
                 contentFetchStatus: sql`case when ${incomingHtmlWins} then ${row.contentFetchStatus ?? null} else ${items.contentFetchStatus} end`,
                 contentFetchError: sql`case when ${incomingHtmlWins} then ${row.contentFetchError ?? null} else ${items.contentFetchError} end`,
@@ -296,7 +309,7 @@ export function createDrizzleIngestRepository(
 
         const incomingStatus = String(row.analysisStatus ?? "pending");
         const incomingRank = ANALYSIS_STATUS_RANK[incomingStatus] ?? 0;
-        if (incomingRank > 0) {
+        if (incomingRank > 0 && row.analysisInputHash === (decision.changed ? decision.hash : hit.contentHash)) {
           const currentRank = sql`case ${items.analysisStatus}
             when 'success' then 4
             when 'partial' then 3
@@ -313,10 +326,12 @@ export function createDrizzleIngestRepository(
             topicTags: row.topicTags ?? [],
             informationValueScore: row.informationValueScore ?? null,
             editorialReason: sql`coalesce(${row.editorialReason ?? null}, ${items.editorialReason})`,
+            eventSignal: row.eventSignal ?? null,
             analysisStatus: incomingStatus,
             analysisProvider: row.analysisProvider ?? null,
             analysisModel: row.analysisModel ?? null,
             analysisVersion: row.analysisVersion ?? null,
+            analysisInputHash: row.analysisInputHash,
             analysisAttempts: row.analysisAttempts ?? 0,
             analysisErrorCode: row.analysisErrorCode ?? null,
             analysisErrorMessage: row.analysisErrorMessage ?? null,
@@ -361,6 +376,12 @@ export function createDrizzleIngestRepository(
           upstreamId: items.upstreamId,
           canonicalUrl: items.canonicalUrl,
         });
+      if (allInserted.length) {
+        await database.insert(itemRevisions).values(allInserted.map((saved) => {
+          const row = toInsert.find((r) => r.canonicalUrl === saved.canonicalUrl)!;
+          return { itemId: saved.id, revision: 1, contentHash: row.contentHash, title: row.title, bodyText: row.bodyText, contentHtml: row.contentHtml, changeKind: "initial" };
+        })).onConflictDoNothing();
+      }
 
       // Phase 3: batch-resolve conflicts
       const insertedKeys = new Set(
@@ -382,14 +403,9 @@ export function createDrizzleIngestRepository(
 
         const allConditions = [...conflictPlatformUpstream, ...conflictUrls];
         const winners = await database
-          .select({
-            id: items.id,
-            platform: items.platform,
-            upstreamId: items.upstreamId,
-            canonicalUrl: items.canonicalUrl,
-          })
+          .select()
           .from(items)
-          .where(or(...allConditions));
+          .where(or(...allConditions)).for("update");
 
         const winnerByKey = new Map<string, ExistingRow>();
         for (const w of winners) {

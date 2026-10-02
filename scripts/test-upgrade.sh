@@ -93,7 +93,8 @@ echo "  ✓ obsolete item identity/relevance indexes removed"
 for table in items item_matches source_items collection_runs monitors api_credentials \
              usage_ledger runtime_health login_attempts monitor_match_observations \
              connectors bookmarks document_analysis_claims \
-             content_events event_items model_receipts model_attempts; do
+             content_events event_items model_receipts model_attempts \
+             event_developments event_reader_states item_revisions; do
   if ! psql "$DATABASE_URL" -Atc "SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='$table'" | grep -q 1; then
     echo "  ✗ $table MISSING"
     exit 1
@@ -109,7 +110,16 @@ for col_check in \
   "item_matches:retention_status" \
   "document_analysis_claims:claim_token" \
   "monitor_match_observations:observation_key" \
-  "items:editorial_reason"; do
+  "items:editorial_reason" \
+  "items:content_revision" \
+  "items:content_observed_at" \
+  "items:content_owner_key" \
+  "items:analysis_input_hash" \
+  "items:event_signal" \
+  "content_events:revision" \
+  "event_items:source_revision" \
+  "event_items:signal_fingerprint" \
+  "item_revisions:content_html"; do
   table="${col_check%%:*}"
   col="${col_check##*:}"
   if ! psql "$DATABASE_URL" -Atc "SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='$table' AND column_name='$col'" | grep -q 1; then
@@ -119,7 +129,12 @@ for col_check in \
 done
 echo "  ✓ current coordination columns present"
 
-test "$(psql "$DATABASE_URL" -Atc "SELECT count(*) FROM drizzle.__drizzle_migrations")" = "6"
-echo "  ✓ migration journal advanced exactly through 0028"
+test "$(psql "$DATABASE_URL" -Atc "SELECT content_revision FROM items WHERE id = '33333333-3333-4333-8333-333333333333'")" = "1"
+echo "  ✓ legacy content initialized at revision 1"
+
+# The fixture records 0023 once; each later journal entry adds one record.
+expected_migrations="$(node -e 'const { entries } = require("./drizzle/meta/_journal.json"); console.log(1 + entries.filter(entry => entry.when > Number(process.argv[1])).length)' "$BASELINE_WHEN")"
+test "$(psql "$DATABASE_URL" -Atc "SELECT count(*) FROM drizzle.__drizzle_migrations")" = "$expected_migrations"
+echo "  ✓ migration journal matches current metadata ($expected_migrations records)"
 
 echo "=== Upgrade test PASSED ==="

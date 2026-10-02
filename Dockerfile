@@ -14,7 +14,7 @@ FROM base AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-RUN mkdir -p public && pnpm build && pnpm build:worker
+RUN mkdir -p public && pnpm build
 
 FROM node:22-alpine AS runner
 WORKDIR /app
@@ -29,17 +29,24 @@ USER nextjs
 EXPOSE 3000
 CMD ["node", "server.js"]
 
-FROM base AS tools
+# Worker is bundled independently: it never needs to compile the website.
+FROM deps AS worker-builder
+COPY . .
+RUN pnpm build:worker
+
+FROM node:22-alpine AS worker-runner
 WORKDIR /app
-COPY --from=deps /app/node_modules ./node_modules
-COPY --from=builder /app/drizzle ./drizzle
-COPY --from=builder /app/drizzle.config.ts ./drizzle.config.ts
-COPY --from=builder /app/package.json ./package.json
-COPY --from=builder /app/tsconfig.json ./tsconfig.json
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/src ./src
-COPY --from=builder /app/scripts ./scripts
 ENV NODE_ENV=production
-RUN addgroup --system --gid 1001 nodejs   && adduser --system --uid 1001 nextjs   && chown -R nextjs:nodejs /app   && mkdir -p /home/nextjs/.cache/node   && ( [ -d /root/.cache/node/corepack ] && cp -R /root/.cache/node/corepack /home/nextjs/.cache/node/corepack || true )   && chown -R nextjs:nodejs /home/nextjs/.cache
-USER nextjs
-CMD ["pnpm", "worker"]
+COPY --from=worker-builder --chown=node:node /app/dist/worker ./dist/worker
+USER node
+CMD ["node", "dist/worker/index.js"]
+
+# Migration/maintenance tools are one-shot, not the worker's runtime image.
+FROM deps AS tools
+COPY drizzle ./drizzle
+COPY drizzle.config.ts package.json tsconfig.json ./
+COPY src ./src
+COPY scripts ./scripts
+ENV NODE_ENV=production
+USER node
+CMD ["pnpm", "db:migrate"]

@@ -14,6 +14,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+import type { EventSignal } from "@/lib/event-signals";
 
 export const platformType = pgEnum("platform_type", ["x", "wechat", "web_search", "trendradar"]);
 export const healthStatus = pgEnum("health_status", [
@@ -109,6 +110,7 @@ export const items = pgTable("items", {
   informationValueScore: integer("information_value_score"),
   // Document-level editorial explanation; independent of monitor matching reasons.
   editorialReason: text("editorial_reason"),
+  eventSignal: jsonb("event_signal").$type<EventSignal>(),
   // Legacy: prefer item_matches.relevance_score. Kept for backward-compat.
   relevanceScore: integer("relevance_score"),
   // Legacy: prefer item_matches.retention_source. Kept for backward-compat.
@@ -132,6 +134,10 @@ export const items = pgTable("items", {
   publishedAt: timestamp("published_at", { withTimezone: true }).notNull(),
   fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull().defaultNow(),
   contentHash: text("content_hash").notNull(),
+  contentRevision: integer("content_revision").notNull().default(1),
+  analysisInputHash: text("analysis_input_hash"),
+  contentObservedAt: timestamp("content_observed_at", { withTimezone: true }).notNull().defaultNow(),
+  contentOwnerKey: text("content_owner_key"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
@@ -378,6 +384,9 @@ export const contentEvents = pgTable("content_events", {
   id: uuid("id").primaryKey().defaultRandom(),
   title: text("title").notNull(),
   ruleVersion: text("rule_version").notNull(),
+  revision: integer("revision").notNull().default(0),
+  activityAt: timestamp("activity_at", { withTimezone: true }),
+  latestChange: text("latest_change"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -386,8 +395,47 @@ export const eventItems = pgTable("event_items", {
   itemId: uuid("item_id").primaryKey().references(() => items.id, { onDelete: "cascade" }),
   eventId: uuid("event_id").notNull().references(() => contentEvents.id, { onDelete: "cascade" }),
   manual: boolean("manual").notNull().default(false),
+  sourceRevision: integer("source_revision").notNull().default(0),
+  signalFingerprint: text("signal_fingerprint"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [index("event_items_event_idx").on(table.eventId)]);
+
+export const itemRevisions = pgTable("item_revisions", {
+  itemId: uuid("item_id").notNull().references(() => items.id, { onDelete: "cascade" }),
+  revision: integer("revision").notNull(),
+  contentHash: text("content_hash").notNull(),
+  title: text("title"),
+  bodyText: text("body_text").notNull(),
+  changeKind: text("change_kind").notNull(),
+  contentHtml: text("content_html"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [primaryKey({ columns: [table.itemId, table.revision] })]);
+
+/** Source developments retain evidence; model extraction is not independent verification. */
+export const eventDevelopments = pgTable("event_developments", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  eventId: uuid("event_id").notNull().references(() => contentEvents.id, { onDelete: "cascade" }),
+  developmentKey: text("development_key").notNull(),
+  eventRevision: integer("event_revision").notNull(),
+  kind: text("kind").notNull(),
+  label: text("label").notNull(),
+  itemId: uuid("item_id").references(() => items.id, { onDelete: "set null" }),
+  sourceRevision: integer("source_revision").notNull(),
+  title: text("title").notNull(),
+  evidence: text("evidence").notNull(),
+  firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull(),
+}, (table) => [
+  uniqueIndex("event_developments_key_uidx").on(table.eventId, table.developmentKey),
+  index("event_developments_revision_idx").on(table.eventId, table.eventRevision),
+]);
+
+/** Single-user workspace state, independent of the representative article. */
+export const eventReaderStates = pgTable("event_reader_states", {
+  eventId: uuid("event_id").primaryKey().references(() => contentEvents.id, { onDelete: "cascade" }),
+  readRevision: integer("read_revision").notNull().default(0),
+  followed: boolean("followed").notNull().default(false),
+  readAt: timestamp("read_at", { withTimezone: true }),
+});
 
 /**
  * 平台 API 凭据（X / Brave / WeRSS）。存库而非只放 .env 的原因：允许在

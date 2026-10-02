@@ -1,0 +1,120 @@
+[
+  {
+    "mode": "core",
+    "services": [
+      "migrate",
+      "postgres",
+      "web",
+      "worker"
+    ],
+    "workerTarget": "worker-runner",
+    "workerCommandOverride": null,
+    "workerConcurrency": "2",
+    "summaryConcurrency": "2",
+    "databasePoolMax": "4",
+    "seedProfiles": "",
+    "webImage": null,
+    "workerImage": null,
+    "werssImage": null
+  },
+  {
+    "mode": "lite",
+    "services": [
+      "migrate",
+      "postgres",
+      "web",
+      "worker"
+    ],
+    "workerTarget": "worker-runner",
+    "workerCommandOverride": null,
+    "workerConcurrency": "2",
+    "summaryConcurrency": "2",
+    "databasePoolMax": "4",
+    "seedProfiles": "",
+    "webImage": null,
+    "workerImage": null,
+    "werssImage": null
+  },
+  {
+    "mode": "production-core",
+    "services": [
+      "caddy",
+      "migrate",
+      "postgres",
+      "web",
+      "worker"
+    ],
+    "workerTarget": "worker-runner",
+    "workerCommandOverride": null,
+    "workerConcurrency": "2",
+    "summaryConcurrency": "2",
+    "databasePoolMax": "4",
+    "seedProfiles": "",
+    "webImage": null,
+    "workerImage": null,
+    "werssImage": null
+  },
+  {
+    "mode": "all-collectors",
+    "services": [
+      "migrate",
+      "postgres",
+      "trendradar",
+      "trendradar-mcp",
+      "trendradar-refresh",
+      "web",
+      "werss",
+      "worker"
+    ],
+    "workerTarget": "worker-runner",
+    "workerCommandOverride": null,
+    "workerConcurrency": "2",
+    "summaryConcurrency": "2",
+    "databasePoolMax": "4",
+    "seedProfiles": "wechat,trendradar",
+    "webImage": null,
+    "workerImage": null,
+    "werssImage": "jianwei-werss:local"
+  },
+  {
+    "mode": "prebuilt-core",
+    "services": [
+      "migrate",
+      "postgres",
+      "web",
+      "worker"
+    ],
+    "workerTarget": "worker-runner",
+    "workerCommandOverride": null,
+    "workerConcurrency": "2",
+    "summaryConcurrency": "2",
+    "databasePoolMax": "4",
+    "seedProfiles": "",
+    "webImage": "ghcr.io/workagi/jianwei-web:review-placeholder",
+    "workerImage": "ghcr.io/workagi/jianwei-worker:review-placeholder",
+    "werssImage": null
+  },
+  {
+    "mode": "prebuilt-full",
+    "services": [
+      "caddy",
+      "migrate",
+      "postgres",
+      "trendradar",
+      "trendradar-mcp",
+      "trendradar-refresh",
+      "web",
+      "werss",
+      "worker"
+    ],
+    "workerTarget": "worker-runner",
+    "workerCommandOverride": null,
+    "workerConcurrency": "2",
+    "summaryConcurrency": "2",
+    "databasePoolMax": "4",
+    "seedProfiles": "wechat,trendradar",
+    "webImage": "ghcr.io/workagi/jianwei-web:review-placeholder",
+    "workerImage": "ghcr.io/workagi/jianwei-worker:review-placeholder",
+    "werssImage": "ghcr.io/workagi/jianwei-werss:review-placeholder"
+  }
+]

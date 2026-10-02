@@ -1,0 +1,54 @@
+{
+  "scope": "Isolated PostgreSQL 17 (1 CPU / 512MiB), constructed data, local fake model only; not long-term production certification",
+  "realModelCalls": 0,
+  "upstreamCalls": 0,
+  "crashRecovery": {
+    "forcedSignal": "SIGKILL",
+    "checkpoint": "paid response received, before analysis commit",
+    "originalPreserved": true,
+    "recoveredStatus": "success",
+    "localModelHttpRequests": 1,
+    "durableAttempts": 1,
+    "leaseExpiryAdvancedInFixture": true,
+    "productionLeaseMinutes": 30
+  },
+  "largeEvent": {
+    "constructedMaterials": 20000,
+    "memberBatchSize": 200,
+    "readerElapsedMs": 8402,
+    "sampledWholeProbeRssMiB": 167.39,
+    "cards": 1,
+    "note": "RSS includes probe setup/crash-recovery; not an isolated HTTP server baseline or source-count capacity limit"
+  },
+  "history": {
+    "expiredRuns": 10000,
+    "batchSizes": [
+      1000,
+      1000,
+      1000,
+      1000,
+      1000,
+      1000,
+      1000,
+      1000,
+      1000,
+      1000,
+      0
+    ],
+    "elapsedMsPerPass": [
+      18.79,
+      8.81,
+      9.41,
+      8.71,
+      7.37,
+      7.64,
+      7.6,
+      8.33,
+      9.38,
+      7.9,
+      2.65
+    ],
+    "maxElapsedMs": 18.79,
+    "modelReceiptPreserved": true
+  }
+}

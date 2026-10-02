@@ -1,7 +1,9 @@
 import { db } from "./index";
-import { items, itemMatches, sourceItems, monitors, connectors, apiCredentials, bookmarks, collectionRuns } from "./schema";
+import { items, itemMatches, sourceItems, monitors, connectors, apiCredentials, bookmarks, collectionRuns, eventItems, contentEvents, eventReaderStates } from "./schema";
 import { loginAttempts } from "./schema";
-import { desc, eq, and, gte, inArray, sql, type SQL } from "drizzle-orm";
+import { asc, desc, eq, and, gt, gte, inArray, sql, type SQL } from "drizzle-orm";
+import { CONTENT_TYPE_FILTERS } from "@/lib/item-tags";
+import { automaticAnalysisCondition } from "./analysis-queue";
 import type { PlatformType } from "@/connectors/types";
 import { decryptCredential, encryptCredential, isEncryptedCredential } from "@/lib/credential-crypto";
 
@@ -9,14 +11,37 @@ export interface ItemFilter {
   platform?: PlatformType;
   search?: string;
   monitorId?: string;
+  monitorIds?: string[];
   since?: Date;
   bookmarkedOnly?: boolean;
   featuredOnly?: boolean;
+  changesOnly?: boolean;
+  followedOnly?: boolean;
   limit?: number;
   offset?: number;
+  eventIds?: string[];
+  itemIds?: string[];
+}
+
+function selectedMonitors(filter: ItemFilter): string[] {
+  return filter.monitorIds?.length ? filter.monitorIds : filter.monitorId ? [filter.monitorId] : [];
+}
+
+function selectedMatchScope(filter: ItemFilter, alias: "im" | "selected_match" | "item_matches"): SQL {
+  return and(inArray(sql`${sql.identifier(alias)}.monitor_id`, selectedMonitors(filter)),
+    filter.platform ? sql`exists (select 1 from source_items scope_source
+      where scope_source.id = ${sql.identifier(alias)}.source_item_id and scope_source.platform = ${filter.platform})` : undefined)!;
+}
+
+function featuredScore(filter: ItemFilter): SQL<number | null> {
+  const selected = selectedMonitors(filter);
+  return selected.length
+    ? sql`(select max(im.relevance_score) from item_matches im where im.item_id = ${items.id} and ${selectedMatchScope(filter, "im")} and im.retention_status = 'kept')`
+    : sql`${items.informationValueScore}`;
 }
 
 function itemConditions(filter: ItemFilter): SQL[] {
+  const selected = selectedMonitors(filter);
   const conditions: SQL[] = [
     sql`exists (
       select 1
@@ -25,7 +50,7 @@ function itemConditions(filter: ItemFilter): SQL[] {
         and ${itemMatches.retentionStatus} = 'kept'
     )`,
   ];
-  if (filter.platform && filter.monitorId) {
+  if (filter.platform && selected.length) {
     // Both filters must describe the same observation. Checking them in two
     // independent EXISTS clauses would let a web-search monitor match one
     // source while the platform filter matched a different RSS source of the
@@ -35,7 +60,7 @@ function itemConditions(filter: ItemFilter): SQL[] {
       from ${itemMatches}
       inner join ${sourceItems} on ${sourceItems.id} = ${itemMatches.sourceItemId}
       where ${itemMatches.itemId} = ${items.id}
-        and ${itemMatches.monitorId} = ${filter.monitorId}
+        and ${inArray(itemMatches.monitorId, selected)}
         and ${itemMatches.retentionStatus} = 'kept'
         and ${sourceItems.platform} = ${filter.platform}
     )`);
@@ -45,27 +70,46 @@ function itemConditions(filter: ItemFilter): SQL[] {
       where ${sourceItems.itemId} = ${items.id}
         and ${sourceItems.platform} = ${filter.platform}
     )`);
-  } else if (filter.monitorId) {
+  } else if (selected.length) {
     conditions.push(sql`exists (
       select 1
       from ${itemMatches}
       where ${itemMatches.itemId} = ${items.id}
-        and ${itemMatches.monitorId} = ${filter.monitorId}
+        and ${inArray(itemMatches.monitorId, selected)}
         and ${itemMatches.retentionStatus} = 'kept'
     )`);
   }
+  if (filter.eventIds?.length) conditions.push(sql`exists (select 1 from event_items scoped_event
+    where scoped_event.item_id = ${items.id} and ${inArray(sql`scoped_event.event_id`, filter.eventIds)})`);
+  if (filter.itemIds?.length) conditions.push(inArray(items.id, filter.itemIds));
   if (filter.search) {
     const term = `%${filter.search}%`;
     conditions.push(
       sql`(${items.title} ilike ${term} or ${items.translatedTitle} ilike ${term} or ${items.bodyText} ilike ${term} or ${items.authorName} ilike ${term})`,
     );
   }
-  if (filter.since) conditions.push(gte(items.publishedAt, filter.since));
+  if (filter.since) conditions.push(filter.changesOnly ? sql`
+    coalesce((select ce.activity_at from event_items ei join content_events ce on ce.id = ei.event_id where ei.item_id = ${items.id}), ${items.publishedAt}) >= ${filter.since.toISOString()}::timestamptz
+  ` : gte(items.publishedAt, filter.since));
   if (filter.featuredOnly) conditions.push(sql`
-    ${items.informationValueScore} >= 60
+    ${featuredScore(filter)} >= 60
     and length(coalesce(${items.editorialReason}, case when ${items.retentionSource} = 'model' then ${items.retentionReason} end, '')) >= 12
     and length(coalesce(${items.aiSummary}, '')) >= 20
+    and not exists (
+      select 1 from event_items ei join content_events ce on ce.id = ei.event_id
+      join event_developments d on d.event_id = ce.id and d.event_revision = ce.revision
+      join items current_material on current_material.id = d.item_id
+      where ei.item_id = ${items.id} and ce.revision > 1
+        and current_material.analysis_status not in ('success', 'partial')
+    )
   `);
+  if (filter.changesOnly || filter.followedOnly) conditions.push(sql`exists (
+    select 1 from event_items ei join content_events ce on ce.id = ei.event_id
+    left join event_reader_states ers on ers.event_id = ce.id
+    where ei.item_id = ${items.id}
+    ${filter.changesOnly ? sql`and ce.revision > coalesce(ers.read_revision, 0)` : sql``}
+    ${filter.followedOnly ? sql`and ers.followed = true` : sql``}
+  )`);
   if (filter.bookmarkedOnly) {
     conditions.push(sql`exists (
       select 1 from ${bookmarks} where ${bookmarks.itemId} = ${items.id}
@@ -74,62 +118,81 @@ function itemConditions(filter: ItemFilter): SQL[] {
   return conditions;
 }
 
-/**
- * Read the unified item feed. All connectors (direct + TrendRadar) land in the
- * same `items` table, so the reader only needs one query with optional
- * platform / keyword / time filters.
- */
-export async function getItems(filter: ItemFilter = {}) {
-  const conditions = itemConditions(filter);
-  const selectedSourceId = sql`(
-    select si.id
-    from source_items si
-    where si.item_id = ${items.id}
-      ${filter.platform ? sql`and si.platform = ${filter.platform}` : sql``}
-      ${filter.monitorId ? sql`and exists (
-        select 1 from item_matches selected_match
-        where selected_match.source_item_id = si.id
-          and selected_match.monitor_id = ${filter.monitorId}
-          and selected_match.retention_status = 'kept'
-      )` : sql``}
-    order by
-      case when si.platform = ${items.platform} and si.upstream_id = ${items.upstreamId} then 0 else 1 end,
-      si.first_seen_at asc
-    limit 1
-  )`;
+function readerItemSelection(filter: ItemFilter) {
+  const selected = selectedMonitors(filter);
+  const selectedSource = db.select({ platform: sourceItems.platform, sourceProvider: sourceItems.sourceProvider, upstreamId: sourceItems.upstreamId, authorId: sourceItems.authorId, authorName: sourceItems.authorName, authorHandle: sourceItems.authorHandle, avatarUrl: sourceItems.avatarUrl }).from(sourceItems).where(and(
+    eq(sourceItems.itemId, items.id),
+    filter.platform ? eq(sourceItems.platform, filter.platform) : undefined,
+    selected.length ? sql`exists (select 1 from item_matches selected_match
+      where selected_match.source_item_id = ${sourceItems.id}
+        and ${inArray(sql`selected_match.monitor_id`, selected)}
+        and selected_match.retention_status = 'kept')` : undefined,
+  )).orderBy(sql`case when ${sourceItems.platform} = ${items.platform} and ${sourceItems.upstreamId} = ${items.upstreamId} then 0 else 1 end`, sourceItems.firstSeenAt)
+    .limit(1).as("selected_source");
+  const selectedMatch = db.select({ score: itemMatches.relevanceScore, reason: itemMatches.retentionReason, source: itemMatches.retentionSource })
+    .from(itemMatches).where(and(eq(itemMatches.itemId, items.id), eq(itemMatches.retentionStatus, "kept"),
+      selected.length ? selectedMatchScope(filter, "item_matches") : sql`false`))
+    .orderBy(sql`${itemMatches.relevanceScore} desc nulls last`, itemMatches.monitorId).limit(1).as("selected_match");
+  const readerPlatform = sql<PlatformType>`coalesce(${selectedSource.platform}, ${items.platform})`;
+  const score = sql<number | null>`coalesce(${selectedMatch.score}, ${items.informationValueScore}, ${items.relevanceScore})`;
+  // Keep complete inputs where reader rules still need them. Classified long
+  // articles only transfer a preview; SQL search still sees their full text.
+  const needsRuleInput = sql`(${items.contentType} is null or ${items.contentType} not in ${CONTENT_TYPE_FILTERS.flatMap(type => [type.id, type.label])}
+    or jsonb_array_length(coalesce(${items.topicTags}, '[]'::jsonb)) = 0 or ${score} is null)`;
+  const fields = {
+    id: items.id,
+    platform: readerPlatform,
+    authorName: sql<string | null>`coalesce(${selectedSource.authorName}, ${items.authorName})`,
+    authorHandle: sql<string | null>`coalesce(${selectedSource.authorHandle}, ${items.authorHandle})`,
+    title: items.title,
+    translatedTitle: items.translatedTitle,
+    bodyText: sql<string>`case when ${readerPlatform} in ('x', 'trendradar') or ${needsRuleInput}
+      then ${items.bodyText} else left(${items.bodyText}, 320) end`,
+    aiSummary: items.aiSummary,
+    editorialReason: items.editorialReason,
+    eventId: eventItems.eventId,
+    eventDate: contentEvents.activityAt,
+    eventRevision: contentEvents.revision,
+    eventChange: contentEvents.latestChange,
+    eventPreferredItemId: sql<string | null>`(select d.item_id from event_developments d
+      where d.event_id = ${contentEvents.id} and d.event_revision = ${contentEvents.revision}
+        and ${contentEvents.revision} > 1 limit 1)`,
+    contentType: items.contentType,
+    topicTags: items.topicTags,
+    retentionReason: sql<string | null>`coalesce(${selectedMatch.reason}, ${items.retentionReason})`,
+    relevanceScore: score,
+    retentionSource: sql<string | null>`coalesce(${selectedMatch.source}, ${items.retentionSource})`,
+    contentHtml: sql<string | null>`case when ${needsRuleInput} or left(btrim(${items.contentHtml}), 1) = '{'
+      then ${items.contentHtml} else null end`,
+    canonicalUrl: items.canonicalUrl,
+    publishedAt: items.publishedAt,
+  };
+  return { selected, selectedSource, selectedMatch, fields };
+}
 
-  return db
+/** Read full documents or the fields needed to display reader cards. */
+export async function getItems(filter: ItemFilter = {}, projection: "full" | "reader" = "full") {
+  const conditions = itemConditions(filter);
+  const { selected, selectedSource, selectedMatch, fields } = readerItemSelection(filter);
+  const query = db
     .select({
-      id: items.id,
-      platform: sql<PlatformType>`coalesce(
-        (select selected_source.platform from source_items selected_source where selected_source.id = ${selectedSourceId}),
-        ${items.platform}
-      )`,
+      ...fields,
       sourceProvider: sql<string | null>`coalesce(
-        (select selected_source.source_provider from source_items selected_source where selected_source.id = ${selectedSourceId}),
+        ${selectedSource.sourceProvider},
         ${items.sourceProvider}
       )`,
       upstreamId: sql<string>`coalesce(
-        (select selected_source.upstream_id from source_items selected_source where selected_source.id = ${selectedSourceId}),
+        ${selectedSource.upstreamId},
         ${items.upstreamId}
       )`,
-      canonicalUrl: items.canonicalUrl,
       authorId: sql<string | null>`coalesce(
-        (select selected_source.author_id from source_items selected_source where selected_source.id = ${selectedSourceId}),
+        ${selectedSource.authorId},
         ${items.authorId}
       )`,
-      authorName: sql<string | null>`coalesce(
-        (select selected_source.author_name from source_items selected_source where selected_source.id = ${selectedSourceId}),
-        ${items.authorName}
-      )`,
-      authorHandle: sql<string | null>`coalesce(
-        (select selected_source.author_handle from source_items selected_source where selected_source.id = ${selectedSourceId}),
-        ${items.authorHandle}
-      )`,
       avatarUrl: sql<string | null>`coalesce(
-        (select selected_source.avatar_url from source_items selected_source where selected_source.id = ${selectedSourceId}),
+        ${selectedSource.avatarUrl},
         ${items.avatarUrl},
-        (
+        case when ${items.authorHandle} is not null then (
           select recent_avatar.avatar_url
           from items recent_avatar
           where recent_avatar.platform = 'x'
@@ -137,54 +200,18 @@ export async function getItems(filter: ItemFilter = {}) {
             and nullif(btrim(recent_avatar.avatar_url), '') is not null
           order by recent_avatar.fetched_at desc
           limit 1
-        )
+        ) end
       )`,
-      title: items.title,
-      translatedTitle: items.translatedTitle,
-      bodyText: items.bodyText,
-      aiSummary: items.aiSummary,
-      editorialReason: items.editorialReason,
-      eventId: sql<string | null>`(select event_id from event_items where item_id = ${items.id})`,
-      contentType: items.contentType,
-      topicTags: items.topicTags,
-      retentionReason: sql<string | null>`coalesce(
-        ${filter.monitorId ? sql`(
-          select selected_match.retention_reason from item_matches selected_match
-          where selected_match.item_id = ${items.id}
-            and selected_match.monitor_id = ${filter.monitorId}
-            and selected_match.retention_status = 'kept'
-          limit 1
-        )` : sql`null`},
-        ${items.retentionReason}
-      )`,
-      relevanceScore: sql<number | null>`coalesce(
-        ${filter.monitorId ? sql`(
-          select selected_match.relevance_score from item_matches selected_match
-          where selected_match.item_id = ${items.id}
-            and selected_match.monitor_id = ${filter.monitorId}
-            and selected_match.retention_status = 'kept'
-          limit 1
-        )` : sql`null`},
-        ${items.informationValueScore},
-        ${items.relevanceScore}
-      )`,
-      retentionSource: sql<string | null>`coalesce(
-        ${filter.monitorId ? sql`(
-          select selected_match.retention_source from item_matches selected_match
-          where selected_match.item_id = ${items.id}
-            and selected_match.monitor_id = ${filter.monitorId}
-            and selected_match.retention_status = 'kept'
-          limit 1
-        )` : sql`null`},
-        ${items.retentionSource}
-      )`,
-      contentHtml: items.contentHtml,
+      bodyText: projection === "full" ? items.bodyText : fields.bodyText,
+      readRevision: eventReaderStates.readRevision,
+      followed: eventReaderStates.followed,
+      contentHtml: projection === "full" ? items.contentHtml : fields.contentHtml,
+      hasFullText: sql<boolean>`nullif(btrim(${items.contentHtml}), '') is not null`,
       contentProvider: items.contentProvider,
       contentFetchStatus: items.contentFetchStatus,
       contentFetchError: items.contentFetchError,
       contentFetchedAt: items.contentFetchedAt,
       imageUrls: items.imageUrls,
-      publishedAt: items.publishedAt,
       fetchedAt: items.fetchedAt,
       contentHash: items.contentHash,
       createdAt: items.createdAt,
@@ -205,13 +232,53 @@ export async function getItems(filter: ItemFilter = {}) {
         join monitors m on m.id = im.monitor_id
         where im.item_id = ${items.id}
           and im.retention_status = 'kept'
+          ${selected.length ? sql`and ${selectedMatchScope(filter, "im")}` : sql``}
       )`,
     })
     .from(items)
+    .leftJoinLateral(selectedSource, sql`true`)
+    .leftJoinLateral(selectedMatch, sql`true`)
+    .leftJoin(eventItems, eq(eventItems.itemId, items.id))
+    .leftJoin(contentEvents, eq(contentEvents.id, eventItems.eventId))
+    .leftJoin(eventReaderStates, eq(eventReaderStates.eventId, contentEvents.id))
     .where(conditions.length ? and(...conditions)! : sql`1=1`)
-    .orderBy(desc(items.publishedAt))
-    .limit(filter.limit ?? 50)
+    .orderBy(...(filter.changesOnly || filter.followedOnly ? [desc(contentEvents.activityAt), desc(items.publishedAt)] : filter.featuredOnly ? [desc(featuredScore(filter)), desc(items.publishedAt)] : [desc(items.publishedAt)]))
     .offset(filter.offset ?? 0);
+  return filter.eventIds?.length && filter.limit === undefined ? query : query.limit(filter.limit ?? 50);
+}
+
+export function getReaderItems(filter: ItemFilter = {}) {
+  return getItems(filter, "reader");
+}
+
+/** Rank with reader inputs only; hydrate display fields after selecting the page. */
+export function getReaderEventCandidates(filter: ItemFilter, limit: number, afterId?: string) {
+  const window = db.select({ id: items.id }).from(items)
+    .where(and(...itemConditions(filter), afterId ? gt(items.id, afterId) : undefined))
+    .orderBy(asc(items.id)).limit(limit).as("member_window");
+  const { selectedSource, selectedMatch, fields } = readerItemSelection(filter);
+  return db.select(fields).from(window).innerJoin(items, eq(items.id, window.id))
+    .leftJoinLateral(selectedSource, sql`true`)
+    .leftJoinLateral(selectedMatch, sql`true`)
+    .innerJoin(eventItems, eq(eventItems.itemId, items.id))
+    .innerJoin(contentEvents, eq(contentEvents.id, eventItems.eventId))
+    .orderBy(asc(items.id));
+}
+
+/** Page event identities before reading members: duplicates cannot consume the page. */
+export async function getReaderEventIds(filter: ItemFilter, limit: number, offset: number) {
+  return db.select({ id: contentEvents.id }).from(items)
+    .innerJoin(eventItems, eq(eventItems.itemId, items.id))
+    .innerJoin(contentEvents, eq(contentEvents.id, eventItems.eventId))
+    .where(and(...itemConditions(filter)))
+    .groupBy(contentEvents.id, contentEvents.activityAt)
+    .orderBy(desc(contentEvents.activityAt), desc(contentEvents.id))
+    .limit(limit).offset(offset);
+}
+
+export async function getReaderMonitorFilters(platform?: PlatformType) {
+  return db.select({ id: monitors.id, name: monitors.name }).from(monitors)
+    .where(and(eq(monitors.enabled, true), platform ? eq(monitors.platform, platform) : undefined)).orderBy(desc(monitors.updatedAt));
 }
 
 /** Exact count before reader-only quality/type/topic filters are applied. */
@@ -356,6 +423,10 @@ export async function getContentPipelineStats() {
     where ${itemMatches.itemId} = ${items.id}
   )`;
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const queued = and(eq(items.analysisStatus, "pending"), automaticAnalysisCondition(
+    Math.max(1, Number(process.env.CONTENT_RETRY_MAX_ATTEMPTS) || 5), since,
+  ))!;
+  const unqueued = sql`${items.analysisStatus} not in ('success', 'partial', 'failed') and not (${queued})`;
 
   const [platforms, newItemsRows, runRows] = await Promise.all([
     db
@@ -366,6 +437,15 @@ export async function getContentPipelineStats() {
         structured: sql<number>`count(distinct case when nullif(btrim(${items.contentType}), '') is not null and jsonb_array_length(${items.topicTags}) > 0 then ${items.id} end)::int`,
         analysisReady: sql<number>`count(distinct case when ${items.analysisStatus} in ('success', 'partial') then ${items.id} end)::int`,
         analysisFailed: sql<number>`count(distinct case when ${items.analysisStatus} = 'failed' then ${items.id} end)::int`,
+        analysisPending: sql<number>`count(distinct case when ${queued} then ${items.id} end)::int`,
+        analysisUnqueued: sql<number>`count(distinct case when ${unqueued} then ${items.id} end)::int`,
+        projectionPending: sql<number>`count(distinct case when exists (
+          select 1 from item_matches im where im.item_id = ${items.id} and im.retention_status = 'kept'
+        ) and (${items.analysisStatus} <> 'pending' or ${items.analysisVersion} is null
+          or ${items.contentRevision} > 1 or ${eventItems.itemId} is not null)
+          and (${eventItems.itemId} is null or ${eventItems.sourceRevision} <> ${items.contentRevision}
+          or ${eventItems.signalFingerprint} is distinct from case when ${items.eventSignal} is not null then md5(${items.eventSignal}::text) end)
+          then ${items.id} end)::int`,
         explained: sql<number>`count(distinct case when nullif(btrim(coalesce(${items.editorialReason}, case when ${items.retentionSource} = 'model' then ${items.retentionReason} end)), '') is not null and ${items.informationValueScore} is not null then ${items.id} end)::int`,
         withFullText: sql<number>`count(distinct case when nullif(btrim(${items.contentHtml}), '') is not null then ${items.id} end)::int`,
         fallbackFullText: sql<number>`count(distinct case when nullif(btrim(${items.contentHtml}), '') is not null and ${items.contentProvider} in ('direct', 'wechat_download_api') then ${items.id} end)::int`,
@@ -373,14 +453,20 @@ export async function getContentPipelineStats() {
       })
       .from(sourceItems)
       .innerJoin(items, eq(sourceItems.itemId, items.id))
+      .leftJoin(eventItems, eq(eventItems.itemId, items.id))
       .where(activeItem)
       .groupBy(sourceItems.platform),
     db
       .select({
-        count: sql<number>`count(*)::int`,
+        count: sql<number>`count(case when ${items.createdAt} >= ${since.toISOString()}::timestamptz then 1 end)::int`,
+        pending: sql<number>`count(case when ${queued} then 1 end)::int`,
+        unqueued: sql<number>`count(case when ${unqueued} then 1 end)::int`,
+        oldestPendingAt: sql<Date | null>`min(case when ${queued} then ${items.contentObservedAt} end)`,
+        processed24h: sql<number>`count(case when ${items.analysisStatus} in ('success', 'partial')
+          and ${items.analyzedAt} >= ${since.toISOString()}::timestamptz then 1 end)::int`,
       })
       .from(items)
-      .where(and(activeItem, gte(items.createdAt, since))),
+      .where(activeItem),
     db
       .select({
         runs24h: sql<number>`count(*)::int`,
@@ -399,6 +485,7 @@ export async function getContentPipelineStats() {
   const runs = runRows[0];
   return {
     platforms,
+    queue: newItemsRows[0],
     recent: {
       runs24h: Number(runs?.runs24h ?? 0),
       failedRuns24h: Number(runs?.failedRuns24h ?? 0),

@@ -20,12 +20,12 @@ export async function seedConnectors(): Promise<void> {
   console.log(`[seed] 已初始化 ${CONNECTOR_SEED.length} 个连接器`);
 }
 
-// Ensure a baseline TrendRadar monitor exists so the reader shows hotlist/RSS
-// content out of the box. TrendRadar owns collection; 见微 only consumes
-// its MCP output. This row is what drives the worker's trendradar branch.
+// Initialize the bundled hotlist monitor only when that collector is selected.
+// Existing monitors and user choices are preserved on subsequent seeds.
 const DEFAULT_TRENDRADAR_MONITOR_ID = "00000000-0000-0000-0000-0000000000a1";
 
 export async function seedDefaultMonitors(): Promise<void> {
+  if (!process.env.COMPOSE_PROFILES?.split(",").map(value => value.trim()).includes("trendradar")) return;
   const connectorId = connectorIdForPlatform("trendradar");
   if (!connectorId) {
     console.warn("[seed] 未找到 trendradar 连接器，跳过默认监控");

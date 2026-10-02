@@ -1,0 +1,174 @@
+{
+  "date": "2026-10-03",
+  "baselineTag": "v0.2.0",
+  "baselineCommit": "4c567273ce734ba053958867cb5a55ea885d6e98",
+  "scope": "Uncommitted workspace; isolated PostgreSQL17 with 1 CPU/512MiB; local arm64 candidate Docker images. No production access, upstream collection, model API, Git push or release publication.",
+  "checks": {
+    "tests": {
+      "files": 59,
+      "passed": 409,
+      "databaseIntegration": true
+    },
+    "typecheck": "pass",
+    "eslint": "pass",
+    "webProductionBuild": "pass",
+    "schemaDrift": "pass",
+    "freshToolsContainerMigrationAndSeed": "pass",
+    "openSourceAuditIncludingHistory": "pass",
+    "productionDependencyAudit": "No known vulnerabilities found",
+    "existingPlaywrightSmoke": {
+      "passed": 4
+    },
+    "containerEventReading": [
+      "匿名写入拒绝，并提供登录返回入口",
+      "登录后返回事件详情",
+      "关注状态刷新后保留",
+      "当前事件版本标记已读",
+      "已关注目录包含旧版本升级事件"
+    ],
+    "worker": {
+      "userId": 1000,
+      "nodeModules": false,
+      "databaseHeartbeat": "ok",
+      "idleDockerStatsMiB": 32.01,
+      "memoryLimitMiB": 256,
+      "scope": "Idle polling only; cgroup memory, not RSS or peak capacity"
+    },
+    "compose": "baseline/current core, lite, collector profiles, production image combination parsed",
+    "werssPinnedUpstreamPlatforms": [
+      "linux/amd64",
+      "linux/arm64"
+    ]
+  },
+  "upgrades": {
+    "v020Populated": {
+      "baselineMigration": 28,
+      "targetMigration": 33,
+      "repeatedMigrate": "pass",
+      "journalRows": 6,
+      "journalNote": "One hand-built baseline journal marker plus five new migrations",
+      "preserved": [
+        "article body and HTML",
+        "summary and analysis status/version",
+        "source",
+        "bookmark",
+        "event membership",
+        "model receipt response",
+        "model attempt"
+      ],
+      "eventRevisionAfterRefresh": 1,
+      "readerStateAfterBrowser": {
+        "readRevision": 1,
+        "followed": true
+      }
+    },
+    "ciScript0023": {
+      "migrationExecution": "pass",
+      "preJournalAssertions": "pass",
+      "actualJournalRows": 11,
+      "expectedByCurrentScript": 6,
+      "exitCode": 1,
+      "localAdapter": "Temporary psql adapter to test container and same installed drizzle-kit binary; repository script unchanged"
+    }
+  },
+  "images": {
+    "web": {
+      "tag": "jianwei-web:release-review-20261003",
+      "architecture": "arm64",
+      "sizeBytes": 232495280
+    },
+    "worker": {
+      "tag": "jianwei-worker:release-review-20261003",
+      "architecture": "arm64",
+      "sizeBytes": 164695113
+    },
+    "migrate": {
+      "tag": "jianwei-migrate:release-review-20261003",
+      "architecture": "arm64",
+      "sizeBytes": 1528231418
+    }
+  },
+  "blockingFindings": [
+    {
+      "file": "scripts/test-upgrade.sh",
+      "line": 122,
+      "kind": "obsolete release CI assertion",
+      "observed": "Actual migration count 11 versus fixed expected 6; exits1 despite successful migration"
+    },
+    {
+      "file": "scripts/model-receipts.ts",
+      "line": 9,
+      "kind": "existing maintenance CLI startup defect",
+      "observed": "pnpm model:receipts list in latest tools image fails: Top-level await is currently not supported with the cjs output format",
+      "exitCode": 1,
+      "fileChangedSinceV020": false
+    }
+  ],
+  "quality": {
+    "contentRules": {
+      "cases": 96,
+      "assertions": 180,
+      "passedAssertions": 117,
+      "accuracy": 0.65,
+      "macroF1": 0.634,
+      "releaseTargets": {
+        "accuracy": 0.8,
+        "macroF1": 0.75
+      }
+    },
+    "eventTitleRules": {
+      "syntheticPairs": 16,
+      "falseMerges": 1,
+      "missedMerges": 2,
+      "precision": 0.8,
+      "recall": 0.6666666666666666,
+      "scope": "Pairwise title rules only; not model extraction or real recommendation quality"
+    }
+  },
+  "changeFootprintBeforeAssessmentArtifacts": {
+    "deployment_and_other": {
+      "files": 22,
+      "added": 371,
+      "deleted": 166
+    },
+    "docs_and_probes": {
+      "files": 38,
+      "added": 4793,
+      "deleted": 9
+    },
+    "migration_metadata": {
+      "files": 6,
+      "added": 14245,
+      "deleted": 0
+    },
+    "runtime": {
+      "files": 40,
+      "added": 1337,
+      "deleted": 477
+    },
+    "tests": {
+      "files": 16,
+      "added": 1160,
+      "deleted": 5
+    },
+    "migration_sql": {
+      "files": 5,
+      "added": 49,
+      "deleted": 0
+    }
+  },
+  "notVerified": [
+    "Whole Linux machine 1C/2GB capacity or long soak",
+    "Real model extraction or recommendation holdout quality and costs",
+    "Application amd64 images or full dual architecture Release",
+    "GHCR public pulls of new component images",
+    "Latest full production Compose backup/restore roundtrip"
+  ],
+  "releaseRecommendation": {
+    "version": "v0.3.0",
+    "readyToTag": false,
+    "packageVersion": "0.2.0",
+    "formalReleaseNotesPresent": false,
+    "reason": "Fix two reproduced defects, prepare formal version metadata/notes, pass CI at the current commit before tagging."
+  }
+}

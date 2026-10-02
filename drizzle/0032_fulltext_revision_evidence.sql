@@ -1,0 +1,1 @@
+ALTER TABLE "item_revisions" ADD COLUMN "content_html" text;

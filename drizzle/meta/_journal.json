@@ -204,6 +204,41 @@
       "when": 1790929950768,
       "tag": "0028_editorial_receipts_events",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1790936238950,
+      "tag": "0029_event_reading_revisions",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1790936422572,
+      "tag": "0030_content_observation_fence",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1790936768500,
+      "tag": "0031_content_ownership",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1790936879796,
+      "tag": "0032_fulltext_revision_evidence",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1790938655116,
+      "tag": "0033_evidence_event_signals",
+      "breakpoints": true
     }
   ]
 }

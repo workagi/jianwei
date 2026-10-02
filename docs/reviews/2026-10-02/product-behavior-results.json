@@ -1,0 +1,52 @@
+{
+  "scope": "Synthetic pure-function probes; not production accuracy or database integration tests.",
+  "topCandidateTruncation": {
+    "population": 37,
+    "visible": 36,
+    "fullPopulationTop": "event-36",
+    "renderedTop": "event-0",
+    "highestScoreVisible": false
+  },
+  "publisherQuotaBeforeUtility": {
+    "population": 6,
+    "visible": 5,
+    "highestScoreVisible": false
+  },
+  "representativeSwap": {
+    "before": {
+      "id": "newer",
+      "eventId": "shared-event",
+      "date": "2026-10-02T11:59:00.000Z",
+      "bookmarked": true
+    },
+    "after": {
+      "id": "older",
+      "eventId": "shared-event",
+      "date": "2026-10-02T11:00:00.000Z",
+      "bookmarked": false
+    }
+  },
+  "oppositeActions": {
+    "titles": [
+      "Acme Agent 2.0 宣布向所有用户免费开放 API",
+      "Acme Agent 2.0 宣布不向所有用户免费开放 API"
+    ],
+    "similarity": 0.8846153846153846,
+    "mergedByCurrentRule": true
+  },
+  "coverageBoost": {
+    "score70WithFourReports": 116,
+    "score92WithNoOtherReport": 114,
+    "selectedTop": "syndicated",
+    "note": "The current input type cannot express whether these publishers cite the same primary evidence."
+  },
+  "monitorVsDocumentValue": {
+    "documentInformationValue": 45,
+    "monitor": {
+      "shouldKeep": true,
+      "relevanceScore": 95,
+      "retentionReason": "命中 1 个监控关键词，匹配内容类型「实践教程」，相关主题2个"
+    },
+    "note": "Separately inspected SQL in src/db/queries.ts requires documentInformationValue >= 60 for featuredOnly, including monitor-filtered views; this probe does not execute that SQL."
+  }
+}

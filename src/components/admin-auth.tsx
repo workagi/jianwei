@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Eye, EyeOff, KeyRound, LockKeyhole, UserRound, X } from "lucide-react";
 
 /** 未登录时展示的账号密码登录页。 */
-export function AdminLogin() {
+export function AdminLogin({ returnTo }: { returnTo?: string } = {}) {
   const [username, setUsername] = useState("admin");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -24,6 +24,7 @@ export function AdminLogin() {
         body: JSON.stringify({ username, password }),
       });
       if (response.ok) {
+        if (returnTo) router.push(returnTo);
         router.refresh();
         return;
       }

@@ -3,6 +3,8 @@ import type { PlatformType } from "@/connectors/types";
 import {
   buildFeaturedFeed,
   clusterReaderItems,
+  compactEventMembers,
+  groupPersistedEvents,
   eventTitleSimilarity,
   isLikelySameEvent,
   selectTopFeaturedEvents,
@@ -54,6 +56,18 @@ describe("content event clustering", () => {
     });
     expect(isLikelySameEvent(left, right)).toBe(false);
   });
+  it("does not infer temporal identity from missing or invalid dates", () => {
+    expect(isLikelySameEvent(item({ date: "" }), item({ source: "Other", date: "" }))).toBe(false);
+    expect(isLikelySameEvent(item({ date: "invalid" }), item({ source: "Other", date: "invalid" }))).toBe(false);
+  });
+  it("keeps the pair window from expanding through intermediate reports", () => {
+    const clustered = clusterReaderItems([
+      item({ id: "a", source: "A", date: "2026-09-26T00:00:00Z" }),
+      item({ id: "b", source: "B", date: "2026-09-28T00:00:00Z" }),
+      item({ id: "c", source: "C", date: "2026-09-30T00:00:00Z" }),
+    ]);
+    expect(clustered).toHaveLength(2);
+  });
 
   it("keeps the strongest card and exposes the other source", () => {
     const clustered = clusterReaderItems([
@@ -104,7 +118,7 @@ describe("content event clustering", () => {
     expect(featured.some((entry) => entry.source === "News 0")).toBe(true);
   });
 
-  it("ranks freshness and cross-source corroboration without repeating one source", () => {
+  it("ranks value and freshness without treating additional coverage as proof", () => {
     const now = Date.parse("2026-07-16T08:00:00Z");
     const top = selectTopFeaturedEvents([
       item({ id: "single", source: "News A", score: 92, date: "2026-07-16T07:00:00Z" }),
@@ -118,7 +132,17 @@ describe("content event clustering", () => {
       item({ id: "same-source", source: "News A", score: 91, date: "2026-07-16T05:00:00Z" }),
       item({ id: "third", source: "News C", score: 72, date: "2026-07-16T04:00:00Z" }),
     ], { now });
-    expect(top[0].id).toBe("corroborated");
-    expect(top.map((entry) => entry.source)).toEqual(["News B", "News A", "News C"]);
+    expect(top[0].id).toBe("single");
+    expect(top.map((entry) => entry.source)).toEqual(["News A", "News B", "News C"]);
+  });
+
+  it("compacts batches without changing preferred representatives, source links or fallback dates", () => {
+    const materials = Array.from({ length: 40 }, (_, index) => item({ id: `material-${index}`, eventId: "event",
+      eventPreferredItemId: "material-2", source: `Source ${index % 3}`, score: 60 + index,
+      date: new Date(Date.parse("2026-07-01T00:00:00Z") + index * 1000).toISOString(), url: `https://example.test/${index}` }));
+    let compacted: ClusterableReaderItem[] = [];
+    for (let offset = 0; offset < materials.length; offset += 7) compacted = compactEventMembers([...compacted, ...materials.slice(offset, offset + 7)]);
+    expect(compacted.length).toBeLessThanOrEqual(5);
+    expect(groupPersistedEvents(compacted)).toEqual(groupPersistedEvents(materials));
   });
 });

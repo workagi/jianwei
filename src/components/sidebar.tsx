@@ -9,7 +9,9 @@ import { SystemStatus } from "@/components/system-status";
 // (see src/app/page.tsx). Using short paths like `/wechat` would 404 because
 // those routes do not exist.
 const readerLinks = [
-  { href: "/", label: "精选", icon: Sparkles, platform: "__featured__" },
+  { href: "/", label: "关注变化", icon: RadioTower, platform: "__changes__" },
+  { href: "/?view=followed", label: "已关注事件", icon: Bookmark, platform: "__followed__" },
+  { href: "/?view=featured", label: "精选", icon: Sparkles, platform: "__featured__" },
   { href: "/?view=latest", label: "最新", icon: RadioTower, platform: null as string | null },
   { href: "/?platform=all", label: "全部信息", icon: ListFilter, platform: "all" },
   { href: "/?platform=x", label: "X / Twitter", icon: AtSign, platform: "x" },
@@ -31,7 +33,9 @@ export function Sidebar() {
 
   const isActive = (href: string, platform: string | null) => {
     if (platform === "__starred__") return pathname === "/starred";
-    const isFeatured = pathname === "/" && (view === "featured" || (!view && !current));
+    if (platform === "__followed__") return pathname === "/" && view === "followed";
+    const isFeatured = pathname === "/" && view === "featured";
+    if (platform === "__changes__") return pathname === "/" && (view === "changes" || (!view && !current));
     const isLatest = pathname === "/" && view === "latest";
     if (platform === "__featured__") return isFeatured;
     if (href === "/?view=latest") return isLatest;

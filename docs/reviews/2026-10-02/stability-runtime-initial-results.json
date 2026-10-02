@@ -1,0 +1,55 @@
+{
+  "scope": "Isolated PostgreSQL 17 (1 CPU / 512MiB), constructed data, local fake model only; not long-term production certification",
+  "realModelCalls": 0,
+  "upstreamCalls": 0,
+  "crashRecovery": {
+    "forcedSignal": "SIGKILL",
+    "checkpoint": "paid response received, before analysis commit",
+    "originalPreserved": true,
+    "recoveredStatus": "success",
+    "localModelHttpRequests": 1,
+    "durableAttempts": 1,
+    "leaseExpiryAdvancedInFixture": true,
+    "productionLeaseMinutes": 30
+  },
+  "largeEvent": {
+    "constructedMaterials": 20000,
+    "memberBatchSize": 200,
+    "readerElapsedMs": 264140,
+    "sampledWholeProbeRssMiB": 145.22,
+    "cards": 1,
+    "note": "RSS includes probe setup/crash-recovery; not an isolated HTTP server baseline or source-count capacity limit"
+  },
+  "history": {
+    "expiredRuns": 10000,
+    "batchSizes": [
+      1000,
+      1000,
+      1000,
+      1000,
+      1000,
+      1000,
+      1000,
+      1000,
+      1000,
+      1000,
+      0
+    ],
+    "elapsedMsPerPass": [
+      11.29,
+      7.58,
+      7.22,
+      9.4,
+      7.47,
+      7.32,
+      6.35,
+      7.03,
+      7.33,
+      6.39,
+      0.94
+    ],
+    "maxElapsedMs": 11.29,
+    "modelReceiptPreserved": true
+  },
+  "methodNote": "Initial trial used member projection pagination; bulk-fixture statistics were refreshed during the slow run. Not a controlled before/after benchmark."
+}

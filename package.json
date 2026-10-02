@@ -1,6 +1,6 @@
 {
   "name": "jianwei",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "把 X、微信公众号、全网搜索、榜单和 RSS 整理成一条值得读的中文信息流。",
   "license": "Apache-2.0",
@@ -27,6 +27,7 @@
     "db:seed": "tsx src/db/seed.ts",
     "content:cleanup": "tsx scripts/cleanup-content-quality.ts",
     "content:evaluate": "tsx scripts/evaluate-content-rules.ts",
+    "event:evaluate": "tsx scripts/evaluate-event-pairs.ts",
     "audit:open-source": "node scripts/open-source-audit.mjs",
     "build:worker": "esbuild src/worker/index.ts --bundle --platform=node --target=node22 --outfile=dist/worker/index.js --external:better-sqlite3 --external:oracledb --external:mysql2 --external:pg-native --external:mock-aws-s3 --external:aws-sdk --external:nock --external:tedious",
     "worker:dev": "tsx src/worker/index.ts",
@@ -60,6 +61,6 @@
     "tailwindcss": "^4",
     "tsx": "^4.23.0",
     "typescript": "^5",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   }
 }

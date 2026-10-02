@@ -70,11 +70,14 @@ jobs:
       - name: Audit public-release safety
         run: pnpm audit:open-source -- --history
 
-      - name: Audit production dependencies
-        run: pnpm audit --prod --audit-level high
+      - name: Audit dependencies
+        run: pnpm audit --audit-level high
 
       - name: Evaluate content rules
         run: pnpm content:evaluate
+
+      - name: Evaluate event rule examples
+        run: pnpm event:evaluate
 
       - name: ShellCheck
         run: |
@@ -102,7 +105,11 @@ jobs:
         run: pnpm build
 
       - name: Validate Docker Compose
-        run: docker compose config
+        run: |
+          docker compose config --quiet
+          COMPOSE_PROFILES=wechat,trendradar docker compose config --quiet
+          docker compose -f docker-compose.lite.yml config --quiet
+          JIANWEI_IMAGE_TAG=ci-placeholder docker compose -f docker-compose.yml -f docker-compose.images.yml config --quiet
 
   smoke:
     name: Docker smoke test
@@ -144,6 +151,8 @@ jobs:
           test "$healthy" -eq 1
       - name: Verify login page
         run: curl -sf http://localhost:3000/admin | grep -q "登录" && echo "Login page OK"
+      - name: Verify model receipt maintenance CLI
+        run: docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.ci.yml run --rm --no-deps migrate pnpm model:receipts list
       - name: Verify backup and restore round trip
         run: |
           backup_dir="$(mktemp -d)"

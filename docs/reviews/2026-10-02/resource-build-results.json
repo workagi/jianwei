@@ -1,0 +1,8 @@
+{
+  "exitCode": 0,
+  "elapsedSeconds": 16.88,
+  "peakSumProcessTreeRssMiB": 1166.0,
+  "peakProcessCount": 8,
+  "method": "macOS ps RSS summed for build process and descendants every 200ms; shared pages may be counted more than once",
+  "mode": "existing webpack production build; no source or build settings changed"
+}

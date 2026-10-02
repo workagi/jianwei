@@ -1,4 +1,6 @@
 import type { PlatformType } from "@/connectors/types";
+import { claimStage } from "./event-claims";
+import { sameEventOccurrence, type EventSignal } from "./event-signals";
 
 export interface ClusterableReaderItem {
   id: string;
@@ -12,6 +14,10 @@ export interface ClusterableReaderItem {
   whyKept: string;
   date: string;
   eventId?: string;
+  eventDate?: string;
+  eventPreferredItemId?: string;
+  eventSignal?: EventSignal | null;
+  followed?: boolean;
 }
 
 export interface RelatedEventSource {
@@ -22,6 +28,13 @@ export interface RelatedEventSource {
 }
 
 const GENERIC_TAGS = new Set(["ai", "人工智能", "资讯", "新闻", "观点", "行业"]);
+export const MAX_EVENT_DISTANCE_MS = 60 * 60 * 60 * 1_000;
+
+function eventDatesWithinWindow(left: string, right: string, maxDistanceMs: number): boolean {
+  const a = Date.parse(left);
+  const b = Date.parse(right);
+  return Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) <= maxDistanceMs;
+}
 
 function timestamp(value: string): number {
   const parsed = new Date(value).getTime();
@@ -89,11 +102,14 @@ export function conflictingEventIdentity(left: string, right: string): boolean {
 export function isLikelySameEvent(
   left: ClusterableReaderItem,
   right: ClusterableReaderItem,
-  maxDistanceMs = 60 * 60 * 60 * 1_000,
+  maxDistanceMs = MAX_EVENT_DISTANCE_MS,
 ): boolean {
-  if (left.source === right.source && left.platform === right.platform) return false;
   if (conflictingEventIdentity(left.title, right.title)) return false;
-  if (Math.abs(timestamp(left.date) - timestamp(right.date)) > maxDistanceMs) return false;
+  if (!eventDatesWithinWindow(left.date, right.date, maxDistanceMs)) return false;
+  if (left.eventSignal && right.eventSignal) return sameEventOccurrence(left.eventSignal, right.eventSignal);
+  if (left.source === right.source && left.platform === right.platform) return false;
+  const aStage = claimStage(left.title), bStage = claimStage(right.title);
+  if (aStage !== bStage && aStage !== "unknown" && bStage !== "unknown") return false;
   const leftTitle = normalizeEventTitle(left.title);
   const rightTitle = normalizeEventTitle(right.title);
   if (leftTitle.length < 8 || rightTitle.length < 8) return false;
@@ -103,6 +119,15 @@ export function isLikelySameEvent(
   return similarity >= 0.38 && sharedMeaningfulTags(left.tags, right.tags) >= 2;
 }
 
+/** A matching neighbour cannot bridge conflicting identities or extend the event's time window. */
+export function canJoinEventGroup(members: ClusterableReaderItem[], item: ClusterableReaderItem): boolean {
+  return members.every((member) =>
+    !conflictingEventIdentity(member.title, item.title)
+      && !(member.eventSignal && item.eventSignal && !sameEventOccurrence(member.eventSignal, item.eventSignal))
+      && eventDatesWithinWindow(member.date, item.date, MAX_EVENT_DISTANCE_MS),
+  ) && members.some((member) => isLikelySameEvent(member, item));
+}
+
 function primaryValue(item: ClusterableReaderItem): number {
   return item.score + (item.whyKept ? 5 : 0) + (item.excerpt.length >= 40 ? 3 : 0);
 }
@@ -110,10 +135,7 @@ function primaryValue(item: ClusterableReaderItem): number {
 export function clusterReaderItems<T extends ClusterableReaderItem>(items: T[]): Array<T & { relatedSources: RelatedEventSource[] }> {
   const groups: T[][] = [];
   for (const item of items) {
-    const group = groups.find((candidate) =>
-      candidate.every((member) => !conflictingEventIdentity(member.title, item.title))
-      && candidate.some((member) => isLikelySameEvent(member, item)),
-    );
+    const group = groups.find((candidate) => canJoinEventGroup(candidate, item));
     if (group) group.push(item);
     else groups.push([item]);
   }
@@ -137,6 +159,21 @@ export function clusterReaderItems<T extends ClusterableReaderItem>(items: T[]):
     .sort((a, b) => timestamp(b.date) - timestamp(a.date));
 }
 
+/** Keep each source's best candidate, the preferred item and the date baseline between read batches. */
+export function compactEventMembers<T extends ClusterableReaderItem>(items: T[]): T[] {
+  const sources = new Map<string, T>(), oldest = new Map<string, T>(), preferred = new Map<string, T>();
+  for (const item of items) {
+    const event = item.eventId ?? `item:${item.id}`;
+    const key = `${event}:${item.platform}:${item.source.toLowerCase()}`;
+    const previous = sources.get(key);
+    if (!previous || primaryValue(item) > primaryValue(previous)
+      || (primaryValue(item) === primaryValue(previous) && timestamp(item.date) > timestamp(previous.date))) sources.set(key, item);
+    if (!oldest.has(event) || timestamp(item.date) < timestamp(oldest.get(event)!.date)) oldest.set(event, item);
+    if (item.id === item.eventPreferredItemId) preferred.set(event, item);
+  }
+  return [...new Map([...sources.values(), ...oldest.values(), ...preferred.values()].map(item => [item.id, item])).values()];
+}
+
 /** Reads persisted identities only. Missing background assignments remain separate cards. */
 export function groupPersistedEvents<T extends ClusterableReaderItem>(items: T[]): Array<T & { relatedSources: RelatedEventSource[] }> {
   const groups = new Map<string, T[]>();
@@ -148,15 +185,17 @@ export function groupPersistedEvents<T extends ClusterableReaderItem>(items: T[]
   }
   return [...groups.values()].map((group) => {
     const ordered = [...group].sort((a, b) => primaryValue(b) - primaryValue(a) || timestamp(b.date) - timestamp(a.date));
-    const primary = ordered[0];
+    const preferredId = ordered[0].eventPreferredItemId;
+    const primary = ordered.find(item => item.id === preferredId) ?? ordered[0];
     const seen = new Set([`${primary.platform}:${primary.source.toLowerCase()}`]);
-    const relatedSources = ordered.slice(1).flatMap((item) => {
+    const relatedSources = ordered.filter(item => item.id !== primary.id).flatMap((item) => {
       const key = `${item.platform}:${item.source.toLowerCase()}`;
       if (seen.has(key)) return [];
       seen.add(key);
       return [{ platform: item.platform, source: item.source, title: item.title, url: item.url }];
     });
-    return { ...primary, relatedSources };
+    const date = primary.eventDate ?? [...group].sort((a, b) => timestamp(a.date) - timestamp(b.date))[0].date;
+    return { ...primary, date, relatedSources };
   }).sort((a, b) => timestamp(b.date) - timestamp(a.date));
 }
 
@@ -171,8 +210,9 @@ export function buildFeaturedFeed<T extends ClusterableReaderItem>(
       && item.excerpt.trim().length >= 20
       && item.whyKept.trim().length >= 12,
   );
-  const clustered = options.persisted ? groupPersistedEvents(eligible) : clusterReaderItems(eligible);
-  if (!options.balancePlatforms) return clustered.slice(0, maxItems);
+  const clustered = (options.persisted ? groupPersistedEvents(eligible) : clusterReaderItems(eligible))
+    .sort((a, b) => featuredEventRank(b) - featuredEventRank(a) || timestamp(b.date) - timestamp(a.date));
+  if (!options.balancePlatforms) return clustered.slice(0, maxItems).sort((a, b) => timestamp(b.date) - timestamp(a.date));
 
   const softLimit = Math.max(4, Math.ceil(maxItems / 4));
   const sourceSoftLimit = 5;
@@ -202,6 +242,11 @@ export function buildFeaturedFeed<T extends ClusterableReaderItem>(
       sourceCounts.set(sourceKey, sourceCount + 1);
     }
   }
+  // A soft diversity target may not leave an otherwise useful list half empty.
+  for (const item of overflow) {
+    if (selected.length >= maxItems) break;
+    if (!selected.includes(item)) selected.push(item);
+  }
   return selected
     .sort((a, b) => timestamp(b.date) - timestamp(a.date))
     .slice(0, maxItems);
@@ -213,9 +258,8 @@ export function featuredEventRank(
 ): number {
   const ageHours = Math.max(0, (now - timestamp(item.date)) / (60 * 60 * 1_000));
   const freshness = Math.max(0, 18 - ageHours * 0.3);
-  const corroboration = Math.min(item.relatedSources?.length ?? 0, 4) * 6;
   const completeness = (item.whyKept ? 4 : 0) + (item.excerpt.length >= 40 ? 2 : 0);
-  return item.score + freshness + corroboration + completeness;
+  return item.score + freshness + completeness;
 }
 
 export function selectTopFeaturedEvents<T extends ClusterableReaderItem & { relatedSources?: RelatedEventSource[] }>(
@@ -240,4 +284,17 @@ export function selectTopFeaturedEvents<T extends ClusterableReaderItem & { rela
   }
   if (selected.length < limit) selected.push(...overflow.slice(0, limit - selected.length));
   return selected.slice(0, limit);
+}
+
+/** Rank the bounded candidate population before applying the browse-list cap. */
+export function buildFeaturedSelection<T extends ClusterableReaderItem>(items: T[], options: { balancePlatforms?: boolean; persisted?: boolean; maxItems?: number } = {}) {
+  const candidates = buildFeaturedFeed(items, { persisted: options.persisted, maxItems: Number.MAX_SAFE_INTEGER });
+  const topItems = selectTopFeaturedEvents(candidates);
+  const browse = buildFeaturedFeed(items, options);
+  const selected = new Map<string, typeof candidates[number]>();
+  for (const item of [...topItems, ...browse]) {
+    if (selected.size >= (options.maxItems ?? 36)) break;
+    selected.set(item.eventId ?? item.id, item);
+  }
+  return { topItems, items: [...selected.values()].sort((a, b) => timestamp(b.date) - timestamp(a.date)) };
 }

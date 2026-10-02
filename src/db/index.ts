@@ -11,7 +11,11 @@ const globalForDb = globalThis as unknown as {
   __signaldeckSql?: ReturnType<typeof postgres>;
 };
 
-const client = globalForDb.__signaldeckSql ?? postgres(connectionString, { max: 10 });
+const client = globalForDb.__signaldeckSql ?? postgres(connectionString, {
+  max: Math.max(1, Number(process.env.DATABASE_POOL_MAX) || 4),
+  // Short reader queries must not spend more time compiling JIT than executing SQL.
+  connection: { jit: "off" },
+});
 if (process.env.NODE_ENV !== "production") globalForDb.__signaldeckSql = client;
 
 export const sql = client;

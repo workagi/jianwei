@@ -1,8 +1,9 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, sql } from "drizzle-orm";
 import { createRuntimeWeRssConnector } from "@/connectors/factory";
 import { isWithinFullTextCooldown, wechatFullTextRetryHours } from "@/connectors/wechat/full-text-resolver";
 import { db } from "@/db";
 import { itemMatches, items, sourceItems } from "@/db/schema";
+import { writeFetchedWechatContent } from "./wechat-content-write";
 
 export interface WechatContentBackfillResult {
   candidates: number;
@@ -29,6 +30,8 @@ export async function backfillWechatFullText(rawLimit: unknown): Promise<WechatC
       canonicalUrl: items.canonicalUrl,
       contentFetchStatus: items.contentFetchStatus,
       contentFetchedAt: items.contentFetchedAt,
+      contentHash: items.contentHash,
+      contentRevision: items.contentRevision,
     })
     .from(items)
     .where(
@@ -74,16 +77,7 @@ export async function backfillWechatFullText(rawLimit: unknown): Promise<WechatC
     } else {
       failed += 1;
     }
-    await db
-      .update(items)
-      .set({
-        ...(result.html ? { contentHtml: result.html, contentProvider: result.provider } : {}),
-        contentFetchStatus: result.status,
-        contentFetchError: result.errorCode ?? null,
-        contentFetchedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(eq(items.id, row.id));
+    await writeFetchedWechatContent(row.id, row, result);
   }
 
   return { candidates: eligible.length, succeeded, failed, skippedCooldown, providers };

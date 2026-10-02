@@ -139,6 +139,8 @@ flowchart LR
 | `trendradar-refresh` | 后台保存来源后触发一次 TrendRadar 刷新 |
 | `caddy` | 生产环境唯一公网入口和 HTTPS 终止 |
 
+默认只运行核心三服务，迁移工具执行完退出；WeRSS 属于 `wechat` profile，三个 TrendRadar 服务属于 `trendradar` profile，全文增强独立按需启用。容器地址与原生开发的 localhost 地址分开配置。资源配置、预构建镜像入口及实测边界见 [低资源优化](low-resource-optimization.md)。
+
 ### 5.2 复用原则
 
 TrendRadar 以独立 Docker / MCP sidecar 运行。见微不复制它的 GPL 源码，只保存归一化后的内容和匹配关系。详细决策见 [TrendRadar 集成架构](architecture-trendradar.md)。
@@ -151,8 +153,8 @@ TrendRadar 以独立 Docker / MCP sidecar 运行。见微不复制它的 GPL 源
 2. **规范化**：统一 URL、作者、标题、正文、发布时间、图片和来源字段。
 3. **规则过滤**：在调用模型前应用来源规则、必含词、排除词、领域兴趣和基础质量判断。
 4. **去重**：按 `platform + upstreamId`、`canonicalUrl`、`contentHash` 三层判断。
-5. **模型理解**：需要时生成中文标题、摘要、类型、主题标签、相关性分和推荐理由。
-6. **持久化**：写入 `items`，并通过 `item_matches` 记录是哪一个监控任务命中。
+5. **持久化**：原稿先写入 `items`，并通过 `item_matches` 记录是哪一个监控任务命中；待分析状态随原稿保存。
+6. **后台理解**：复用已有文档 claim 和版本核对，小批量生成中文标题、摘要、类型、主题标签、相关性分和推荐理由；首次事件归属等待分析结束。
 7. **展示**：信息流根据来源、类型、主题、收藏和搜索条件查询。
 
 ```mermaid
@@ -162,8 +164,9 @@ flowchart TD
     C -- 否 --> D["丢弃，不调用模型"]
     C -- 是 --> E{"是否重复"}
     E -- 是 --> F["更新匹配关系"]
-    E -- 否 --> G["模型理解或规则兜底"]
-    G --> H["写入 items"]
+    E -- 否 --> H["先写入 items 和待分析状态"]
+    H --> G["后台模型理解或规则兜底"]
+    G --> H
     F --> I["信息流"]
     H --> I
 ```

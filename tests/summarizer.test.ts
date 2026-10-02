@@ -61,6 +61,21 @@ afterEach(() => {
 });
 
 describe("summarizer providers", () => {
+  it("extracts a quoted event in the existing analysis request without a second model call", async () => {
+    process.env.SUMMARY_PROVIDER = "deepseek";
+    process.env.SUMMARY_API_KEY = "ds-key";
+    process.env.SUMMARY_SKIP_PLATFORMS = "";
+    const input = { ...item(), title: "Acme 发布 Agent 2.0", contentHtml: "<p>Acme 发布 Agent 2.0，每月收费20美元。</p>" };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+      summary: "Acme 发布 Agent 2.0，提供了接口使用说明和月费。", content_type: "product_update", topic_tags: ["Acme", "Agent"],
+      event: { subject: "Acme", action: "release", object: "Agent", version: "2.0", occurredOn: null, stage: "available",
+        evidence: "Acme 发布 Agent 2.0", facts: [{ aspect: "price", value: "USD20/month", evidence: "每月收费20美元。" }] },
+    }) } }] }), {status:200}));
+    globalThis.fetch = fetchMock as typeof fetch;
+    const result = await generateSummaryAttempt(input);
+    expect(result.eventSignal?.facts[0].value).toBe("USD20/month");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
   it("uses a stable shared rate-limit key and supports an explicit account scope", () => {
     expect(summaryRateLimitKey({ name: "openai-compatible", model: "step-3.5-flash" }))
       .toBe("summary:openai-compatible:step-3.5-flash");
