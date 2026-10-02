@@ -7,26 +7,9 @@ import {
   isAdminAuthConfigured,
 } from "@/lib/auth";
 import { checkLoginRateLimit, clearLoginAttempts, recordLoginAttempt } from "@/db/queries";
+import { loginClientKey } from "@/lib/client-ip";
 
 export const dynamic = "force-dynamic";
-
-function clientKey(req: Request): string {
-  // Only trust forwarded headers when the request originates from a trusted
-  // reverse proxy. In production (Docker), Caddy sits on the internal Docker
-  // network and is the sole source of X-Forwarded-For. In development,
-  // localhost requests are identified by the loopback address.
-  const trustedProxy = process.env.TRUSTED_PROXY_IP?.trim();
-  if (trustedProxy) {
-    const connectingIp = req.headers.get("x-real-ip")?.trim();
-    if (connectingIp === trustedProxy) {
-      const forwarded = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
-      if (forwarded) return forwarded;
-    }
-  }
-  const directIp = req.headers.get("x-real-ip")?.trim();
-  return directIp || "local";
-}
-
 
 /** 账号密码换取 httpOnly 管理会话；API token 继续只供程序调用。 */
 export async function POST(req: Request) {
@@ -37,7 +20,7 @@ export async function POST(req: Request) {
     );
   }
 
-  const key = clientKey(req);
+  const key = loginClientKey(req);
   const retryAfter = await checkLoginRateLimit(key);
   if (retryAfter) {
     return NextResponse.json(

@@ -1,8 +1,9 @@
 FROM node:22-alpine AS base
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
-# Use registry mirror for China network; npm install -g works around corepack hardcoding npmjs.org
-RUN npm config set registry https://registry.npmmirror.com &&     npm install -g pnpm@10.28.1 &&     pnpm config set registry https://registry.npmmirror.com
+# Default to the authoritative registry; mirrors may lag security updates.
+ARG NPM_REGISTRY=https://registry.npmjs.org
+RUN npm config set registry "$NPM_REGISTRY" && npm install -g pnpm@10.28.1 && pnpm config set registry "$NPM_REGISTRY"
 
 FROM base AS deps
 WORKDIR /app
@@ -37,6 +38,7 @@ COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/tsconfig.json ./tsconfig.json
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/src ./src
+COPY --from=builder /app/scripts ./scripts
 ENV NODE_ENV=production
 RUN addgroup --system --gid 1001 nodejs   && adduser --system --uid 1001 nextjs   && chown -R nextjs:nodejs /app   && mkdir -p /home/nextjs/.cache/node   && ( [ -d /root/.cache/node/corepack ] && cp -R /root/.cache/node/corepack /home/nextjs/.cache/node/corepack || true )   && chown -R nextjs:nodejs /home/nextjs/.cache
 USER nextjs

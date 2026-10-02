@@ -197,6 +197,13 @@
       "when": 1785560000000,
       "tag": "0027_ingestion_integrity",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1790929950768,
+      "tag": "0028_editorial_receipts_events",
+      "breakpoints": true
     }
   ]
 }

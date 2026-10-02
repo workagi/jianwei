@@ -1,23 +1,29 @@
 #!/bin/bash
 # jianwei database restore script
-# Usage: ./scripts/restore-db.sh <backup-file.sql.gz>
+# Usage: ./scripts/restore-db.sh <backup-file.dump>
 
 set -euo pipefail
 
 BACKUP_FILE="${1:-}"
+PROJECT="${JIANWEI_COMPOSE_PROJECT:-${COMPOSE_PROJECT_NAME:-jianwei}}"
 if [ -z "$BACKUP_FILE" ] || [ ! -f "$BACKUP_FILE" ]; then
-  echo "Usage: $0 <backup-file.sql.gz>"
+  echo "Usage: $0 <backup-file.dump>"
   echo "Available backups:"
-  ls -lh backups/*.sql.gz 2>/dev/null || echo "  (none found in ./backups)"
+  ls -lh backups/*.dump 2>/dev/null || echo "  (none found in ./backups)"
   exit 1
 fi
 
-CONTAINER=$(docker ps --format '{{.Names}}' | grep -E 'jianwei.*postgres|postgres.*jianwei' | head -1)
+CONTAINERS=$(docker ps -q \
+  --filter "label=com.docker.compose.project=$PROJECT" \
+  --filter 'label=com.docker.compose.service=postgres')
+CONTAINER_COUNT=$(printf '%s\n' "$CONTAINERS" | grep -c . || true)
 
-if [ -z "$CONTAINER" ]; then
-  echo "ERROR: No running jianwei postgres container found"
+if [ "$CONTAINER_COUNT" -ne 1 ]; then
+  echo "ERROR: Expected exactly one running postgres container for Compose project '$PROJECT'; found $CONTAINER_COUNT"
+  echo "Set JIANWEI_COMPOSE_PROJECT when your deployment uses a different -p value."
   exit 1
 fi
+CONTAINER="$CONTAINERS"
 
 echo "WARNING: This will REPLACE all data in the 'monitor' database."
 echo "Container: $CONTAINER"
@@ -29,9 +35,40 @@ if [ "$confirm" != "YES" ]; then
 fi
 
 echo "Restoring database..."
-gunzip -c "$BACKUP_FILE" | docker exec -i "$CONTAINER" psql -U postgres -d monitor
+RESTORE_PATH="/tmp/jianwei-restore-$$.dump"
+APP_CONTAINERS=""
+if [ -n "$PROJECT" ]; then
+  APP_CONTAINERS=$(docker ps -q \
+    --filter "label=com.docker.compose.project=$PROJECT" \
+    --filter 'label=com.docker.compose.service=web')
+  APP_CONTAINERS="$APP_CONTAINERS $(docker ps -q \
+    --filter "label=com.docker.compose.project=$PROJECT" \
+    --filter 'label=com.docker.compose.service=worker')"
+fi
+
+cleanup() {
+  docker exec "$CONTAINER" rm -f "$RESTORE_PATH" >/dev/null 2>&1 || true
+  if [ -n "${APP_CONTAINERS// /}" ]; then
+    # shellcheck disable=SC2086 # container IDs must be separate arguments
+    docker start $APP_CONTAINERS >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+if [ -n "${APP_CONTAINERS// /}" ]; then
+  echo "Stopping web and worker during restore..."
+  # shellcheck disable=SC2086 # container IDs must be separate arguments
+  docker stop $APP_CONTAINERS >/dev/null
+fi
+
+docker cp "$BACKUP_FILE" "$CONTAINER:$RESTORE_PATH"
+docker exec "$CONTAINER" pg_restore --list "$RESTORE_PATH" >/dev/null
+docker exec "$CONTAINER" pg_restore \
+  --clean --if-exists --no-owner --no-acl --exit-on-error --single-transaction \
+  -U monitor -d monitor "$RESTORE_PATH"
 
 echo "Restore complete. Restarting web and worker..."
-docker compose -f docker-compose.prod.yml restart web worker
+cleanup
+trap - EXIT
 
 echo "Done. Check service health at /api/health"

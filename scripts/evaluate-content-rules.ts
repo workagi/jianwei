@@ -2,6 +2,8 @@ import evaluationCases from "../tests/fixtures/content-rule-evaluation.json";
 import {
   CONTENT_RULE_MIN_ACCURACY,
   CONTENT_RULE_MIN_MACRO_F1,
+  CONTENT_RULE_RELEASE_TARGET_ACCURACY,
+  CONTENT_RULE_RELEASE_TARGET_MACRO_F1,
   evaluateContentRules,
   type ContentRuleEvaluationCase,
 } from "../src/lib/content-rule-evaluation";
@@ -14,6 +16,16 @@ console.error(
   + `(accuracy: ${acc}%, macro F1: ${(report.macroF1 * 100).toFixed(1)}%). `
   + "The command fails only when this measured floor regresses.",
 );
+if (
+  report.accuracy < CONTENT_RULE_RELEASE_TARGET_ACCURACY
+  || report.macroF1 < CONTENT_RULE_RELEASE_TARGET_MACRO_F1
+) {
+  console.error(
+    `QUALITY GAP: release target is ${(CONTENT_RULE_RELEASE_TARGET_ACCURACY * 100).toFixed(0)}% accuracy / `
+    + `${(CONTENT_RULE_RELEASE_TARGET_MACRO_F1 * 100).toFixed(0)}% macro F1. `
+    + "Rule-only classification remains a fallback; this warning is not a CI regression failure.",
+  );
+}
 if (report.accuracy < CONTENT_RULE_MIN_ACCURACY) {
   console.error(`ERROR: accuracy below ${CONTENT_RULE_MIN_ACCURACY * 100}% threshold`);
   process.exitCode = 1;

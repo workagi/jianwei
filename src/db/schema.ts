@@ -107,6 +107,8 @@ export const items = pgTable("items", {
   // Legacy: prefer item_matches.retention_reason. Kept for backward-compat.
   retentionReason: text("retention_reason"),
   informationValueScore: integer("information_value_score"),
+  // Document-level editorial explanation; independent of monitor matching reasons.
+  editorialReason: text("editorial_reason"),
   // Legacy: prefer item_matches.relevance_score. Kept for backward-compat.
   relevanceScore: integer("relevance_score"),
   // Legacy: prefer item_matches.retention_source. Kept for backward-compat.
@@ -133,13 +135,10 @@ export const items = pgTable("items", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
-  uniqueIndex("items_platform_upstream_uidx").on(table.platform, table.upstreamId),
   uniqueIndex("items_canonical_url_uidx").on(table.canonicalUrl),
   index("items_published_idx").on(table.publishedAt),
-  index("items_source_provider_idx").on(table.sourceProvider),
   index("items_content_type_idx").on(table.contentType),
   index("items_information_value_score_idx").on(table.informationValueScore),
-  index("items_relevance_score_idx").on(table.relevanceScore),
   index("items_analysis_status_idx").on(table.analysisStatus),
   index("items_content_hash_idx").on(table.contentHash),
 ]);
@@ -349,6 +348,46 @@ export const runtimeHealth = pgTable("runtime_health", {
   lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }).notNull().defaultNow(),
   detail: jsonb("detail").$type<Record<string, unknown>>().notNull().default({}),
 });
+
+/** A received provider response survives a failed business commit. No credentials are stored. */
+export const modelReceipts = pgTable("model_receipts", {
+  key: text("key").primaryKey(),
+  provider: text("provider").notNull(),
+  model: text("model").notNull(),
+  status: text("status").notNull(),
+  owner: uuid("owner").notNull(),
+  response: text("response"),
+  error: text("error"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const modelAttempts = pgTable("model_attempts", {
+  id: uuid("id").primaryKey(),
+  receiptKey: text("receipt_key").notNull().references(() => modelReceipts.key),
+  status: text("status").notNull(),
+  inputTokens: integer("input_tokens"),
+  outputTokens: integer("output_tokens"),
+  estimatedCost: numeric("estimated_cost", { precision: 12, scale: 6 }),
+  reservedCost: numeric("reserved_cost", { precision: 12, scale: 6 }),
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+  finishedAt: timestamp("finished_at", { withTimezone: true }),
+}, (table) => [index("model_attempts_started_idx").on(table.startedAt)]);
+
+export const contentEvents = pgTable("content_events", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  title: text("title").notNull(),
+  ruleVersion: text("rule_version").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const eventItems = pgTable("event_items", {
+  itemId: uuid("item_id").primaryKey().references(() => items.id, { onDelete: "cascade" }),
+  eventId: uuid("event_id").notNull().references(() => contentEvents.id, { onDelete: "cascade" }),
+  manual: boolean("manual").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [index("event_items_event_idx").on(table.eventId)]);
 
 /**
  * 平台 API 凭据（X / Brave / WeRSS）。存库而非只放 .env 的原因：允许在

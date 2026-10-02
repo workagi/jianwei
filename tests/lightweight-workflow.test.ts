@@ -90,8 +90,8 @@ describe("lightweight model workflow simulation", () => {
         messages: Array<{ content: string }>;
       };
       const content = request.messages[1]?.content ?? "";
-      const isX = content.includes("平台：x");
-      const isWechat = content.includes("平台：wechat");
+      const isX = content.includes('\"platform\":\"x\"');
+      const isWechat = content.includes('\"platform\":\"wechat\"');
       const payload = {
         translated_title: isX
           ? "OpenAI 发布轻量模型的新能力。"

@@ -1,13 +1,21 @@
 import { and, desc, eq, isNull, lt, or, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { itemMatches, items } from "@/db/schema";
+import { itemMatches, items, monitors } from "@/db/schema";
 import { loadApiCredentials } from "@/db/queries";
 import type { NormalizedItem } from "@/connectors/types";
 import { createRuntimeWeRssConnector } from "@/connectors/factory";
 import { isWithinFullTextCooldown } from "@/connectors/wechat/full-text-resolver";
 import { generateTitleTranslations, isSummaryEnabled, type SummaryRunStats } from "@/lib/summarizer";
-import { routeContentItems } from "@/lib/content-router";
+import { CONTENT_ANALYSIS_VERSION, routeContentItems } from "@/lib/content-router";
 import { passesTrendRadarReaderGate } from "@/lib/trendradar-interest-filter";
+import { deriveMonitorRetention } from "@/lib/content-retention";
+import { extractMonitorRulesFromConfig } from "@/lib/monitor-rules";
+import {
+  canonicalUrlHash,
+  createDrizzleIngestRepository,
+  WORKER_ID_FOR_CLAIM,
+  type DocumentAnalysisClaim,
+} from "@/ingestion/repositories";
 
 const SUMMARY_CREDENTIAL_KEYS = [
   "SUMMARY_PROVIDER",
@@ -329,61 +337,148 @@ export async function backfillMissingSummaries(
     };
   }
 
-  const fullTextFetched = await hydrateWechatFullText(rows);
+  // Claim each document before fetching full text or calling the model. The
+  // claim is stored in PostgreSQL, so independent worker processes and the
+  // manual admin endpoint cannot analyze the same row concurrently.
+  const claimRepo = createDrizzleIngestRepository();
+  const claimedRows: BackfillRow[] = [];
+  const claimsByItemId = new Map<string, DocumentAnalysisClaim>();
+  for (const row of rows) {
+    const claim = await claimRepo.claimDocumentAnalysis?.({
+      canonicalUrlHash: canonicalUrlHash(row.canonicalUrl),
+      analysisVersion: `${CONTENT_ANALYSIS_VERSION}:backfill`,
+      ownerWorkerId: WORKER_ID_FOR_CLAIM,
+      leaseMinutes: 30,
+    });
+    if (!claim) continue;
+    claimedRows.push(row);
+    claimsByItemId.set(row.id, claim);
+  }
 
-  const normalized: NormalizedItem[] = rows.map((row) => ({
-    platform: row.platform,
-    upstreamId: row.upstreamId,
-    canonicalUrl: row.canonicalUrl,
-    authorId: row.authorId ?? undefined,
-    authorName: row.authorName ?? undefined,
-    authorHandle: row.authorHandle ?? undefined,
-    title: row.title ?? undefined,
-    text: row.bodyText,
-    contentHtml: row.contentHtml ?? undefined,
-    imageUrls: row.imageUrls ?? [],
-    publishedAt: row.publishedAt,
-    raw: { backfill: true, itemId: row.id },
-  }));
+  if (claimedRows.length === 0) {
+    return {
+      candidates: rows.length,
+      processed: 0,
+      updated: 0,
+      stats: defaultStats("not_applicable"),
+    };
+  }
 
-  const { outcomes, stats } = await routeContentItems(normalized);
+  let fullTextFetched = 0;
   let updated = 0;
   let processed = 0;
-  for (const row of rows) {
-    const outcome = outcomes.get(`${row.platform}|${row.upstreamId}`);
-    if (!outcome) continue;
-    await db
-      .update(items)
-      .set({
-        ...(outcome.summary ? { aiSummary: outcome.summary } : {}),
-        ...(outcome.translatedTitle ? { translatedTitle: outcome.translatedTitle } : {}),
-        contentType: outcome.contentType,
-       topicTags: outcome.topicTags,
-       informationValueScore: outcome.relevanceScore,
-       analysisStatus: outcome.status,
-        analysisProvider: outcome.provider ?? null,
-        analysisModel: outcome.model ?? null,
-        analysisVersion: outcome.version,
-        analysisAttempts: row.analysisAttempts + outcome.attempts,
-        analysisErrorCode: outcome.errorCode ?? null,
-        analysisErrorMessage: outcome.errorMessage ?? null,
-        analyzedAt: outcome.processedAt,
-        updatedAt: new Date(),
-      })
-      .where(eq(items.id, row.id));
-   await db
-     .update(itemMatches)
-     .set({
-       relevanceScore: outcome.relevanceScore,
-       retentionReason: outcome.retentionReason || null,
-       retentionSource: outcome.retentionSource,
-        analysisStatus: outcome.status,
-        analysisVersion: outcome.version,
-        lastSeenAt: new Date(),
-      })
-      .where(eq(itemMatches.itemId, row.id));
-    processed += 1;
-    if (outcome.summary) updated += 1;
+  const completedClaimIds = new Set<string>();
+  let stats: SummaryRunStats = defaultStats("not_applicable");
+  try {
+    // Full-text hydration is external work and can fail before model routing.
+    // Keep it inside the claim lifecycle so every failure path releases the
+    // claim immediately instead of waiting for its lease to expire.
+    fullTextFetched = await hydrateWechatFullText(claimedRows);
+    const normalized: NormalizedItem[] = claimedRows.map((row) => ({
+      platform: row.platform,
+      upstreamId: row.upstreamId,
+      canonicalUrl: row.canonicalUrl,
+      authorId: row.authorId ?? undefined,
+      authorName: row.authorName ?? undefined,
+      authorHandle: row.authorHandle ?? undefined,
+      title: row.title ?? undefined,
+      text: row.bodyText,
+      contentHtml: row.contentHtml ?? undefined,
+      imageUrls: row.imageUrls ?? [],
+      publishedAt: row.publishedAt,
+      raw: { backfill: true, itemId: row.id },
+    }));
+
+    const routed = await routeContentItems(normalized);
+    stats = routed.stats;
+    for (const row of claimedRows) {
+      const outcome = routed.outcomes.get(`${row.platform}|${row.upstreamId}`);
+      const claim = claimsByItemId.get(row.id);
+      if (!outcome || !claim) continue;
+      const claimCompleted = await db.transaction(async (tx) => {
+        await tx
+          .update(items)
+          .set({
+            ...(outcome.summary ? { aiSummary: outcome.summary } : {}),
+            ...(outcome.translatedTitle ? { translatedTitle: outcome.translatedTitle } : {}),
+            contentType: outcome.contentType,
+            topicTags: outcome.topicTags,
+            informationValueScore: outcome.relevanceScore,
+            editorialReason: outcome.retentionSource === "model" ? outcome.retentionReason : null,
+            analysisStatus: outcome.status,
+            analysisProvider: outcome.provider ?? null,
+            analysisModel: outcome.model ?? null,
+            analysisVersion: outcome.version,
+            analysisAttempts: row.analysisAttempts + outcome.attempts,
+            analysisErrorCode: outcome.errorCode ?? null,
+            analysisErrorMessage: outcome.errorMessage ?? null,
+            analyzedAt: outcome.processedAt,
+            updatedAt: new Date(),
+          })
+          .where(eq(items.id, row.id));
+
+        const matches = await tx
+          .select({
+            monitorId: itemMatches.monitorId,
+            retentionStatus: itemMatches.retentionStatus,
+            config: monitors.config,
+          })
+          .from(itemMatches)
+          .innerJoin(monitors, eq(monitors.id, itemMatches.monitorId))
+          .where(eq(itemMatches.itemId, row.id));
+        for (const match of matches) {
+          const rules = extractMonitorRulesFromConfig(match.config as Record<string, unknown>);
+          const decision = rules
+            ? deriveMonitorRetention(rules, {
+                contentType: outcome.contentType,
+                topicTags: outcome.topicTags,
+                summary: outcome.summary,
+                informationValueScore: outcome.relevanceScore,
+                title: row.title ?? undefined,
+                bodyText: row.bodyText,
+              })
+            : undefined;
+          await tx
+            .update(itemMatches)
+            .set({
+              ...(decision
+                ? {
+                    relevanceScore: decision.shouldKeep ? decision.relevanceScore : -1,
+                    retentionReason: decision.retentionReason,
+                    retentionSource: "rules",
+                    retentionStatus: decision.shouldKeep ? "kept" : "gate_blocked",
+                  }
+                : match.retentionStatus === "gate_blocked"
+                  ? {}
+                  : { relevanceScore: outcome.relevanceScore }),
+              analysisStatus: outcome.status,
+              analysisVersion: outcome.version,
+              lastSeenAt: new Date(),
+            })
+            .where(and(
+              eq(itemMatches.itemId, row.id),
+              eq(itemMatches.monitorId, match.monitorId),
+            ));
+        }
+
+        if (outcome.status === "success" || outcome.status === "partial") {
+          const completed = await createDrizzleIngestRepository(tx)
+            .completeDocumentAnalyses?.([claim]);
+          if (completed !== 1) throw new Error("DOCUMENT_ANALYSIS_CLAIM_LOST");
+          return true;
+        }
+        return false;
+      });
+      if (claimCompleted) completedClaimIds.add(claim.id);
+      processed += 1;
+      if (outcome.summary) updated += 1;
+    }
+  } finally {
+    const releasable = [...claimsByItemId.values()]
+      .filter((claim) => !completedClaimIds.has(claim.id));
+    if (releasable.length > 0) {
+      await claimRepo.releaseDocumentAnalyses?.(releasable);
+    }
   }
 
   return {

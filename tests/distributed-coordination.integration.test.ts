@@ -73,7 +73,7 @@ describeDatabase("distributed request coordination", () => {
       config: { provider: "x_grok", username: "integration" },
     });
 
-    const base: Omit<UsageBudgetReservation, "idempotencyKey"> = {
+    const base: Omit<UsageBudgetReservation, "idempotencyKey" | "reservationToken"> = {
       scopeKey: `test-daily:${connectorId}`,
       connectorId,
       monitorId,
@@ -84,8 +84,16 @@ describeDatabase("distributed request coordination", () => {
       limit: 1,
       exhaustedError: "TEST_BUDGET_EXHAUSTED",
     };
-    const first = { ...base, idempotencyKey: `test-reservation:${randomUUID()}` };
-    const second = { ...base, idempotencyKey: `test-reservation:${randomUUID()}` };
+    const first = {
+      ...base,
+      idempotencyKey: `test-reservation:${randomUUID()}`,
+      reservationToken: randomUUID(),
+    };
+    const second = {
+      ...base,
+      idempotencyKey: `test-reservation:${randomUUID()}`,
+      reservationToken: randomUUID(),
+    };
 
     const outcomes = await Promise.allSettled([
       reserveUsageBudget(first),
@@ -96,8 +104,113 @@ describeDatabase("distributed request coordination", () => {
     const winner = outcomes[0].status === "fulfilled" ? first : second;
     const loser = winner === first ? second : first;
 
-    await releaseUsageReservation(db, winner.idempotencyKey);
+    await releaseUsageReservation(db, winner.idempotencyKey, winner.reservationToken);
     await expect(reserveUsageBudget(loser)).resolves.toBe("reserved");
+  });
+
+  it("does not let a stale attempt release the takeover attempt reservation", async () => {
+    const connectorId = randomUUID();
+    const monitorId = randomUUID();
+    cleanupConnectorIds.push(connectorId);
+    await db.insert(connectors).values({
+      id: connectorId,
+      platform: "x",
+      provider: "x_grok",
+      name: "reservation fencing connector",
+    });
+    await db.insert(monitors).values({
+      id: monitorId,
+      platform: "x",
+      connectorId,
+      name: "reservation fencing monitor",
+      config: { provider: "x_grok", username: "reservation-fencing" },
+    });
+
+    const idempotencyKey = `test-takeover:${randomUUID()}`;
+    const base: UsageBudgetReservation = {
+      idempotencyKey,
+      reservationToken: "attempt-a",
+      scopeKey: `test-takeover-scope:${connectorId}`,
+      connectorId,
+      monitorId,
+      metric: `test_takeover_${connectorId}`,
+      quantity: 1,
+      estimatedCostUsd: 0,
+      kind: "daily_quantity",
+      limit: 1,
+      exhaustedError: "TEST_BUDGET_EXHAUSTED",
+    };
+
+    await expect(reserveUsageBudget(base)).resolves.toBe("reserved");
+    await releaseUsageReservation(db, idempotencyKey, "attempt-a");
+    await expect(reserveUsageBudget({ ...base, reservationToken: "attempt-b" }))
+      .resolves.toBe("reserved");
+
+    // A late finally/catch from attempt A must not release B's reservation.
+    await releaseUsageReservation(db, idempotencyKey, "attempt-a");
+    const [takeover] = await db.select({ status: usageReservations.status })
+      .from(usageReservations)
+      .where(eq(
+        usageReservations.idempotencyKey,
+        `${idempotencyKey}:attempt:attempt-b`,
+      ));
+    expect(takeover?.status).toBe("reserved");
+  });
+
+  it("enforces one X plus Brave monthly ceiling across different connectors", async () => {
+    const xConnectorId = randomUUID();
+    const braveConnectorId = randomUUID();
+    const xMonitorId = randomUUID();
+    const braveMonitorId = randomUUID();
+    cleanupConnectorIds.push(xConnectorId, braveConnectorId);
+    await db.insert(connectors).values([
+      { id: xConnectorId, platform: "x", provider: "x_official", name: "shared budget X" },
+      { id: braveConnectorId, platform: "web_search", provider: "brave", name: "shared budget Brave" },
+    ]);
+    await db.insert(monitors).values([
+      {
+        id: xMonitorId,
+        platform: "x",
+        connectorId: xConnectorId,
+        name: "shared budget X monitor",
+        config: { provider: "x_official", username: "budget-test" },
+      },
+      {
+        id: braveMonitorId,
+        platform: "web_search",
+        connectorId: braveConnectorId,
+        name: "shared budget Brave monitor",
+        config: { provider: "brave", query: "budget test" },
+      },
+    ]);
+
+    const scopeMetrics = ["x_billable_units", "brave_queries"];
+    const xReservation: UsageBudgetReservation = {
+      idempotencyKey: `shared-budget-x:${randomUUID()}`,
+      reservationToken: "attempt-x",
+      scopeKey: "test-shared-x-brave-budget",
+      scopeMetrics,
+      connectorId: xConnectorId,
+      monitorId: xMonitorId,
+      metric: "x_billable_units",
+      quantity: 1,
+      estimatedCostUsd: 0.6,
+      kind: "monthly_cost",
+      limit: 1,
+      exhaustedError: "TEST_BUDGET_EXHAUSTED",
+    };
+    const braveReservation: UsageBudgetReservation = {
+      ...xReservation,
+      idempotencyKey: `shared-budget-brave:${randomUUID()}`,
+      reservationToken: "attempt-brave",
+      connectorId: braveConnectorId,
+      monitorId: braveMonitorId,
+      metric: "brave_queries",
+    };
+
+    await expect(reserveUsageBudget(xReservation)).resolves.toBe("reserved");
+    await expect(reserveUsageBudget(braveReservation)).rejects.toThrow("TEST_BUDGET_EXHAUSTED");
+    await releaseUsageReservation(db, xReservation.idempotencyKey, xReservation.reservationToken);
   });
 
   it("keeps one document with multiple provider observations and monitor edges", async () => {

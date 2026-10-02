@@ -312,6 +312,7 @@ export function createDrizzleIngestRepository(
             contentType: row.contentType ?? null,
             topicTags: row.topicTags ?? [],
             informationValueScore: row.informationValueScore ?? null,
+            editorialReason: sql`coalesce(${row.editorialReason ?? null}, ${items.editorialReason})`,
             analysisStatus: incomingStatus,
             analysisProvider: row.analysisProvider ?? null,
             analysisModel: row.analysisModel ?? null,
@@ -428,7 +429,7 @@ export function createDrizzleIngestRepository(
     async upsertSourceItems(observations) {
       if (observations.length === 0) return [];
       const now = new Date();
-      const returned = await database
+      await database
         .insert(sourceItems)
         .values(
           observations.map((obs) => ({
@@ -462,14 +463,31 @@ export function createDrizzleIngestRepository(
             publishedAt: sql`excluded."published_at"`,
             lastSeenAt: now,
           },
+          // A provider/upstream identity belongs to exactly one canonical
+          // document. If canonicalization later disagrees, preserve the whole
+          // original evidence row instead of combining document A's itemId
+          // with document B's URL/payload.
+          setWhere: sql`"source_items"."item_id" = excluded."item_id"`,
         })
-        .returning({
+        .returning({ id: sourceItems.id });
+
+      // Re-read every identity. A fenced conflict deliberately returns no row
+      // from the UPSERT, but callers still need the immutable stored binding
+      // so they can reject the incoming observation without guessing.
+      const returned = await database
+        .select({
           id: sourceItems.id,
           itemId: sourceItems.itemId,
           platform: sourceItems.platform,
           sourceProvider: sourceItems.sourceProvider,
           upstreamId: sourceItems.upstreamId,
-        });
+        })
+        .from(sourceItems)
+        .where(or(...observations.map((obs) => and(
+          eq(sourceItems.platform, obs.platform),
+          eq(sourceItems.sourceProvider, obs.sourceProvider),
+          eq(sourceItems.upstreamId, obs.upstreamId),
+        ))));
       for (const {
         itemId,
         platform,

@@ -22,7 +22,8 @@ Before merging any PR:
 
 ## Release Process
 
-1. Tag the green main commit: `git tag v0.x.y`
-2. Deploy with: `docker compose -f docker-compose.prod.yml pull && docker compose -f docker-compose.prod.yml up -d`
-3. Monitor `/api/health` for 5 minutes
-4. Verify worker heartbeat appears
+1. Follow `docs/release-process.md`: version + changelog + release notes, PR checks, then merge.
+2. Wait for the merged main commit's push CI to pass; create an annotated version tag.
+3. Push the tag; `release.yml` verifies it and publishes the GitHub Release.
+4. Deploy separately using the release's backup, source-build and migration instructions.
+5. Monitor `/api/health`, worker heartbeat and a real monitor result after deployment.

@@ -7,6 +7,8 @@
  * full SDK, so the transport stays explicit and testable with a plain `fetch`.
  */
 
+import { signalWithTimeout } from "@/lib/abort-signal";
+
 export interface McpContentBlock {
   type: string;
   text?: string;
@@ -63,6 +65,7 @@ export function parseToolPayload<T>(result: McpToolResult): T {
 export class TrendRadarMcpClient {
   private sessionId?: string;
   private initialized = false;
+  private initializing?: Promise<void>;
   private requestId = 1;
 
   constructor(
@@ -70,9 +73,7 @@ export class TrendRadarMcpClient {
     private readonly fetcher: typeof fetch = fetch,
   ) {}
 
-  private async ensureInitialized(signal?: AbortSignal): Promise<void> {
-    if (this.initialized) return;
-
+  private async initialize(signal: AbortSignal): Promise<void> {
     const initResponse = await this.fetcher(this.baseUrl, {
       method: "POST",
       headers: {
@@ -98,7 +99,7 @@ export class TrendRadarMcpClient {
     parseMcpResponse(await initResponse.text(), initResponse.headers.get("content-type") ?? "text/event-stream");
 
     // Acknowledge the initialized notification; the server may respond 202.
-    await this.fetcher(this.baseUrl, {
+    const acknowledged = await this.fetcher(this.baseUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -111,8 +112,21 @@ export class TrendRadarMcpClient {
       }),
       signal,
     });
+    if (!acknowledged.ok) throw new Error(`MCP_INITIALIZED_ACK_FAILED_${acknowledged.status}`);
 
     this.initialized = true;
+  }
+
+  private async ensureInitialized(signal: AbortSignal): Promise<void> {
+    if (this.initialized) return;
+    // latestNews/latestRss are requested together. Share one handshake so two
+    // callers cannot race separate MCP sessions onto the same client.
+    if (!this.initializing) {
+      this.initializing = this.initialize(signal).finally(() => {
+        this.initializing = undefined;
+      });
+    }
+    await this.initializing;
   }
 
   /** Call an MCP tool and return the parsed JSON payload from its text content. */
@@ -121,7 +135,12 @@ export class TrendRadarMcpClient {
     args: Record<string, unknown> = {},
     signal?: AbortSignal,
   ): Promise<T> {
-    await this.ensureInitialized(signal);
+    const configuredTimeout = Number(process.env.TRENDRADAR_MCP_TIMEOUT_SECONDS);
+    const timeoutMs = (Number.isFinite(configuredTimeout) && configuredTimeout > 0
+      ? configuredTimeout
+      : 12) * 1_000;
+    const requestSignal = signalWithTimeout(signal, timeoutMs);
+    await this.ensureInitialized(requestSignal);
 
     const response = await this.fetcher(this.baseUrl, {
       method: "POST",
@@ -136,7 +155,7 @@ export class TrendRadarMcpClient {
         method: "tools/call",
         params: { name, arguments: args },
       }),
-      signal,
+      signal: requestSignal,
     });
     if (!response.ok) throw new Error(`MCP_TOOL_FAILED_${response.status}`);
 

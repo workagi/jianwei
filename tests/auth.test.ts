@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createHmac } from "node:crypto";
 
 const dbMocks = vi.hoisted(() => ({
   loadApiCredentials: vi.fn(),
@@ -19,6 +20,7 @@ import {
   pageCookieOk,
   passwordMatchesHash,
   requireWriteAuth,
+  verifySessionCookie,
 } from "@/lib/auth";
 
 const TOKEN = "unit-test-api-token-123";
@@ -39,6 +41,12 @@ afterEach(() => {
 
 function req(headers: Record<string, string> = {}): Request {
   return new Request("http://localhost:3000/api/monitors", { headers });
+}
+
+function signedSession(secret: string, parts: Array<string | number>): string {
+  const payload = parts.join(":");
+  const sig = createHmac("sha256", secret).update(payload).digest("base64url");
+  return `${Buffer.from(payload).toString("base64url")}:${sig}`;
 }
 
 describe("管理员账号登录", () => {
@@ -98,6 +106,31 @@ describe("管理员账号登录", () => {
     expect(session).not.toContain(PASSWORD);
     await expect(pageCookieOk(session)).resolves.toBe(true);
     await expect(pageCookieOk(PASSWORD)).resolves.toBe(false);
+  });
+
+  it("拒绝签名正确但版本或身份字段不合法的 v4 会话", async () => {
+    process.env.ADMIN_PASSWORD = PASSWORD;
+    const now = Math.floor(Date.now() / 1000);
+    const base = ["admin", now, now + 3600, "session-id", "v4", 1] as const;
+
+    await expect(verifySessionCookie(signedSession(PASSWORD, [...base]))).resolves.toBe("admin");
+    await expect(verifySessionCookie(signedSession(PASSWORD, [
+      "other-user", ...base.slice(1),
+    ]))).resolves.toBeNull();
+    await expect(verifySessionCookie(signedSession(PASSWORD, [
+      ...base.slice(0, 4), "v3", 1,
+    ]))).resolves.toBeNull();
+    await expect(verifySessionCookie(signedSession(PASSWORD, [
+      ...base.slice(0, 5), "not-a-version",
+    ]))).resolves.toBeNull();
+
+    dbMocks.loadApiCredentials.mockResolvedValue([
+      { key: "ADMIN_SESSION_VERSION", value: "2" },
+    ]);
+    await expect(verifySessionCookie(signedSession(PASSWORD, [...base]))).resolves.toBeNull();
+    await expect(verifySessionCookie(signedSession(PASSWORD, [
+      ...base.slice(0, 5), 3,
+    ]))).resolves.toBeNull();
   });
 });
 

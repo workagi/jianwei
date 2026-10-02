@@ -1216,7 +1216,6 @@
             }
           ],
           "isUnique": true,
-          "nullsNotDistinct": true,
           "concurrently": false,
           "method": "btree",
           "with": {}

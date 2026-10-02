@@ -11,6 +11,14 @@ import { passesTrendRadarReaderGate } from "@/lib/trendradar-interest-filter";
 export const CONTENT_RULE_MIN_ACCURACY = 0.64;
 export const CONTENT_RULE_MIN_MACRO_F1 = 0.63;
 
+/**
+ * Product-quality targets are deliberately separate from the regression
+ * floor. Falling below the floor breaks CI; falling below these targets is a
+ * visible quality gap and must not be presented as semantic accuracy.
+ */
+export const CONTENT_RULE_RELEASE_TARGET_ACCURACY = 0.8;
+export const CONTENT_RULE_RELEASE_TARGET_MACRO_F1 = 0.75;
+
 export interface ContentRuleEvaluationCase {
   id: string;
   platform: PlatformType;

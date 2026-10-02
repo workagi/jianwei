@@ -16,12 +16,13 @@ import type {
   WebSearchMonitorConfig,
 } from "@/connectors/types";
 import type { PreparedIngest } from "@/ingestion/ingest-items";
-import type { MonitorRules } from "@/lib/content-retention";
+import { extractMonitorRulesFromConfig } from "@/lib/monitor-rules";
 import { isWechatKeywordRuleConfig } from "@/connectors/types";
 import { createWorkerSourceProvider } from "@/sources/registry";
 import { collectFromProvider } from "@/sources/types";
 import { monitorStaggerKey, nextStaggeredRunAt } from "@/lib/monitor-schedule";
 import { backfillMissingSummaries } from "@/lib/summary-backfill";
+import { refreshEventProjection } from "@/lib/event-projection";
 import { createWeRssConnector } from "@/connectors/factory";
 import {
   releaseUsageReservation,
@@ -52,10 +53,16 @@ import { deriveWorkerRuntimeStatus } from "@/lib/system-health";
 // no stable public rate, so it defaults to 0 and can be overridden.
 const BRAVE_COST_PER_1K = 3;
 const X_COST_PER_1K_UNITS = Number(process.env.X_COST_PER_1K_UNITS ?? "0") || 0;
-// One official-X collection resolves the user once and can read up to 100 posts.
+// One official-X collection resolves the user once and can read up to 100 posts
+// per configured page. Reserve the true ceiling used by the connector.
 // Reserve the worst case so concurrent workers cannot push the monthly cap over
 // its configured ceiling; successful runs still record their actual units.
-const X_OFFICIAL_MAX_BILLABLE_UNITS = 101;
+const configuredXMaxPages = Number(process.env.X_API_MAX_PAGES ?? "20");
+const X_OFFICIAL_MAX_BILLABLE_UNITS = 1 + 100 * (
+  Number.isFinite(configuredXMaxPages)
+    ? Math.min(100, Math.max(1, Math.floor(configuredXMaxPages)))
+    : 20
+);
 const MONTHLY_BUDGET_USD = Number(process.env.X_BRAVE_MONTHLY_BUDGET_USD);
 const BUDGET_ENABLED = Number.isFinite(MONTHLY_BUDGET_USD) && MONTHLY_BUDGET_USD > 0;
 const MONITOR_DISABLE_AFTER_FAILURES = Number(process.env.WORKER_DISABLE_MONITOR_AFTER_FAILURES ?? "5") || 0;
@@ -141,6 +148,7 @@ async function recordUsage(
 function budgetReservationForMonitor(
   monitor: MonitorRow,
   runKey: string,
+  attemptToken: string,
 ): UsageBudgetReservation | null {
   if (monitor.platform === "x" && monitor.config.provider === "x_grok") {
     const limit = Number(process.env.XAI_X_SEARCH_DAILY_BUDGET);
@@ -148,6 +156,7 @@ function budgetReservationForMonitor(
     const metric = "x_grok_searches";
     return {
       idempotencyKey: usageIdempotencyKey(runKey, metric),
+      reservationToken: attemptToken,
       scopeKey: `daily:${metric}`,
       connectorId: monitor.connectorId,
       monitorId: monitor.id,
@@ -167,10 +176,12 @@ function budgetReservationForMonitor(
     const metric = "x_billable_units";
     return {
       idempotencyKey: usageIdempotencyKey(runKey, metric),
-      scopeKey: `monthly-cost:${monitor.connectorId}`,
+      reservationToken: attemptToken,
+      scopeKey: "monthly-cost:x-brave",
       connectorId: monitor.connectorId,
       monitorId: monitor.id,
       metric,
+      scopeMetrics: ["x_billable_units", "brave_queries"],
       quantity: X_OFFICIAL_MAX_BILLABLE_UNITS,
       estimatedCostUsd,
       kind: "monthly_cost",
@@ -185,10 +196,12 @@ function budgetReservationForMonitor(
     const metric = `${provider}_queries`;
     return {
       idempotencyKey: usageIdempotencyKey(runKey, metric),
-      scopeKey: `monthly-cost:${monitor.connectorId}`,
+      reservationToken: attemptToken,
+      scopeKey: "monthly-cost:x-brave",
       connectorId: monitor.connectorId,
       monitorId: monitor.id,
       metric,
+      scopeMetrics: ["x_billable_units", "brave_queries"],
       quantity: 1,
       estimatedCostUsd,
       kind: "monthly_cost",
@@ -221,29 +234,6 @@ function isAutoXName(name: string, config: Record<string, unknown>): boolean {
   return Boolean(username) && (name === `@${username}` || name === username || name === "X / Twitter");
 }
 
-function extractMonitorRules(monitor: MonitorRow): MonitorRules | undefined {
-  const config = monitor.config as Record<string, unknown>;
-  const keywords = Array.isArray(config.keywords)
-    ? config.keywords.filter((k): k is string => typeof k === "string")
-    : [];
-  const excludeKeywords = Array.isArray(config.excludeKeywords)
-    ? config.excludeKeywords.filter((k): k is string => typeof k === "string")
-    : [];
-  const contentTypeFilters = Array.isArray(config.contentTypeFilters)
-    ? config.contentTypeFilters.filter((k): k is string => typeof k === "string")
-    : [];
-  const topicFilters = Array.isArray(config.topicFilters)
-    ? config.topicFilters.filter((k): k is string => typeof k === "string")
-    : [];
-  const requiredKeywords = Array.isArray(config.requiredKeywords)
-    ? config.requiredKeywords.filter((k): k is string => typeof k === 'string')
-    : [];
-  if (!keywords.length && !requiredKeywords.length && !excludeKeywords.length && !contentTypeFilters.length && !topicFilters.length) {
-    return undefined;
-  }
-  return { keywords, requiredKeywords, excludeKeywords, contentTypeFilters, topicFilters };
-}
-
 function monitorMatchedQuery(monitor: MonitorRow): string | undefined {
   if (monitor.platform === "x") {
     const username = typeof monitor.config.username === "string" ? monitor.config.username.replace(/^@/, "").trim() : "";
@@ -272,76 +262,85 @@ function resolvedWechatConfigPatch(cursor: Record<string, unknown>): Record<stri
   };
 }
 
-async function startCollectionRun(monitor: { id?: string; monitorId?: string; nextRunAt: Date }): Promise<{
+export async function startCollectionRun(monitor: Pick<ClaimedMonitor, "id" | "nextRunAt" | "leaseEpoch">): Promise<{
   runId: string;
   runKey: string;
   attemptToken: string;
   alreadySucceeded: boolean;
 }> {
   const scheduledFor = monitor.nextRunAt;
-  const mid = (monitor as { id?: string; monitorId?: string }).id ?? (monitor as { monitorId: string }).monitorId;
+  const mid = monitor.id;
   const runKey = collectionRunIdempotencyKey(mid, scheduledFor);
-  const attemptToken = randomUUID();
-  const [created] = await db
-    .insert(collectionRuns)
-    .values({
-      monitorId: mid,
-      scheduledFor,
-      idempotencyKey: runKey,
-      attemptToken,
-      status: "running",
-    })
-    .onConflictDoNothing({ target: collectionRuns.idempotencyKey })
-    .returning({ id: collectionRuns.id });
-  if (created) return { runId: created.id, runKey, attemptToken, alreadySucceeded: false };
+  const attemptToken = `${monitor.leaseEpoch}:${randomUUID()}`;
 
-  const [existing] = await db
-    .select({
-      id: collectionRuns.id,
-      status: collectionRuns.status,
-      attemptToken: collectionRuns.attemptToken,
-    })
-    .from(collectionRuns)
-    .where(eq(collectionRuns.idempotencyKey, runKey))
-    .limit(1);
-  if (!existing) throw new Error("COLLECTION_RUN_IDEMPOTENCY_CONFLICT");
-  if (existing.status === "success") {
-    return { runId: existing.id, runKey, attemptToken: existing.attemptToken, alreadySucceeded: true };
-  }
+  return db.transaction(async (tx) => {
+    // Lock and re-assert the monitor lease before creating or taking over a
+    // run. This closes the window where an expired worker could replace the
+    // current attempt token before its first fenced business transaction.
+    const [owned] = await tx
+      .update(monitors)
+      .set({ leaseUntil: new Date(Date.now() + getMonitorLeaseMs()) })
+      .where(and(
+        eq(monitors.id, mid),
+        eq(monitors.leaseOwner, getLeaseWorkerId()),
+        eq(monitors.leaseEpoch, monitor.leaseEpoch),
+      ))
+      .returning({ id: monitors.id });
+    if (!owned) throw new Error("LEASE_LOST: Cannot start collection run");
 
-  // CAS: only take over if the run hasn't been claimed by another worker
-  // or marked success since we read it.
-  const [updated] = await db
-    .update(collectionRuns)
-    .set({
-      status: "running",
-      startedAt: new Date(),
-      finishedAt: null,
-      errorCode: null,
-      errorMessage: null,
-      attemptToken,
-      attempt: sql`${collectionRuns.attempt} + 1`,
-    })
-    .where(and(
-      eq(collectionRuns.id, existing.id),
-      eq(collectionRuns.status, existing.status),
-      eq(collectionRuns.attemptToken, existing.attemptToken),
-    ))
-    .returning({ id: collectionRuns.id });
-  if (!updated) {
-    // Another worker already took over — re-read to get current state
-    const [latest] = await db
-      .select({ id: collectionRuns.id, status: collectionRuns.status, attemptToken: collectionRuns.attemptToken })
+    const [created] = await tx
+      .insert(collectionRuns)
+      .values({
+        monitorId: mid,
+        scheduledFor,
+        idempotencyKey: runKey,
+        attemptToken,
+        status: "running",
+      })
+      .onConflictDoNothing({ target: collectionRuns.idempotencyKey })
+      .returning({ id: collectionRuns.id });
+    if (created) return { runId: created.id, runKey, attemptToken, alreadySucceeded: false };
+
+    const [existing] = await tx
+      .select({
+        id: collectionRuns.id,
+        status: collectionRuns.status,
+        attemptToken: collectionRuns.attemptToken,
+      })
       .from(collectionRuns)
-      .where(eq(collectionRuns.id, existing.id))
+      .where(eq(collectionRuns.idempotencyKey, runKey))
       .limit(1);
-    if (!latest) throw new Error("COLLECTION_RUN_IDEMPOTENCY_CONFLICT");
-    if (latest.status === "success") {
-      return { runId: latest.id, runKey, attemptToken: latest.attemptToken, alreadySucceeded: true };
+    if (!existing) throw new Error("COLLECTION_RUN_IDEMPOTENCY_CONFLICT");
+    if (existing.status === "success") {
+      return { runId: existing.id, runKey, attemptToken: existing.attemptToken, alreadySucceeded: true };
     }
-    return { runId: latest.id, runKey, attemptToken: latest.attemptToken, alreadySucceeded: false };
-  }
-  return { runId: existing.id, runKey, attemptToken, alreadySucceeded: false };
+
+    const existingEpoch = Number(existing.attemptToken.split(":", 1)[0]);
+    if (existing.status === "running" && existingEpoch === monitor.leaseEpoch) {
+      throw new Error("COLLECTION_RUN_ALREADY_CLAIMED");
+    }
+
+    // CAS: only a newer monitor lease may take over an unfinished attempt.
+    const [updated] = await tx
+      .update(collectionRuns)
+      .set({
+        status: "running",
+        startedAt: new Date(),
+        finishedAt: null,
+        errorCode: null,
+        errorMessage: null,
+        attemptToken,
+        attempt: sql`${collectionRuns.attempt} + 1`,
+      })
+      .where(and(
+        eq(collectionRuns.id, existing.id),
+        eq(collectionRuns.status, existing.status),
+        eq(collectionRuns.attemptToken, existing.attemptToken),
+      ))
+      .returning({ id: collectionRuns.id });
+    if (!updated) throw new Error("COLLECTION_RUN_ALREADY_CLAIMED");
+    return { runId: existing.id, runKey, attemptToken, alreadySucceeded: false };
+  });
 }
 
 function isLeaseLossAbort(signal?: AbortSignal): boolean {
@@ -402,7 +401,7 @@ async function runMonitor(
     });
     // Reserve provider budget before the external call. The database lock in
     // reserveUsageBudget makes concurrent workers participate in one budget.
-    const budgetReservation = budgetReservationForMonitor(claimed, runKey);
+    const budgetReservation = budgetReservationForMonitor(claimed, runKey, attemptToken);
     if (budgetReservation) {
       budgetReservationKey = budgetReservation.idempotencyKey;
       const reservationStatus = await reserveUsageBudget(budgetReservation);
@@ -418,6 +417,7 @@ async function runMonitor(
       : claimed.platform === "x" && claimed.config.provider === "x_grok"
         ? X_GATHER_TIMEOUT_MS
         : GATHER_TIMEOUT_MS;
+    await markRunProgress(runId, attemptToken, "gathering");
     const { items, cursor, billableUnits } = await withTimeout(
       (signal) => gather({
         platform: claimed.platform,
@@ -430,7 +430,6 @@ async function runMonitor(
     );
     // Provider and model work stays outside a database transaction. Only the
     // Connector finished.
-    await markRunProgress(runId, attemptToken, "gathering");
     // Analyse (model calls happen inside prepareIngest).
     await markRunProgress(runId, attemptToken, "analyzing");
     const prepared = await prepareIngest(createDrizzleIngestRepository(), {
@@ -438,7 +437,7 @@ async function runMonitor(
       monitorId: claimed.monitorId,
       matchedQuery: monitorMatchedQuery(claimed),
       runId,
-      monitorRules: extractMonitorRules(claimed),
+      monitorRules: extractMonitorRulesFromConfig(claimed.config as Record<string, unknown>),
       signal: taskSignal,
     });
     preparedForCleanup = prepared;
@@ -509,7 +508,7 @@ async function runMonitor(
           units,
           grokSubscription ? 0 : (units / 1000) * X_COST_PER_1K_UNITS,
         );
-        await settleUsageReservation(tx, budgetReservationKey);
+        await settleUsageReservation(tx, budgetReservationKey, attemptToken);
       } else if (claimed.platform === "web_search") {
         const provider = ((claimed.config as WebSearchMonitorConfig).provider ?? "brave");
         await recordUsage(
@@ -521,7 +520,7 @@ async function runMonitor(
           billableUnits ?? 1,
           provider === "brave" ? BRAVE_COST_PER_1K / 1000 : 0,
         );
-        await settleUsageReservation(tx, budgetReservationKey);
+        await settleUsageReservation(tx, budgetReservationKey, attemptToken);
       }
       if (committed.summary.attempted > 0) {
         await recordUsage(
@@ -608,7 +607,7 @@ async function runMonitor(
     }
     if (globalShutdownSignal?.aborted && !isLeaseLossAbort(taskSignal)) {
       await db.transaction(async (tx) => {
-        await releaseUsageReservation(tx, budgetReservationKey);
+        await releaseUsageReservation(tx, budgetReservationKey, attemptToken);
         await tx.update(monitors).set({ leaseOwner: null, leaseUntil: null }).where(and(
           eq(monitors.id, claimed.id),
           eq(monitors.leaseOwner, getLeaseWorkerId()),
@@ -648,7 +647,7 @@ async function runMonitor(
       : nextRunAt;
     const errorCode = failure.code;
     await db.transaction(async (tx) => {
-      await releaseUsageReservation(tx, budgetReservationKey);
+      await releaseUsageReservation(tx, budgetReservationKey, attemptToken);
       await tx
         .update(monitors)
         .set({
@@ -1087,6 +1086,9 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
   }
 
   if (!shutdownSignal?.aborted) await maybeRetryFailedContentAnalysis();
+  if (!shutdownSignal?.aborted) {
+    await refreshEventProjection().catch((error) => workerLog.warn("events.refresh.failed", { error }));
+  }
   return claimedCount;
 }
 
