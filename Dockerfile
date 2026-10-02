@@ -1,8 +1,9 @@
 FROM node:22-alpine AS base
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
-# Use registry mirror for China network; npm install -g works around corepack hardcoding npmjs.org
-RUN npm config set registry https://registry.npmmirror.com &&     npm install -g pnpm@10.28.1 &&     pnpm config set registry https://registry.npmmirror.com
+# Default to the authoritative registry; mirrors may lag security updates.
+ARG NPM_REGISTRY=https://registry.npmjs.org
+RUN npm config set registry "$NPM_REGISTRY" && npm install -g pnpm@10.28.1 && pnpm config set registry "$NPM_REGISTRY"
 
 FROM base AS deps
 WORKDIR /app

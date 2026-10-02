@@ -22,7 +22,7 @@ export async function AdminModelUsage() {
   }
   return <section className="credentials-card">
     <h2>模型用量</h2>
-    <p>今日实际请求 {stats.today} / {modelDailyRequestLimit()} 次，包含采集分析、补跑和标题翻译。复用已保存结果不占新增额度。</p>
+    <p>今日请求尝试 {stats.today} / {modelDailyRequestLimit()} 次，包含采集分析、补跑和标题翻译。复用已保存结果不占新增额度。</p>
     <p>输入 {stats.input.toLocaleString()} tokens · 输出 {stats.output.toLocaleString()} tokens</p>
     <p>{stats.unknownCost > 0 ? `已知部分估算 $${Number(stats.cost).toFixed(4)}，${stats.unknownCost} 次费用待确认` : `估算费用 $${Number(stats.cost).toFixed(4)}`}</p>
     {stats.unknown > 0 && <p>有 {stats.unknown} 次请求正在处理或结果未确认。系统会避免重复付费；长期未确认时请核对服务商调用记录。</p>}
