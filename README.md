@@ -55,7 +55,7 @@
 | 数据存在哪里？ | PostgreSQL 和 Docker volumes，默认都在你自己的机器上。 |
 | API Key 会显示给前端吗？ | 不会。后台只返回“是否已配置”；密钥使用 `APP_ENCRYPTION_KEY` 加密后保存。 |
 | 一定要配置模型吗？ | 不需要。采集可以独立运行；启用模型后才会生成更好的摘要、中文标题、分类和推荐理由。 |
-| 会不会所有内容都先花钱调用模型？ | 不会。明显无关的内容先经过规则过滤，模型在入库链路的后段处理。 |
+| 会不会所有内容都先花钱调用模型？ | 不会。明显无关的内容先经过规则过滤，原稿先保存，模型理解由后台小批量处理。 |
 | 第三方采集能永远稳定吗？ | 不能。微信、X、搜索和上游开源项目都可能受登录、额度、风控和接口变化影响。 |
 | 能部署到服务器吗？ | 可以。仓库包含 Docker Compose 和 Caddy HTTPS 生产方案。 |
 | 可以自行部署和修改吗？ | 可以。见微主程序采用 Apache-2.0；独立 Sidecar 和上游镜像仍适用各自许可证。 |
@@ -77,16 +77,16 @@
 
 ## 快速开始
 
-### 最低配置要求
+### 配置建议
 
 | 部署模式 | CPU | 内存 | 磁盘 | 说明 |
 | -------- | --- | ---- | ---- | ---- |
-| 核心服务（web + db + worker） | 1 核 | 2 GB | 10 GB | 不含公众号和热榜采集 |
+| 核心服务（web + db + worker） | 1 核 | 2 GB | 10 GB | 小规模部署目标；默认模式，不含公众号和热榜采集 |
 | + WeRSS（公众号采集） | 2 核 | 3 GB | 15 GB | 含浏览器环境 |
 | + TrendRadar（热榜） | 2-3 核 | 4 GB | 20 GB | 含热榜/RSS 采集与 MCP |
 | 完整全量部署 | 4 核 | 4 GB+ | 30 GB+ | 以上全部 + 全文回填 |
 
-> 实测：核心 3 服务空闲仅约 176MB，WeRSS 约 150MB（受 2GB mem_limit 约束），TrendRadar 约 130MB。建议至少保留 1GB 空闲内存给系统。
+> 上表是容量规划建议，不是已验证的硬件最低值。隔离的 2,000 篇长文样例中，生产 Web 两个并发阅读请求峰值约从 499 MiB 降到 220 MiB；完整 2 GB 主机、真实采集器峰值和长期运行仍待验证。方法与边界见 [低资源优化记录](docs/low-resource-optimization.md)。
 
 > 如果要同时运行 WeRSS、TrendRadar、全文增强和较高频监控，4GB 是起步值，8GB 更稳。没有 Swap 的 4GB 云主机可以完成小规模冒烟测试，但不建议长期承载大量公众号或全文回填。
 
@@ -94,7 +94,7 @@
 
 需要提前安装：
 
-- Docker Desktop 或 OrbStack。
+- Docker Desktop 或 OrbStack，包含 Docker Compose v2.20.3+。
 
 > **国内服务器部署**：如果 Docker 构建时无法访问 npmjs.org 或 ghcr.io，请使用 `Dockerfile.cn`（内置阿里云 npm 镜像）：
 > ```bash
@@ -124,18 +124,22 @@ cd jianwei
 1. 复制 `.env.example` 为 `.env`。
 2. 写入固定的首次登录密码 `admin@123`，并随机生成只供程序使用的 API Token 和加密密钥。
 3. 检查 Docker 与 Compose 配置。
-4. 构建并启动数据库、Web、worker、WeRSS 和 TrendRadar。
+4. 构建并启动数据库、Web 和 worker，自动运行一次迁移与种子初始化。
 5. 提示仍未配置的平台凭据。
 
 启动后访问：
 
 | 页面 | 地址 | 用途 |
 | --- | --- | --- |
-| 信息流 | <http://localhost:3000> | 阅读精选、最新和全部信息 |
+| 信息流 | <http://localhost:3000> | 阅读关注变化、精选、最新和全部信息 |
 | 监控任务 | <http://localhost:3000/admin> | 添加账号、公众号和关键词 |
 | 平台连接 | <http://localhost:3000/admin/connectors> | 配置 API、模型、RSS 和全文通道 |
-| WeRSS 后台 | <http://localhost:8001> | 微信扫码、公众号订阅、创建 Access Key |
-| TrendRadar | <http://localhost:8088> | 调试用（数据通过主站 3000 端口访问） |
+| WeRSS 后台（启用后） | <http://localhost:8001> | 微信扫码、公众号订阅、创建 Access Key |
+| TrendRadar（启用后） | <http://localhost:8088> | 调试用（数据通过主站 3000 端口访问） |
+
+需要公众号时，在 `.env` 设置 `COMPOSE_PROFILES=wechat`；需要榜单/RSS 时设置 `COMPOSE_PROFILES=trendradar`；同时需要则使用 `COMPOSE_PROFILES=wechat,trendradar`，然后再次运行 `./start.sh`。不需要的采集器不会常驻，也不会在新库生成默认热榜监控。升级旧库会保留已有监控；关闭采集器时，先在后台停用对应监控或配置外部服务，再用原 profile 停止对应容器，最后移除 profile。
+
+预构建镜像部署入口已加入：将 `.env` 的 `JIANWEI_IMAGE_TAG` 设置为实际已发布的版本标签后，`./start.sh` 会拉取镜像并跳过本机编译。留空仍从源码构建。版本镜像从 `v0.3.0` 开始由 Release 工作流发布；`v0.2.0` 不提供这些镜像。确认对应发布完成及镜像可拉取后再填写标签；GHCR 访问设置见 [版本发布](docs/release-process.md)。
 
 ### 默认凭据
 
@@ -163,10 +167,10 @@ cd jianwei
 
 | 我想关注… | 需要配什么 | 怎么配 |
 | --------- | ---------- | ------ |
-| 微信公众号 | WeRSS | 打开 http://localhost:8001 → admin / admin@123 登录 → 扫码绑定微信 → 创建 Access Key → 把 AK:SK 填到 .env 的 WERSS_ACCESS_KEY= 后面 |
+| 微信公众号 | WeRSS | 先启用 `wechat` profile，再打开 http://localhost:8001 → admin / admin@123 登录 → 扫码绑定微信 → 创建 Access Key → 把 AK:SK 填到 .env 的 WERSS_ACCESS_KEY= 后面 |
 | X（Twitter）博主 | SuperGrok（默认） | 在「平台连接」点击「连接 SuperGrok」完成 xAI 授权；不需要手填 X API Key |
 | 全网关键词搜索 | Brave Search API | 去 brave.com 申请免费 API Key，填到「平台连接」→ Brave Search |
-| 国内热榜、RSS | TrendRadar（默认） | 什么都不用配，系统内置了 |
+| 国内热榜、RSS | TrendRadar | 先启用 `trendradar` profile，再在平台连接中选择榜单或添加 RSS |
 
 > 不需要全部配完。比如今天只想看公众号，配好 WeRSS 就够了。后面想加 X 博主时再来配也来得及。
 
@@ -242,8 +246,9 @@ flowchart LR
     Provider --> Worker["采集 Worker"]
     Worker --> Rules["规则过滤"]
     Rules --> Dedupe["规范化与三级去重"]
-    Dedupe --> Model["可选模型理解"]
-    Model --> DB[("PostgreSQL")]
+    Dedupe --> DB[("PostgreSQL：先保存原稿")]
+    DB --> Model["后台可选模型理解"]
+    Model --> DB
     DB --> Reader["信息流"]
     DB --> Admin["管理后台"]
 ```
@@ -273,9 +278,23 @@ flowchart LR
 
 模型失败内容会记录状态并进入小批量重试，不会一次性重跑全部历史内容造成费用失控。
 
+新原稿先入库，后台每批最多处理 5 条分析，同一 Worker 同时只运行一批，慢分析不阻塞下一轮采集；失败重试仍有 15 分钟冷却与次数限制。启用模型时，首次归类等待分析完成；关闭模型后可先按规则进入阅读，待办保留供重新启用后继续分析。默认采集与模型并发各为 2、每个应用进程的数据库连接池最多 4；这些值可在 `.env` 调整。
+
+内容处理状态分别显示“自动待处理”和“未自动排队”，并提供最早待办时间与最近 24 小时完成分析的原稿数。同一原稿跨平台收录只计一份全局待办；模型未启用、预算耗尽或材料已被占用时，候选可能暂缓处理。历史未标记内容不会被当作正在自动排队的材料。
+
 ### 规则分类的真实边界
 
 不配置模型时，见微仍然可以完成采集、去重、关键词 Gate 和信息流汇总；本地内容类型与主题规则是可解释、低成本的兜底，不等于高精度语义模型。`pnpm content:evaluate` 会同时显示当前实测结果、CI 防回归底线（64% accuracy / 63% macro F1）和更高的发布质量目标（80% / 75%）。未达到质量目标时，项目会明确显示 `QUALITY GAP`，不会把“CI 没退步”包装成“分类已经准确”。如果你依赖摘要、中文标题或细分类别，建议在后台启用模型 API。
+
+## 变化阅读（未发布）
+
+首页默认显示最近14天的未读事件变化。选择或组合已有监控，展开卡片查看最近变化与原文证据，并可进入事件详情分页回看完整历史；登录管理后台后，可以关注事件、全部标记已读或只看已关注事件。已读事件仍可在“已关注事件”目录管理。标记已读后，重复报道和代表稿替换不会让事件重新出现；后续阶段变化或原文修订会重新显示。文章右上角的收藏仍保存当前原文。
+
+精选先在有界候选集合中选出重点，再安排时间流与来源多样性。公共精选看文档质量，任务精选从候选排序到准入都看该任务的相关性；来源覆盖数只提供阅读线索，不提高推荐排名。
+
+启用模型后，同一次内容分析会提取带原文引用的事件身份和少量具体信息，辅助跨语言归并并识别同阶段的新细节；字段缺失时使用标题规则。提取结果仍需核对原文。当前为单工作台共享阅读状态。部署现有数据库前，请按 [变化阅读优化与升级说明](docs/change-reading.md) 执行迁移。
+
+带明确发生日期的开放状态支持“开放→暂停→恢复开放”，在同一事件下提醒恢复；同状态确认和迟到的旧状态不再次提醒。无日期或同一天内反复变化仍有识别限制。
 
 ## v0.2.0：事件与模型用量
 
@@ -311,6 +330,10 @@ Worker在后台保存事件归属，精选页直接读取已保存的事件。�
 | `trendradar-refresh` | 保存来源后立即触发刷新 | — |
 | `wechat-fallback` | 可选公众号全文增强 | `5055` |
 
+`werss` 属于 `wechat` profile，三个 TrendRadar 服务属于 `trendradar` profile，`wechat-fallback` 单独按需启用。`docker-compose.lite.yml` 复用同一份核心配置。原生开发的 `WERSS_BASE_URL` / `TRENDRADAR_MCP_URL` 可使用 localhost；容器默认使用服务名，外部实例通过 `WERSS_DOCKER_BASE_URL` / `TRENDRADAR_DOCKER_MCP_URL` 指定。
+
+Worker 每日启动终态运行明细清理，每表每轮最多删除 1,000 条，有积压时在后续轮询继续：普通记录默认保留 30 天，失败与异常模型尝试保留 90 天；设置 `OPERATIONAL_HISTORY_DAYS=0` 可关闭。原稿、事件证据、模型响应回执、分析占用与预算账本保留。过期明细删除后，后台不能再查询该时期的完整逐次调用历史。
+
 停止服务但保留数据：
 
 ```bash
@@ -342,6 +365,7 @@ docker compose down
 ```bash
 pnpm install
 pnpm content:evaluate
+pnpm event:evaluate
 pnpm lint
 pnpm test
 pnpm build
@@ -399,6 +423,9 @@ WERSS_ADMIN_URL=http://<服务器IP>:8001/wechat-status
 | [第三方声明](THIRD_PARTY_NOTICES.md) | 第三方项目和许可证说明 |
 | [开源准备报告](docs/open-source-readiness.md) | 敏感信息、许可证、CI 和公开发布门禁 |
 | [路线图](ROADMAP.md) | 近期改进方向与不承诺事项 |
+| [AIHOT 源码比较与优化建议](docs/aihot-review-2026-10-02.md) | 基于见微 v0.2.0 的差异、验证与分阶段优化 |
+| [事件规则评测](docs/event-evaluation.md) | 离线难例、真实标注格式、误合并与漏合并指标 |
+| [低资源优化记录](docs/low-resource-optimization.md) | 按需采集器、轻量 Worker、阅读内存实测与未验证的容量边界 |
 | [贡献指南](CONTRIBUTING.md) | 开发、测试、提交与许可证要求 |
 | [安全策略](SECURITY.md) | 私下报告漏洞和安全边界 |
 | `docs/plans/` | 历史设计和实施计划，不代表所有内容仍是当前行为 |
@@ -418,7 +445,7 @@ WERSS_ADMIN_URL=http://<服务器IP>:8001/wechat-status
 
 ## 开源许可与当前状态
 
-当前版本：`v0.1.0`
+当前源码版本：`v0.2.0`
 
 见微主程序按照 [Apache License 2.0](LICENSE) 提供。Hermes Agent 改编代码、WeRSS、TrendRadar 和 wechat-download-api 等第三方组件的归属与边界见 [第三方声明](THIRD_PARTY_NOTICES.md)。
 

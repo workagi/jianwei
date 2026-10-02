@@ -1,4 +1,5 @@
 import type { NormalizedItem } from "@/connectors/types";
+import type { EventSignal } from "@/lib/event-signals";
 import {
   generateSummariesWithStats,
   summaryKey,
@@ -13,7 +14,7 @@ import {
 } from "@/lib/item-tags";
 import { deriveRetentionDecision } from "@/lib/content-retention";
 
-export const CONTENT_ANALYSIS_VERSION = "v2";
+export const CONTENT_ANALYSIS_VERSION = "v3-event-signals";
 
 export type ContentAnalysisStatus =
   | "pending"
@@ -27,6 +28,7 @@ export interface ContentRouteOutcome {
   status: ContentAnalysisStatus;
   summary?: string;
   translatedTitle?: string;
+  eventSignal?: EventSignal;
   contentType: ContentTypeId;
   topicTags: string[];
   classificationSource: "model" | "rules";
@@ -106,6 +108,7 @@ export function buildContentRouteOutcome(
     status,
     summary: attempt.summary,
     translatedTitle: attempt.translatedTitle,
+    eventSignal: attempt.eventSignal,
     contentType,
     topicTags,
     classificationSource: completeModelClassification ? "model" : "rules",

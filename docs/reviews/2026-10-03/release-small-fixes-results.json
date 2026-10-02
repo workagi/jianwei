@@ -1,0 +1,38 @@
+{
+  "date": "2026-10-03",
+  "scope": "Updated local arm64 tools image and isolated PostgreSQL17; no model or production calls",
+  "checks": [
+    "Empty receipt list starts and exits successfully in the tools image",
+    "Populated receipt list returns the four fixture keys",
+    "Older unknown and sending receipts release with a new owner; sending attempts become unknown",
+    "Historical received attempt remains unchanged",
+    "Active and received receipts reject retry with nonzero exit and unchanged receipt/attempt rows",
+    "Invalid command arguments exit nonzero with usage"
+  ],
+  "passed": 6,
+  "upgrade": {
+    "baseline": "0023_match_observation_constraints",
+    "target": "0033_evidence_event_signals",
+    "result": "pass",
+    "journalRecords": 11,
+    "newTablesAndColumns": "pass",
+    "legacyContentRevision": 1,
+    "script": "Repository scripts/test-upgrade.sh executed unchanged, with temporary container psql/pnpm adapters"
+  },
+  "checksOther": {
+    "existingReceiptTests": {
+      "passed": 6
+    },
+    "typecheck": "pass",
+    "eslint": "pass",
+    "shellcheck": "pass",
+    "toolsImageBuild": "pass",
+    "composeMaintenanceCommand": "pass; base/production/CI Compose with local tools image and isolated database network overrides"
+  },
+  "ciRegression": "Docker smoke job now invokes the model receipt list command in the migrate tools service",
+  "limitations": [
+    "Full remote CI has not been run",
+    "No production data or paid model requests",
+    "No version bump, Git push, tag or release publication"
+  ]
+}

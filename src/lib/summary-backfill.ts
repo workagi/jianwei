@@ -1,5 +1,6 @@
 import { and, desc, eq, isNull, lt, or, sql } from "drizzle-orm";
 import { db } from "@/db";
+import { automaticAnalysisCondition } from "@/db/analysis-queue";
 import { itemMatches, items, monitors } from "@/db/schema";
 import { loadApiCredentials } from "@/db/queries";
 import type { NormalizedItem } from "@/connectors/types";
@@ -10,6 +11,7 @@ import { CONTENT_ANALYSIS_VERSION, routeContentItems } from "@/lib/content-route
 import { passesTrendRadarReaderGate } from "@/lib/trendradar-interest-filter";
 import { deriveMonitorRetention } from "@/lib/content-retention";
 import { extractMonitorRulesFromConfig } from "@/lib/monitor-rules";
+import { writeFetchedWechatContent } from "./wechat-content-write";
 import {
   canonicalUrlHash,
   createDrizzleIngestRepository,
@@ -46,13 +48,14 @@ export interface SummaryBackfillResult {
 }
 
 /**
- * failures: only analysis_status=failed (worker auto-retry)
- * missing_summary: only rows with empty ai_summary (worker auto, cost-safe)
+ * automatic: newly deferred collection, source revisions and retryable failures on kept content
+ * failures: only analysis_status=failed
+ * missing_summary: only rows with empty ai_summary (manual)
  * incomplete: manual admin backfill — missing summary / type / tags / title translation
  *
  * Never re-runs solely because retention_source is rules or analysis_version is old.
  */
-export type SummaryBackfillScope = "failures" | "missing_summary" | "incomplete";
+export type SummaryBackfillScope = "automatic" | "failures" | "missing_summary" | "incomplete";
 
 export interface SummaryBackfillOptions {
   /** @deprecated prefer scope: "failures" */
@@ -60,6 +63,7 @@ export interface SummaryBackfillOptions {
   scope?: SummaryBackfillScope;
   retryAfterMinutes?: number;
   maxAttempts?: number;
+  signal?: AbortSignal;
 }
 
 export function resolveBackfillScope(options: SummaryBackfillOptions = {}): SummaryBackfillScope {
@@ -124,6 +128,8 @@ export async function backfillMissingTranslatedTitles(rawLimit: unknown): Promis
       title: items.title,
       bodyText: items.bodyText,
       authorName: items.authorName,
+      contentHash: items.contentHash,
+      contentRevision: items.contentRevision,
     })
     .from(items)
     .where(sql`
@@ -141,8 +147,11 @@ export async function backfillMissingTranslatedTitles(rawLimit: unknown): Promis
     const batch = rows.slice(index, index + 10).flatMap((row) => row.title ? [{ id: row.id, title: row.title }] : []);
     const translated = await generateTitleTranslations(batch);
     for (const [id, translatedTitle] of translated) {
-      await db.update(items).set({ translatedTitle, updatedAt: new Date() }).where(eq(items.id, id));
-      updated += 1;
+      const input = rows.find(row => row.id === id);
+      if (!input) continue;
+      const saved = await db.update(items).set({ translatedTitle, updatedAt: new Date() })
+        .where(and(eq(items.id, id), eq(items.contentHash, input.contentHash), eq(items.contentRevision, input.contentRevision))).returning({ id: items.id });
+      updated += saved.length;
     }
   }
   return { candidates: rows.length, updated };
@@ -174,9 +183,11 @@ type BackfillRow = {
   imageUrls: string[];
   publishedAt: Date;
   analysisAttempts: number;
+  contentHash: string;
+  contentRevision: number;
 };
 
-async function hydrateWechatFullText(rows: BackfillRow[]): Promise<number> {
+async function hydrateWechatFullText(rows: BackfillRow[], signal?: AbortSignal): Promise<number> {
   // Only articles that truly lack body HTML, not already-failed inside cooldown.
   // Serial (concurrency 1): WeRSS browser path is process-locked; parallel workers
   // only queue and still risk overlapping work across backfill entry points.
@@ -195,21 +206,14 @@ async function hydrateWechatFullText(rows: BackfillRow[]): Promise<number> {
   const connector = await createRuntimeWeRssConnector();
   let fetched = 0;
   for (const row of targets) {
+    signal?.throwIfAborted();
     const result = await connector.fetchFullTextResult(row.canonicalUrl);
     if (result.html) {
       row.contentHtml = result.html;
       fetched += 1;
     }
-    await db
-      .update(items)
-      .set({
-        ...(result.html ? { contentHtml: result.html, contentProvider: result.provider } : {}),
-        contentFetchStatus: result.status,
-        contentFetchError: result.errorCode ?? null,
-        contentFetchedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(eq(items.id, row.id));
+    const saved = await writeFetchedWechatContent(row.id, row, result);
+    if (saved) Object.assign(row, saved);
   }
   return fetched;
 }
@@ -220,6 +224,7 @@ export async function backfillMissingSummaries(
 ): Promise<SummaryBackfillResult> {
   await refreshSummaryCredentials();
   const limit = clampLimit(rawLimit);
+  options.signal?.throwIfAborted();
 
   if (!isSummaryEnabled()) {
     return {
@@ -241,7 +246,7 @@ export async function backfillMissingSummaries(
   // Cost guardrails:
   // - never re-call the model just because keep_reason fell back to rules
   // - never re-call just because analysis_version changed
-  // - auto worker only touches empty summaries or hard failures
+  // - auto worker only touches queued first versions, revisions or retryable failures
   const missingSummarySql = sql`(${items.aiSummary} is null or btrim(${items.aiSummary}) = '')`;
   const missingClassificationSql = sql`(
     ${items.contentType} is null
@@ -262,7 +267,9 @@ export async function backfillMissingSummaries(
   )`;
 
   const candidateFilter =
-    scope === "failures"
+    scope === "automatic"
+      ? automaticAnalysisCondition(maxAttempts, retryCutoff)
+      : scope === "failures"
       ? and(
           eq(items.analysisStatus, "failed"),
           lt(items.analysisAttempts, maxAttempts),
@@ -313,10 +320,13 @@ export async function backfillMissingSummaries(
       imageUrls: items.imageUrls,
       publishedAt: items.publishedAt,
       analysisAttempts: items.analysisAttempts,
+      contentHash: items.contentHash,
+      contentRevision: items.contentRevision,
     })
     .from(items)
     .where(candidateFilter)
     .orderBy(
+      ...(scope === "automatic" ? [sql`case when ${items.analysisStatus} = 'pending' then 0 else 1 end`, items.contentObservedAt] : []),
       sql`case
         when ${items.platform} = 'wechat' and ${items.aiSummary} is null and ${items.contentHtml} is not null then 0
         when ${items.aiSummary} is null or btrim(${items.aiSummary}) = '' then 1
@@ -326,7 +336,7 @@ export async function backfillMissingSummaries(
       desc(items.publishedAt),
     )
     .limit(backfillScanLimit(limit))) as BackfillRow[];
-  const rows = candidateRows.filter((row) => shouldProcessModelBackfill(row)).slice(0, limit);
+  const rows = candidateRows.filter((row) => shouldProcessModelBackfill(row));
 
   if (rows.length === 0) {
     return {
@@ -346,13 +356,14 @@ export async function backfillMissingSummaries(
   for (const row of rows) {
     const claim = await claimRepo.claimDocumentAnalysis?.({
       canonicalUrlHash: canonicalUrlHash(row.canonicalUrl),
-      analysisVersion: `${CONTENT_ANALYSIS_VERSION}:backfill`,
+      analysisVersion: `${CONTENT_ANALYSIS_VERSION}:backfill:${row.contentRevision}:${row.contentHash}`,
       ownerWorkerId: WORKER_ID_FOR_CLAIM,
       leaseMinutes: 30,
     });
     if (!claim) continue;
     claimedRows.push(row);
     claimsByItemId.set(row.id, claim);
+    if (claimedRows.length >= limit) break;
   }
 
   if (claimedRows.length === 0) {
@@ -373,7 +384,7 @@ export async function backfillMissingSummaries(
     // Full-text hydration is external work and can fail before model routing.
     // Keep it inside the claim lifecycle so every failure path releases the
     // claim immediately instead of waiting for its lease to expire.
-    fullTextFetched = await hydrateWechatFullText(claimedRows);
+    fullTextFetched = await hydrateWechatFullText(claimedRows, options.signal);
     const normalized: NormalizedItem[] = claimedRows.map((row) => ({
       platform: row.platform,
       upstreamId: row.upstreamId,
@@ -389,13 +400,16 @@ export async function backfillMissingSummaries(
       raw: { backfill: true, itemId: row.id },
     }));
 
-    const routed = await routeContentItems(normalized);
+    const routed = await routeContentItems(normalized, options.signal);
     stats = routed.stats;
     for (const row of claimedRows) {
       const outcome = routed.outcomes.get(`${row.platform}|${row.upstreamId}`);
       const claim = claimsByItemId.get(row.id);
       if (!outcome || !claim) continue;
       const claimCompleted = await db.transaction(async (tx) => {
+        const [current] = await tx.select({ hash: items.contentHash, revision: items.contentRevision })
+          .from(items).where(eq(items.id, row.id)).for("update");
+        if (!current || current.hash !== row.contentHash || current.revision !== row.contentRevision) return null;
         await tx
           .update(items)
           .set({
@@ -405,10 +419,12 @@ export async function backfillMissingSummaries(
             topicTags: outcome.topicTags,
             informationValueScore: outcome.relevanceScore,
             editorialReason: outcome.retentionSource === "model" ? outcome.retentionReason : null,
+            eventSignal: outcome.eventSignal ?? null,
             analysisStatus: outcome.status,
             analysisProvider: outcome.provider ?? null,
             analysisModel: outcome.model ?? null,
             analysisVersion: outcome.version,
+            analysisInputHash: row.contentHash,
             analysisAttempts: row.analysisAttempts + outcome.attempts,
             analysisErrorCode: outcome.errorCode ?? null,
             analysisErrorMessage: outcome.errorMessage ?? null,
@@ -469,6 +485,7 @@ export async function backfillMissingSummaries(
         }
         return false;
       });
+      if (claimCompleted === null) continue;
       if (claimCompleted) completedClaimIds.add(claim.id);
       processed += 1;
       if (outcome.summary) updated += 1;

@@ -1,0 +1,57 @@
+{
+  "quoteWithoutEntailment": {
+    "accepted": true,
+    "stage": "available",
+    "price": "USD0/month",
+    "original": "Acme Agent 2.0 is not available yet. The monthly price is USD30."
+  },
+  "taskScoreWithoutKeyword": {
+    "shouldKeep": true,
+    "relevanceScore": 85,
+    "retentionReason": "基于industry类型的信息参考"
+  },
+  "pendingCorrection": {
+    "contentRevision": 2,
+    "analysisStatus": "pending",
+    "aiSummary": null,
+    "automaticRetryCandidates": 0,
+    "featuredCards": 0
+  },
+  "followAfterWindow": {
+    "sameEvent": false,
+    "followedCards": 0,
+    "unfilteredCards": 1
+  },
+  "oldArticleCorrection": {
+    "contentRevision": 2,
+    "projectedRevision": 1,
+    "eventRevision": 1
+  },
+  "readBeyondVisible": {
+    "readBefore": 1,
+    "eventRevision": 6,
+    "displayedRevisions": [
+      6,
+      5,
+      4
+    ],
+    "unreadAfterMark": 0
+  },
+  "featuredEvidence": {
+    "eventRevision": 6,
+    "developmentRows": 0
+  },
+  "historicalImportClock": {
+    "publishedAt": "2026-09-22T11:47:30.905Z",
+    "cardDate": "2026-10-02T11:47:31.120Z",
+    "appearsInLastDayChanges": true,
+    "label": "首次收录"
+  },
+  "fixedWindowStarvation": {
+    "newerProcessedDocuments": 2000,
+    "assignedFirstRefresh": false,
+    "assignedSecondRefresh": false
+  },
+  "fetchAttempts": 0,
+  "scope": "Synthetic fixtures on disposable PostgreSQL 17; no real model, collector, production data or browser exercise."
+}

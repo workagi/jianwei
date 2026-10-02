@@ -1,0 +1,14 @@
+{
+  "date": "2026-10-02T12:20:23.088Z",
+  "verification": "production-build HTTP with disposable PostgreSQL 17",
+  "input": "constructed six-revision event",
+  "realModelCalls": 0,
+  "upstreamCalls": 0,
+  "browserInteractionVerified": false,
+  "checks": [
+    "combined scope, topic preservation, explicit read action and separate publication/activity clocks",
+    "latest and earlier history pages expose all six saved revisions",
+    "invalid detail id is 404 and anonymous state write is 401",
+    "authenticated read removes event from changes but retains it in followed catalog"
+  ]
+}

@@ -27,6 +27,8 @@ services:
       context: .
       target: tools
     environment:
+      COMPOSE_PROFILES: ${COMPOSE_PROFILES:-}
+      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-4}
       DATABASE_URL: postgres://monitor:${POSTGRES_PASSWORD:-monitor}@postgres:5432/monitor
     depends_on:
       postgres:
@@ -40,13 +42,14 @@ services:
       context: .
       target: runner
     environment:
+      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-4}
       DATABASE_URL: postgres://monitor:${POSTGRES_PASSWORD:-monitor}@postgres:5432/monitor
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-development-only-change-me}
       MODEL_DAILY_REQUEST_LIMIT: ${MODEL_DAILY_REQUEST_LIMIT:-1000}
       X_BEARER_TOKEN: ${X_BEARER_TOKEN:-}
       X_API_MAX_PAGES: ${X_API_MAX_PAGES:-20}
       BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
-      WERSS_BASE_URL: http://werss:8001
+      WERSS_BASE_URL: ${WERSS_DOCKER_BASE_URL:-http://werss:8001}
       WERSS_ACCESS_KEY: ${WERSS_ACCESS_KEY:-}
       ZLZCHAT_BASE_URL: ${ZLZCHAT_BASE_URL:-}
       ZLZCHAT_API_KEY: ${ZLZCHAT_API_KEY:-}
@@ -68,7 +71,7 @@ services:
       WECHAT_WERSS_BROWSER_MAX_PER_HOUR: ${WECHAT_WERSS_BROWSER_MAX_PER_HOUR:-36}
       WECHAT_WERSS_BROWSER_CIRCUIT_FAILURES: ${WECHAT_WERSS_BROWSER_CIRCUIT_FAILURES:-4}
       WECHAT_WERSS_BROWSER_CIRCUIT_MINUTES: ${WECHAT_WERSS_BROWSER_CIRCUIT_MINUTES:-30}
-      TRENDRADAR_MCP_URL: http://trendradar-mcp:3333/mcp
+      TRENDRADAR_MCP_URL: ${TRENDRADAR_DOCKER_MCP_URL:-http://trendradar-mcp:3333/mcp}
       TRENDRADAR_CONFIG_DIR: /app/trendradar-config
       TRENDRADAR_REFRESH_URL: http://trendradar-refresh:8090/refresh
       TRENDRADAR_REFRESH_TOKEN: ${TRENDRADAR_REFRESH_TOKEN:-development-only-change-me}
@@ -105,8 +108,13 @@ services:
   worker:
     build:
       context: .
-      target: tools
+      target: worker-runner
     environment:
+      OPERATIONAL_HISTORY_DAYS: ${OPERATIONAL_HISTORY_DAYS:-30}
+      FAILED_HISTORY_DAYS: ${FAILED_HISTORY_DAYS:-90}
+      TRENDRADAR_CONFIG_DIR: /app/trendradar-config
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-4}
       DATABASE_URL: postgres://monitor:${POSTGRES_PASSWORD:-monitor}@postgres:5432/monitor
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-development-only-change-me}
       MODEL_DAILY_REQUEST_LIMIT: ${MODEL_DAILY_REQUEST_LIMIT:-1000}
@@ -120,7 +128,7 @@ services:
       XAI_X_SEARCH_ATTEMPTS: ${XAI_X_SEARCH_ATTEMPTS:-2}
       # Soft daily cap across all x_grok monitors. 0 = unlimited.
       XAI_X_SEARCH_DAILY_BUDGET: ${XAI_X_SEARCH_DAILY_BUDGET:-200}
-      WERSS_BASE_URL: http://werss:8001
+      WERSS_BASE_URL: ${WERSS_DOCKER_BASE_URL:-http://werss:8001}
       WERSS_ACCESS_KEY: ${WERSS_ACCESS_KEY:-}
       ZLZCHAT_BASE_URL: ${ZLZCHAT_BASE_URL:-}
       ZLZCHAT_API_KEY: ${ZLZCHAT_API_KEY:-}
@@ -144,7 +152,7 @@ services:
       WECHAT_WERSS_BROWSER_MAX_PER_HOUR: ${WECHAT_WERSS_BROWSER_MAX_PER_HOUR:-36}
       WECHAT_WERSS_BROWSER_CIRCUIT_FAILURES: ${WECHAT_WERSS_BROWSER_CIRCUIT_FAILURES:-4}
       WECHAT_WERSS_BROWSER_CIRCUIT_MINUTES: ${WECHAT_WERSS_BROWSER_CIRCUIT_MINUTES:-30}
-      TRENDRADAR_MCP_URL: http://trendradar-mcp:3333/mcp
+      TRENDRADAR_MCP_URL: ${TRENDRADAR_DOCKER_MCP_URL:-http://trendradar-mcp:3333/mcp}
       X_BRAVE_MONTHLY_BUDGET_USD: ${X_BRAVE_MONTHLY_BUDGET_USD:-}
       BUDGET_RESERVATION_TTL_MINUTES: ${BUDGET_RESERVATION_TTL_MINUTES:-60}
       WORKER_POLL_INTERVAL_SECONDS: ${WORKER_POLL_INTERVAL_SECONDS:-60}
@@ -161,7 +169,7 @@ services:
       SUMMARY_SKIP_PLATFORMS: ${SUMMARY_SKIP_PLATFORMS:-wechat}
       SUMMARY_MODEL: ${SUMMARY_MODEL:-}
       SUMMARY_TIMEOUT_SECONDS: ${SUMMARY_TIMEOUT_SECONDS:-45}
-      SUMMARY_MAX_CONCURRENCY: ${SUMMARY_MAX_CONCURRENCY:-4}
+      SUMMARY_MAX_CONCURRENCY: ${SUMMARY_MAX_CONCURRENCY:-2}
       SUMMARY_REQUESTS_PER_MINUTE: ${SUMMARY_REQUESTS_PER_MINUTE:-}
       SUMMARY_RATE_LIMIT_KEY: ${SUMMARY_RATE_LIMIT_KEY:-}
       SUMMARY_MAX_INPUT_CHARS: ${SUMMARY_MAX_INPUT_CHARS:-3000}
@@ -172,8 +180,9 @@ services:
       CONTENT_ENRICHMENT_BATCH_SIZE: ${CONTENT_ENRICHMENT_BATCH_SIZE:-20}
       CONTENT_RETRY_MAX_ATTEMPTS: ${CONTENT_RETRY_MAX_ATTEMPTS:-5}
       TITLE_TRANSLATION_BATCH_SIZE: ${TITLE_TRANSLATION_BATCH_SIZE:-100}
-    command: ["pnpm", "worker"]
     init: true
+    volumes:
+      - ./infra/trendradar/config:/app/trendradar-config:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -183,8 +192,10 @@ services:
       # for both local collectors so a fresh install does not record a false
       # NETWORK_ERROR during the normal startup race.
       werss:
+        required: false
         condition: service_healthy
       trendradar-mcp:
+        required: false
         condition: service_healthy
     healthcheck:
       test:
@@ -200,6 +211,7 @@ services:
 
   # --- WeRSS sidecar (WeChat Official Account RSS) -----------------------
   werss:
+    profiles: ["wechat"]
     # Public installs use the official upstream image. Advanced users can
     # override WERSS_IMAGE with a reviewed custom build.
     image: ${WERSS_IMAGE:-jianwei-werss:local}
@@ -263,6 +275,7 @@ services:
 
   # --- TrendRadar sidecar (hotlists / RSS / scheduling / AI) -------------
   trendradar:
+    profiles: ["trendradar"]
     image: wantcat/trendradar:6.10.0
     environment:
       TZ: Asia/Shanghai
@@ -283,6 +296,7 @@ services:
 
   # --- TrendRadar MCP sidecar (query tools for 见微) ----------------------
   trendradar-mcp:
+    profiles: ["trendradar"]
     image: wantcat/trendradar-mcp:4.1.0
     environment:
       TZ: Asia/Shanghai
@@ -308,6 +322,7 @@ services:
 
   # --- Internal refresh helper for "Save and refresh now" ----------------
   trendradar-refresh:
+    profiles: ["trendradar"]
   # TrendRadar itself serves static reports and runs collection by cron; it
   # does not expose a refresh endpoint. This helper shares the same config and
   # output volumes, accepts only internal Docker-network requests, and runs one

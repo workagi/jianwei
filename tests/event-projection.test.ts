@@ -20,4 +20,25 @@ describe("persistent event identity", () => {
     expect(groupPersistedEvents([a, b])).toHaveLength(2);
     expect(groupPersistedEvents([{ ...a, eventId: "shared" }, { ...b, eventId: "shared" }])).toHaveLength(1);
   });
+  it("does not extend an event window through a chain of similar reports", () => {
+    const title = "OpenAI 更新 ChatGPT 工具访问权限和应用接口";
+    const candidates = [
+      { ...item("a", "A", title), date: "2026-09-26T00:00:00Z" },
+      { ...item("b", "B", title), date: "2026-09-28T00:00:00Z" },
+      { ...item("c", "C", title), date: "2026-09-30T00:00:00Z" },
+    ];
+    const assigned = planEventAssignments(candidates);
+    expect(assigned[0].eventId).toBe(assigned[1].eventId);
+    expect(assigned[2].eventId).not.toBe(assigned[0].eventId);
+  });
+  it("applies the whole-group window to persisted events without rewriting identities", () => {
+    const title = "OpenAI 更新 ChatGPT 工具访问权限和应用接口";
+    const a = { ...item("a", "A", title, "saved"), date: "2026-09-26T00:00:00Z", manual: true };
+    const b = { ...item("b", "B", title, "saved"), date: "2026-09-28T00:00:00Z" };
+    const c = { ...item("c", "C", title), date: "2026-09-30T00:00:00Z" };
+    const assigned = planEventAssignments([b, c, a]);
+    expect(assigned).toHaveLength(1);
+    expect(assigned[0].itemId).toBe("c");
+    expect(assigned[0].eventId).not.toBe("saved");
+  });
 });

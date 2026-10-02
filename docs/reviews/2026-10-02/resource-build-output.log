@@ -1,0 +1,47 @@
+▲ Next.js 16.3.6 (webpack)
+✓ Running next.config.ts took 97ms
+
+  Creating an optimized production build ...
+✓ Compiled successfully in 1986ms
+  Running TypeScript ...
+  Finished TypeScript in 1887ms ...
+  Collecting page data using 7 workers ...
+  Generating static pages using 7 workers (0/7) ...
+  Generating static pages using 7 workers (1/7) 
+  Generating static pages using 7 workers (3/7) 
+  Generating static pages using 7 workers (5/7) 
+✓ Generating static pages using 7 workers (7/7) in 102ms
+  Finalizing page optimization ...
+  Collecting build traces ...
+
+Route (app)
+┌ ƒ /
+├ ○ /_not-found
+├ ƒ /admin
+├ ƒ /admin/connectors
+├ ƒ /api/auth/login
+├ ƒ /api/auth/logout
+├ ƒ /api/auth/password
+├ ƒ /api/bookmarks
+├ ƒ /api/events/state
+├ ƒ /api/health
+├ ƒ /api/monitors
+├ ƒ /api/monitors/[id]
+├ ƒ /api/monitors/validate
+├ ƒ /api/settings/credentials
+├ ƒ /api/settings/summary
+├ ƒ /api/settings/summary/backfill
+├ ƒ /api/settings/summary/models
+├ ƒ /api/settings/trendradar-interests
+├ ƒ /api/settings/trendradar-sources
+├ ƒ /api/settings/trendradar-sources/refresh
+├ ƒ /api/settings/wechat-content
+├ ƒ /api/settings/xai-oauth
+├ ƒ /api/trendradar/latest
+├ ƒ /events/[id]
+└ ƒ /starred
+
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+

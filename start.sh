@@ -3,7 +3,7 @@
 # 见微一键启动脚本
 #
 # 用法:
-#   ./start.sh           构建并启动全部服务（首次自动初始化 .env）
+#   ./start.sh           构建并启动核心服务及已选采集服务（首次自动初始化 .env）
 #   ./start.sh start     同上
 #   ./start.sh stop      停止并保留数据
 #   ./start.sh restart   重启
@@ -34,10 +34,8 @@ cd "$SCRIPT_DIR"
 # ---- 解析 compose 命令 --------------------------------------------------
 if docker compose version >/dev/null 2>&1; then
   DC="docker compose"
-elif docker-compose version >/dev/null 2>&1; then
-  DC="docker-compose"
 else
-  err "未检测到 Docker Compose。请先安装 Docker Desktop（含 compose 插件）。"
+  err "未检测到 Docker Compose v2。请先安装 Docker Desktop（含 compose 插件）。"
   exit 1
 fi
 
@@ -202,7 +200,7 @@ print_help() {
 见微一键启动脚本
 
 用法:
-  ./start.sh           构建并启动全部服务（首次自动初始化 .env）
+  ./start.sh           构建并启动核心服务及已选采集服务（首次自动初始化 .env）
   ./start.sh start     同上
   ./start.sh stop      停止并保留数据
   ./start.sh restart   重启
@@ -218,8 +216,12 @@ EOF
 cmd_start() {
   check_docker
   init_env
-  info "构建并启动见微全部服务…"
-  $DC up -d --build
+  info "启动见微核心服务及 COMPOSE_PROFILES 中的采集服务…"
+  if [ -n "$(env_get JIANWEI_IMAGE_TAG)" ]; then
+    $DC -f docker-compose.yml -f docker-compose.images.yml up -d --no-build --pull always
+  else
+    $DC up -d --build
+  fi
   ok "容器已创建，迁移与采集将自动就绪。"
   # 等 postgres 接受连接（仅作就绪提示，不阻塞）。
   # 注意：migrate 镜像是 node 基础镜像，不含 pg_isready，故改用 postgres 容器自带的 pg_isready。
@@ -233,13 +235,14 @@ cmd_start() {
   echo
   ok "完成！访问以下地址："
   echo
-  dim "   WeRSS 默认登录: admin / admin@123"
+  dim "   可选采集: .env 中设置 COMPOSE_PROFILES=wechat,trendradar 后重新启动"
+  dim "   启用公众号采集后，WeRSS 默认登录: admin / admin@123"
   dim "   WeRSS AK 配置: 登录 WeRSS 后台 → 创建 Access Key → 填入 .env 的 WERSS_ACCESS_KEY"
   dim "   远程部署提示: .env 中 *_BIND_HOST 改为 0.0.0.0，SECURE_COOKIE 改为 false（HTTP）"
   dim "   信息流:      http://localhost:3000"
   dim "   监控后台:    http://localhost:3000/admin"
-  dim "   WeRSS 授权:  http://localhost:8001"
-  dim "   TrendRadar:  http://localhost:8088（调试用，数据通过主站 3000 端口访问）"
+  dim "   WeRSS 授权（启用后）:  http://localhost:8001"
+  dim "   TrendRadar（启用后）:  http://localhost:8088（调试用，数据通过主站 3000 端口访问）"
   dim "   查看日志:    ./start.sh logs"
 }
 

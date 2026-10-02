@@ -4,7 +4,7 @@
 
 ## 1. 服务器准备
 
-建议配置：
+使用 Docker Compose v2.20.3+。以下是完整采集器部署的容量建议，未作为硬件最低值做过长期验证：
 
 - 最低：2C / 4G / 40G 磁盘
 - 更稳：2C-4C / 8G，尤其开启模型摘要、公众号全文理解或高频采集时
@@ -12,6 +12,8 @@
 - 域名：准备一个域名并把 A 记录解析到服务器公网 IP
 
 4 核 / 4GB 可以运行完整服务并做小规模监控；如果同时开启模型摘要、公众号全文回填或多个高频任务，建议 8GB 内存。没有 Swap 的 4GB 主机只建议用于小规模测试，长期公网运行前应增加 Swap 或升级内存。
+
+默认现在只常驻 `postgres`、`web`、`worker`，生产入口另含 Caddy。核心小规模部署以 1C / 2GB 为优化目标，仍需在实际主机验证系统余量、采集峰值与处理积压；长文阅读实测见 [低资源优化](low-resource-optimization.md)。
 
 服务器只需要放行：
 
@@ -50,8 +52,9 @@ ADMIN_USERNAME=admin
 ADMIN_PASSWORD=admin@123
 ADMIN_API_TOKEN=强随机令牌
 ADMIN_SESSION_SECRET=独立的32字节以上随机值
-TRENDRADAR_REFRESH_TOKEN=强随机令牌
 ```
+
+默认 `COMPOSE_PROFILES` 留空。公众号采集设置 `COMPOSE_PROFILES=wechat`，榜单/RSS 设置 `COMPOSE_PROFILES=trendradar`，同时启用使用 `COMPOSE_PROFILES=wechat,trendradar`。启用热榜时填写独立的 `TRENDRADAR_REFRESH_TOKEN`。旧库已有监控不会随 profile 自动停用；关闭采集器时，先停用对应监控或配置外部服务，使用原 profile 停止对应容器，再移除 profile。
 
 推荐生成方式：
 
@@ -79,6 +82,15 @@ openssl rand -hex 32
 docker compose --env-file .env.production -p jianwei -f docker-compose.prod.yml up -d --build
 ```
 
+如果版本镜像已发布且你有拉取权限，可在 `.env.production` 填写 `JIANWEI_IMAGE_TAG=实际版本标签`，使用预构建镜像避免服务器编译：
+
+```bash
+docker compose --env-file .env.production -p jianwei \
+  -f docker-compose.prod.yml -f docker-compose.images.yml up -d --no-build --pull always
+```
+
+版本镜像从 `v0.3.0` 开始由 Release 工作流发布，使用前确认发布完成及镜像可拉取。首次 GHCR 发布需要设置包为 Public 或使用 `docker login ghcr.io` 授权；详见 [版本发布](release-process.md)。不要将本机开发用的 localhost 地址配置到容器；外部 WeRSS / TrendRadar MCP 地址分别通过 `WERSS_DOCKER_BASE_URL` / `TRENDRADAR_DOCKER_MCP_URL` 指定。
+
 查看状态：
 
 ```bash
@@ -104,6 +116,8 @@ https://你的域名/admin/connectors
 首次登录后立即在后台修改管理密码；不要把 `.env.production`、API Token 或加密密钥提交到 Git。
 
 ## 5. WeRSS 授权方式
+
+使用本节前先启用 `wechat` profile；只使用 X 或搜索时可以跳过。
 
 生产 compose 不把 WeRSS 暴露到公网。需要扫码授权时，在你本机开 SSH 隧道：
 
@@ -159,6 +173,8 @@ ZLZCHAT_ALLOWED_ORIGINS=http://your-private-zlzchat:805
 该地址必须同时能被 `web` 和 `worker` 容器访问。私网实例还必须把精确 origin 写入部署级 `ZLZCHAT_ALLOWED_ORIGINS`；这是 SSRF 防护白名单，不能省略，也不要配置比实际服务更宽的地址范围。优先使用同一私有 Docker 网络、内网 IP 或带 HTTPS 的私有入口，不要暴露后台管理端口，也不要连接公开演示站。配置完成后，在单个公众号监控中手动选择 ZLZChat；现有 WeRSS 监控不会被自动迁移。完整说明见 [ZLZChat 备选通道](zlzchat-integration.md)。
 
 ## 6. 热榜 / RSS 来源管理
+
+本节需要启用 `trendradar` profile；自定义 RSS 当前也经由 TrendRadar，原生轻量 RSS Provider 尚未实现。
 
 线上也可以在后台管理：
 
@@ -226,12 +242,18 @@ docker volume ls | grep -E 'werss|trendradar|postgres|monitor'
 
 ## 8. 升级
 
+源码构建部署：
+
 ```bash
 git pull
 docker compose --env-file .env.production -p jianwei -f docker-compose.prod.yml up -d --build
 ```
 
 迁移服务 `migrate` 会在启动时自动跑数据库迁移和 seed。
+
+镜像部署需同时更新仓库内 Compose/迁移说明和 `.env.production` 中的版本标签，再使用第 4 节的双文件命令。回滚镜像不能替代数据库迁移回滚；升级前保留数据库备份及 `APP_ENCRYPTION_KEY`。
+
+默认采集并发与模型并发均为 2，数据库连接池每应用进程 4 个。Worker 每日启动超过保留期的终态运行与模型尝试明细清理，每表每轮最多 1,000 条，积压在后续轮询继续：默认普通记录 30 天、失败/异常 90 天，`OPERATIONAL_HISTORY_DAYS=0` 可禁用。当天配额数据、进行中调用、模型响应回执、预算账本和内容证据保留；需查询更早逐次明细的部署，应增大保留期或关闭清理。
 
 ## 9. 常见问题
 
@@ -284,10 +306,10 @@ curl -fsS https://你的域名/api/health
 
 验收标准：
 
-- `postgres`、`web`、`worker`、`werss`、`trendradar`、`trendradar-mcp`、`trendradar-refresh` 均已启动。
+- `postgres`、`web`、`worker`、`caddy` 已启动，`migrate` 成功退出；所启用 profile 对应的采集器也已启动。
 - `/api/health` 返回 `ok: true`，且 `database`、`worker` 均为 `ok`。多 Worker 部署会汇总所有实例；只要有实例停止心跳，`worker` 会变为 `delayed` 并返回 HTTP 503，不会被另一台正常实例掩盖。
 - 能打开 `/admin` 并登录。
-- WeRSS 通过 SSH 隧道完成扫码后，能订阅一个公众号。
+- 启用 WeRSS 时，通过 SSH 隧道完成扫码后，能订阅一个公众号。
 - 添加一个监控后，能在首页看到首次采集结果。
 - `docker compose logs web worker` 没有持续增长的启动错误。
 

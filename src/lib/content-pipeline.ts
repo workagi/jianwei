@@ -11,6 +11,9 @@ export interface PipelinePlatformAggregate {
   structured: number;
   analysisReady?: number;
   analysisFailed?: number;
+  analysisPending?: number;
+  analysisUnqueued?: number;
+  projectionPending?: number;
   explained?: number;
   withFullText: number;
   fallbackFullText?: number;
@@ -43,6 +46,8 @@ export interface PipelinePlatformView {
   analysisReady: number;
   analysisFailed: number;
   analysisPending: number;
+  analysisUnqueued: number;
+  projectionPending: number;
   explained: number;
   withFullText: number;
   fallbackFullText: number;
@@ -61,6 +66,10 @@ export interface ContentPipelineView {
   analysisReady: number;
   analysisFailed: number;
   analysisPending: number;
+  analysisUnqueued: number;
+  oldestPendingAt: Date | null;
+  analysisProcessed24h: number;
+  projectionPending: number;
   explained: number;
   summaryMissing: number;
   structuredMissing: number;
@@ -123,6 +132,7 @@ export function buildContentPipelineView(
   rawPlatforms: PipelinePlatformAggregate[],
   rawRecent: PipelineRecentAggregate,
   available = true,
+  queue?: { pending: number; unqueued: number; oldestPendingAt: Date | null; processed24h: number },
 ): ContentPipelineView {
   const byPlatform = new Map(rawPlatforms.map((row) => [row.platform, row]));
   const platforms = PLATFORM_META.map(({ id, label }) => {
@@ -132,7 +142,8 @@ export function buildContentPipelineView(
     const structured = Math.min(total, count(raw?.structured));
     const analysisReady = Math.min(total, count(raw?.analysisReady ?? raw?.withSummary));
     const analysisFailed = Math.min(total - analysisReady, count(raw?.analysisFailed));
-    const analysisPending = Math.max(0, total - analysisReady - analysisFailed);
+    const analysisPending = count(raw?.analysisPending);
+    const analysisUnqueued = count(raw?.analysisUnqueued);
     const explained = Math.min(total, count(raw?.explained ?? raw?.structured));
     const withFullText = Math.min(total, count(raw?.withFullText));
     const fallbackFullText = Math.min(withFullText, count(raw?.fallbackFullText));
@@ -146,6 +157,8 @@ export function buildContentPipelineView(
       analysisReady,
       analysisFailed,
       analysisPending,
+      analysisUnqueued,
+      projectionPending: count(raw?.projectionPending),
       explained,
       withFullText,
       fallbackFullText,
@@ -162,7 +175,10 @@ export function buildContentPipelineView(
   const structured = platforms.reduce((sum, row) => sum + row.structured, 0);
   const analysisReady = platforms.reduce((sum, row) => sum + row.analysisReady, 0);
   const analysisFailed = platforms.reduce((sum, row) => sum + row.analysisFailed, 0);
-  const analysisPending = platforms.reduce((sum, row) => sum + row.analysisPending, 0);
+  // A canonical document observed on two platforms is still one analysis job.
+  const analysisPending = count(queue?.pending ?? platforms.reduce((sum, row) => sum + row.analysisPending, 0));
+  const analysisUnqueued = count(queue?.unqueued ?? platforms.reduce((sum, row) => sum + row.analysisUnqueued, 0));
+  const projectionPending = platforms.reduce((sum, row) => sum + row.projectionPending, 0);
   const explained = platforms.reduce((sum, row) => sum + row.explained, 0);
   const wechat = platforms.find((row) => row.id === "wechat")!;
   const recent: PipelineRecentAggregate = {
@@ -185,6 +201,9 @@ export function buildContentPipelineView(
   } else if (total === 0) {
     attention.push({ tone: "info", text: "还没有内容入库。先在“监控任务”添加来源，系统采集后这里会显示处理进度。" });
   } else {
+    if (projectionPending > 0) {
+      attention.push({ tone: "info", text: `${projectionPending} 条来源记录的事件变化还未处理完成，Worker 会按处理进度继续推进。` });
+    }
     if (recent.failedRuns24h > 0) {
       attention.push({ tone: "danger", text: `过去 24 小时有 ${recent.failedRuns24h} 次采集失败，请到“监控任务”查看具体来源。` });
     }
@@ -199,8 +218,12 @@ export function buildContentPipelineView(
     }
     if (analysisFailed > 0) {
       attention.push({ tone: "warning", text: `${analysisFailed} 条内容的模型理解失败，可在“模型 API”中小批量重试。` });
-    } else if (analysisPending > 0) {
-      attention.push({ tone: "info", text: `${analysisPending} 条内容还未完成统一模型理解，其中可能包含模型未启用或公众号缺少全文的内容。` });
+    }
+    if (analysisPending > 0) {
+      attention.push({ tone: "info", text: `${analysisPending} 篇原稿已排入自动分析；未启用模型或达到预算时会暂停，领取前仍按来源规则筛选。` });
+    }
+    if (analysisUnqueued > 0) {
+      attention.push({ tone: "info", text: `${analysisUnqueued} 篇内容未排入自动分析，包括历史未分析和规则跳过的材料；需要时可手动小批量补跑。` });
     }
     if (total - explained > 0) {
       attention.push({ tone: "info", text: `${total - explained} 条内容还没有推荐理由和相关性分，可通过模型补跑完善。` });
@@ -220,6 +243,10 @@ export function buildContentPipelineView(
     analysisReady,
     analysisFailed,
     analysisPending,
+    analysisUnqueued,
+    oldestPendingAt: dateOrNull(queue?.oldestPendingAt),
+    analysisProcessed24h: count(queue?.processed24h),
+    projectionPending,
     explained,
     summaryMissing: Math.max(0, total - withSummary),
     structuredMissing: Math.max(0, total - structured),
@@ -253,12 +280,17 @@ export async function loadContentPipelineView(): Promise<ContentPipelineView> {
         structured: Number(row.structured ?? 0),
         analysisReady: Number(row.analysisReady ?? 0),
         analysisFailed: Number(row.analysisFailed ?? 0),
+        analysisPending: Number(row.analysisPending ?? 0),
+        analysisUnqueued: Number(row.analysisUnqueued ?? 0),
+        projectionPending: Number(row.projectionPending ?? 0),
         explained: Number(row.explained ?? 0),
         withFullText: Number(row.withFullText ?? 0),
         fallbackFullText: Number(row.fallbackFullText ?? 0),
         fullTextFailed: Number(row.fullTextFailed ?? 0),
       })),
       stats.recent,
+      true,
+      stats.queue,
     );
   } catch (error) {
     pipelineLog.warn("pipeline.stats.failed", { error });

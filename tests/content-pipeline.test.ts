@@ -21,8 +21,8 @@ describe("buildContentPipelineView", () => {
 
   it("calculates completion across all platforms", () => {
     const view = buildContentPipelineView([
-      { platform: "wechat", total: 10, withSummary: 8, structured: 7, analysisReady: 6, analysisFailed: 1, withFullText: 9 },
-      { platform: "trendradar", total: 30, withSummary: 27, structured: 24, analysisReady: 24, analysisFailed: 2, withFullText: 0 },
+      { platform: "wechat", total: 10, withSummary: 8, structured: 7, analysisReady: 6, analysisFailed: 1, analysisPending: 3, withFullText: 9 },
+      { platform: "trendradar", total: 30, withSummary: 27, structured: 24, analysisReady: 24, analysisFailed: 2, analysisPending: 4, withFullText: 0 },
     ], {
       runs24h: 6,
       failedRuns24h: 0,
@@ -43,6 +43,21 @@ describe("buildContentPipelineView", () => {
     expect(view.analysisPercent).toBe(75);
     expect(view.wechatFullTextPercent).toBe(90);
     expect(view.platforms.find((row) => row.id === "trendradar")?.summaryPercent).toBe(90);
+  });
+
+  it("does not mistake historical gaps for queued work or count cross-platform documents twice", () => {
+    const view = buildContentPipelineView([
+      { platform: "wechat", total: 10, withSummary: 1, structured: 1, analysisPending: 1, analysisUnqueued: 8, withFullText: 0 },
+      { platform: "web_search", total: 1, withSummary: 0, structured: 0, analysisPending: 1, withFullText: 0 },
+    ], { runs24h: 0, failedRuns24h: 0, partialRuns24h: 0, summaryAttempted24h: 0, summarySucceeded24h: 0,
+      summaryFailed24h: 0, newItems24h: 0, lastRunAt: null }, true,
+    { pending: 1, unqueued: 8, oldestPendingAt: new Date("2026-10-02T12:00:00Z"), processed24h: 2 });
+    expect(view.analysisPending).toBe(1);
+    expect(view.analysisUnqueued).toBe(8);
+    expect(view.oldestPendingAt?.toISOString()).toBe("2026-10-02T12:00:00.000Z");
+    expect(view.analysisProcessed24h).toBe(2);
+    expect(view.attention.some(item => item.text.includes("1 篇原稿已排入自动分析"))).toBe(true);
+    expect(view.attention.some(item => item.text.includes("8 篇内容未排入自动分析"))).toBe(true);
   });
 
   it("explains missing WeChat full text separately from missing summaries", () => {

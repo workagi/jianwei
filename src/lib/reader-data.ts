@@ -1,4 +1,4 @@
-import { countItems, getItems, getMonitorsWithHealth, getWechatKeywordRuleFilters, loadApiCredentials } from "@/db/queries";
+import { countItems, getReaderItems, getReaderEventIds, getReaderEventCandidates, getMonitorsWithHealth, getWechatKeywordRuleFilters, loadApiCredentials } from "@/db/queries";
 import { demoItems, demoMonitors } from "./demo-data";
 import type { PlatformType } from "@/connectors/types";
 import { decodeXQuotedPost } from "@/connectors/types";
@@ -19,7 +19,9 @@ import { TRENDRADAR_PLATFORM_CATALOG } from "@/lib/trendradar-config";
 import { formatPollInterval } from "@/lib/monitor-schedule";
 import { deriveRetentionDecision, normalizeRetentionReason, normalizeRelevanceScore } from "@/lib/content-retention";
 import { normalizeSummaryForDisplay } from "@/lib/summarizer";
-import { buildFeaturedFeed, type RelatedEventSource } from "@/lib/content-clustering";
+import { buildFeaturedFeed, buildFeaturedSelection, compactEventMembers, groupPersistedEvents, type RelatedEventSource } from "@/lib/content-clustering";
+import { getReaderMonitorFilters } from "@/db/queries";
+import { loadEventDevelopments } from "@/lib/event-reader";
 import { createStructuredLogger } from "@/lib/structured-log";
 import { presentMonitorFailure } from "@/lib/monitor-error";
 
@@ -50,6 +52,7 @@ export interface ReaderItem {
   };
   time: string;
   date: string;
+  publishedDate?: string;
   title: string;
   excerpt: string;
   url?: string;
@@ -69,6 +72,19 @@ export interface ReaderItem {
   bookmarked: boolean;
   relatedSources?: RelatedEventSource[];
   eventId?: string;
+  eventDate?: string;
+  eventRevision?: number;
+  readRevision?: number;
+  followed?: boolean;
+  eventChange?: string;
+  eventPreferredItemId?: string;
+  developments?: Array<{ id: string; revision: number; label: string; title: string; evidence: string; url?: string }>;
+}
+
+async function attachEventEvidence(visible: ReaderItem[]): Promise<ReaderItem[]> {
+  const developments = await loadEventDevelopments([...new Set(visible.flatMap(item => item.eventId ? [item.eventId] : []))]);
+  for (const item of visible) item.developments = developments.filter(d => d.eventId === item.eventId && d.revision <= (item.eventRevision ?? 0)).map(d => ({ ...d, url: d.url ?? undefined }));
+  return visible;
 }
 
 export interface AdminMonitorView {
@@ -102,7 +118,9 @@ export interface ReaderKeywordRuleFilter {
 
 export interface ReaderFeedResult {
   items: ReaderItem[];
+  topItems: ReaderItem[];
   usingDemo: boolean;
+  unavailable?: boolean;
   total: number;
   totalIsExact: boolean;
   page: number;
@@ -211,10 +229,12 @@ export function trendRadarSourceKind(authorName?: string | null, authorHandle?: 
 function feedResult(input: {
   items: ReaderItem[];
   usingDemo: boolean;
+  unavailable?: boolean;
   total: number;
   totalIsExact?: boolean;
   page: number;
   balancedOverview?: boolean;
+  topItems?: ReaderItem[];
 }): ReaderFeedResult {
   const pageSize = READER_PAGE_SIZE;
   return {
@@ -224,6 +244,7 @@ function feedResult(input: {
     hasPrevious: !input.balancedOverview && input.page > 1,
     hasNext: !input.balancedOverview && input.page * pageSize < input.total,
     balancedOverview: input.balancedOverview ?? false,
+    topItems: input.topItems ?? [],
   };
 }
 
@@ -383,10 +404,7 @@ function displayExcerpt(row: {
   if (summary && looksLikeUsefulExcerpt(summary)) return summary;
 
   const sourceText = row.bodyText.trim();
-  if (row.platform === "wechat") {
-    return looksLikeUsefulExcerpt(sourceText) ? sourceText : "";
-  }
-  return looksLikeUsefulExcerpt(sourceText) ? sourceText : "";
+  return looksLikeUsefulExcerpt(sourceText) ? sourceText.slice(0, 320) : "";
 }
 
 function itemStatusBadge(row: {
@@ -394,13 +412,14 @@ function itemStatusBadge(row: {
   bodyText: string;
   aiSummary?: string | null;
   contentHtml?: string | null;
+  hasFullText?: boolean;
   contentProvider?: string | null;
   contentFetchStatus?: string | null;
 }): ReaderItem["statusBadge"] {
   const normalizedSummary = normalizeSummaryForDisplay(row.aiSummary);
   const hasUsefulSummary = Boolean(normalizedSummary && looksLikeUsefulExcerpt(normalizedSummary));
   // X reuses contentHtml as a JSON quote envelope; only WeChat treats it as full text.
-  const hasFullText = row.platform === "wechat" && Boolean(row.contentHtml?.trim()) && !decodeXQuotedPost(row.contentHtml);
+  const hasFullText = row.platform === "wechat" && (row.hasFullText ?? Boolean(row.contentHtml?.trim())) && !decodeXQuotedPost(row.contentHtml);
 
   if (row.platform === "wechat") {
     const usedFallback = row.contentProvider === "direct" || row.contentProvider === "wechat_download_api";
@@ -458,12 +477,19 @@ export function mapRow(row: {
   aiSummary?: string | null;
   editorialReason?: string | null;
   eventId?: string | null;
+  eventDate?: Date | string | null;
+  eventRevision?: number | null;
+  readRevision?: number | null;
+  followed?: boolean | null;
+  eventChange?: string | null;
+  eventPreferredItemId?: string | null;
   contentType?: string | null;
   topicTags?: string[] | null;
   retentionReason?: string | null;
   relevanceScore?: number | null;
   retentionSource?: string | null;
   contentHtml?: string | null;
+  hasFullText?: boolean;
   contentProvider?: string | null;
   contentFetchStatus?: string | null;
   contentFetchError?: string | null;
@@ -473,11 +499,10 @@ export function mapRow(row: {
   matchReason?: string | null;
   bookmarked?: boolean;
 }): ReaderItem {
-  const fallbackContentType = deriveContentTypeId(row);
-  const contentType = normalizeContentType(row.contentType) ?? fallbackContentType;
-  const tags = normalizeTopicTags(row.topicTags, deriveTopicTags(row));
+  const contentType = normalizeContentType(row.contentType) ?? deriveContentTypeId(row);
+  const tags = normalizeTopicTags(row.topicTags, () => deriveTopicTags(row));
   const hasModelRetention = row.retentionSource === "model";
-  const retention = deriveRetentionDecision({
+  const score = normalizeRelevanceScore(row.relevanceScore) ?? deriveRetentionDecision({
     item: {
       platform: row.platform,
       upstreamId: row.id,
@@ -496,7 +521,7 @@ export function mapRow(row: {
     summary: row.aiSummary ?? undefined,
     modelReason: hasModelRetention ? row.retentionReason : undefined,
     modelScore: hasModelRetention ? row.relevanceScore : undefined,
-  });
+  }).relevanceScore;
   const quoted = row.platform === "x" ? decodeXQuotedPost(row.contentHtml) : undefined;
   const quote = quoted
     ? {
@@ -524,6 +549,7 @@ export function mapRow(row: {
     statusBadge: itemStatusBadge(row),
     time: formatReaderTime(new Date(row.publishedAt)),
     date: row.publishedAt instanceof Date ? row.publishedAt.toISOString() : String(row.publishedAt),
+    publishedDate: row.publishedAt instanceof Date ? row.publishedAt.toISOString() : String(row.publishedAt),
     title: readerDisplayTitle(row),
     // 优先用 AI 阅读全文后生成的摘要；原始引子过短/跑偏时不再冒充摘要。
     excerpt: displayExcerpt(row),
@@ -532,11 +558,17 @@ export function mapRow(row: {
     contentType,
     contentTypeLabel: getContentTypeLabel(contentType) ?? "观点解读",
     tags,
-    score: normalizeRelevanceScore(row.relevanceScore) ?? retention.relevanceScore,
+    score,
     // 规则回退仍用于后台筛选和评分，但不伪装成面向读者的推荐文案。
     // 前台仅展示模型基于具体内容生成的客观推荐理由。
     whyKept: normalizeRetentionReason(row.editorialReason) ?? readerRecommendationReason({ reason: row.retentionReason, source: row.retentionSource }),
     eventId: row.eventId ?? undefined,
+    eventDate: row.eventDate ? new Date(row.eventDate).toISOString() : undefined,
+    eventRevision: row.eventRevision ?? undefined,
+    readRevision: row.readRevision ?? 0,
+    followed: Boolean(row.followed),
+    eventChange: row.eventChange ?? undefined,
+    eventPreferredItemId: row.eventPreferredItemId ?? undefined,
     match: row.matchReason ?? "",
     bookmarked: Boolean(row.bookmarked),
   };
@@ -583,8 +615,8 @@ export async function loadBookmarkedFeed(): Promise<{ items: ReaderItem[]; total
   if (!process.env.DATABASE_URL) return { items: [], total: 0, usingDemo: true };
   try {
     const total = await countItems({ bookmarkedOnly: true });
-    const rows = await getItems({ bookmarkedOnly: true, limit: 200 });
-    return { items: rows.map(mapRow), total, usingDemo: false };
+    const rows = await getReaderItems({ bookmarkedOnly: true, limit: 200 });
+    return { items: await attachEventEvidence(rows.map(mapRow)), total, usingDemo: false };
   } catch (error) {
     readerLog.warn("reader.bookmarks.load_failed", { error });
     return { items: [], total: 0, usingDemo: true };
@@ -627,22 +659,24 @@ export function capRowsPerPlatformForUnifiedFeed<T extends { id: string; platfor
 }
 
 /**
- * Load the reader feed from Postgres. When DATABASE_URL is unset or the query
- * fails (e.g. local dev without a running DB), fall back to demo data so the
- * UI is never blank. `usingDemo` lets the page show a notice.
+ * Unconfigured installations may show examples. A failed configured database
+ * returns an explicit unavailable state instead of replacing real content.
  */
 export async function loadReaderFeed(filter: {
   platform?: PlatformType;
   search?: string;
   monitorId?: string;
+  monitorIds?: string[];
   contentType?: string;
   topic?: string;
   since?: Date;
   page?: number;
-  mode?: "featured" | "latest" | "archive";
+  mode?: "featured" | "latest" | "archive" | "changes" | "followed";
+  followedOnly?: boolean;
 } = {}): Promise<ReaderFeedResult> {
   const page = normalizeReaderPage(filter.page);
   if (!process.env.DATABASE_URL) {
+    if (filter.mode === "changes" || filter.mode === "followed") return feedResult({ items: [], usingDemo: true, total: 0, page: 1 });
     let items = demoToReader();
     const selectedType = getContentTypeFilter(filter.contentType);
     if (selectedType) items = items.filter((item) => item.contentType === selectedType.id);
@@ -661,7 +695,10 @@ export async function loadReaderFeed(filter: {
       platform: filter.platform,
       search: filter.search,
       monitorId: filter.monitorId,
+      monitorIds: filter.monitorIds,
       since: filter.since,
+      changesOnly: filter.mode === "changes",
+      followedOnly: filter.followedOnly || filter.mode === "followed",
     };
     // Some reader filters are applied locally after the DB query:
     // - content type / topic can fall back to rule-based classification for old rows;
@@ -673,29 +710,71 @@ export async function loadReaderFeed(filter: {
     // the newest hotlist rows are filtered out as irrelevant.
     const needsLocalFilterWindow = Boolean(contentType || topic || dbFilter.platform === "trendradar");
 
+    if (filter.mode === "changes" || filter.mode === "followed") {
+      const pageItems: ReaderItem[] = [];
+      const eventBatchSize = 100;
+      const start = (page - 1) * READER_PAGE_SIZE;
+      let total = 0;
+      let exhausted = false;
+      // Only scan enough event batches to fill this page plus a next-page hint.
+      // Editable source/legacy rules stay in JS; totals are a lower bound until exhausted.
+      for (let offset = 0; ; offset += eventBatchSize) {
+        const candidates = await getReaderEventIds(dbFilter, eventBatchSize, offset);
+        let members: ReaderItem[] = [];
+        if (candidates.length) {
+          let afterItemId: string | undefined;
+          for (;;) {
+            const memberFilter = { ...dbFilter, eventIds: candidates.map(event => event.id) };
+            const rows = await getReaderEventCandidates(memberFilter, 200, afterItemId);
+            members = compactEventMembers([...members, ...rows.filter(row => rowPassesSourceQuality(row)
+              && itemMatchesContentType(row, contentType) && itemMatchesTopic(row, topic)).map(mapRow)]);
+            if (rows.length < 200) break;
+            afterItemId = rows[rows.length - 1].id;
+          }
+        }
+        const batch = groupPersistedEvents(members);
+        const byEvent = new Map(batch.map(item => [item.eventId, item]));
+        const ordered = candidates.flatMap(event => byEvent.has(event.id) ? [byEvent.get(event.id)!] : []);
+        const skip = Math.max(start - total, 0);
+        pageItems.push(...ordered.slice(skip, skip + READER_PAGE_SIZE + 1 - pageItems.length));
+        total += ordered.length;
+        exhausted = candidates.length < eventBatchSize;
+        if (exhausted || total > start + READER_PAGE_SIZE) break;
+      }
+      const selected = pageItems.slice(0, READER_PAGE_SIZE);
+      const rows = selected.length ? await getReaderItems({ ...dbFilter, itemIds: selected.map(item => item.id), limit: selected.length }) : [];
+      const display = new Map(rows.map(row => [row.id, mapRow(row)]));
+      const visible = selected.flatMap(item => {
+        const card = display.get(item.id);
+        return card ? [{ ...card, date: item.date, relatedSources: item.relatedSources, time: formatReaderTime(new Date(item.date)) }] : [];
+      });
+      return feedResult({ items: await attachEventEvidence(visible), usingDemo: false, total, totalIsExact: exhausted, page });
+    }
+
     if (filter.mode === "featured") {
       const platforms = dbFilter.platform ? [dbFilter.platform] : READER_PLATFORMS;
       const rows = (
         await Promise.all(platforms.map((platform) =>
-          getItems({
+          getReaderItems({
             ...dbFilter,
             platform,
             featuredOnly: true,
-            limit: 300,
+            limit: MAX_LOCAL_FILTER_SCAN,
           }),
         ))
       ).flat();
       const filteredRows = capRowsPerPlatformForUnifiedFeed(rows, Number.MAX_SAFE_INTEGER).filter((row) =>
         rowPassesSourceQuality(row) && itemMatchesContentType(row, contentType) && itemMatchesTopic(row, topic),
       );
-      const featuredItems = buildFeaturedFeed(filteredRows.map(mapRow), {
+      const selection = buildFeaturedSelection(filteredRows.map(mapRow), {
         balancePlatforms: !dbFilter.platform,
         persisted: true,
       });
       return feedResult({
-        items: featuredItems,
+        items: await attachEventEvidence(selection.items.map(item => ({ ...item, time: formatReaderTime(new Date(item.date)) }))),
+        topItems: selection.topItems,
         usingDemo: false,
-        total: featuredItems.length,
+        total: selection.items.length,
         page: 1,
         balancedOverview: true,
       });
@@ -704,12 +783,12 @@ export async function loadReaderFeed(filter: {
     if (dbFilter.platform) {
       const baseTotal = await countItems(dbFilter);
       if (!needsLocalFilterWindow) {
-        const rows = await getItems({
+        const rows = await getReaderItems({
           ...dbFilter,
           limit: READER_PAGE_SIZE,
           offset: (page - 1) * READER_PAGE_SIZE,
         });
-        return feedResult({ items: rows.map(mapRow), usingDemo: false, total: baseTotal, page });
+        return feedResult({ items: await attachEventEvidence(rows.map(mapRow)), usingDemo: false, total: baseTotal, page });
       }
 
       // Reader-only rules (editable TrendRadar interests and legacy rule-based
@@ -718,13 +797,13 @@ export async function loadReaderFeed(filter: {
       // then paginate the visible rows. The UI marks totals as approximate only
       // once a library grows beyond that guardrail.
       const scanLimit = Math.min(Math.max(baseTotal, LOCAL_FILTER_WINDOW), MAX_LOCAL_FILTER_SCAN);
-      const rows = await getItems({ ...dbFilter, limit: scanLimit });
+      const rows = await getReaderItems({ ...dbFilter, limit: scanLimit });
       const filteredRows = rows.filter((row) =>
         rowPassesSourceQuality(row) && itemMatchesContentType(row, contentType) && itemMatchesTopic(row, topic),
       );
       const start = (page - 1) * READER_PAGE_SIZE;
       return feedResult({
-        items: filteredRows.slice(start, start + READER_PAGE_SIZE).map(mapRow),
+        items: await attachEventEvidence(filteredRows.slice(start, start + READER_PAGE_SIZE).map(mapRow)),
         usingDemo: false,
         total: filteredRows.length,
         totalIsExact: baseTotal <= MAX_LOCAL_FILTER_SCAN,
@@ -747,7 +826,7 @@ export async function loadReaderFeed(filter: {
           const limit = localRules
             ? Math.min(Math.max(platformCounts[index], LOCAL_FILTER_WINDOW), MAX_LOCAL_FILTER_SCAN)
             : DEFAULT_PLATFORM_WINDOW;
-          return getItems({ ...dbFilter, platform, limit });
+          return getReaderItems({ ...dbFilter, platform, limit });
         }),
       )
     ).flat();
@@ -757,7 +836,7 @@ export async function loadReaderFeed(filter: {
     const visibleRows = capRowsPerPlatformForUnifiedFeed(filteredRows);
     const hasLocalFilter = Boolean(contentType || topic);
     return feedResult({
-      items: visibleRows.slice(0, READER_PAGE_SIZE).map(mapRow),
+      items: await attachEventEvidence(visibleRows.slice(0, READER_PAGE_SIZE).map(mapRow)),
       usingDemo: false,
       total: hasLocalFilter ? filteredRows.length : documentTotal,
       totalIsExact: hasLocalFilter ? platformCounts.every((value) => value <= MAX_LOCAL_FILTER_SCAN) : true,
@@ -765,19 +844,15 @@ export async function loadReaderFeed(filter: {
       balancedOverview: true,
     });
   } catch (err) {
-    readerLog.warn("reader.feed.demo_fallback", { error: err });
-    let items = demoToReader();
-    const selectedType = getContentTypeFilter(filter.contentType);
-    if (selectedType) items = items.filter((item) => item.contentType === selectedType.id);
-    const selectedTopic = normalizeTopicLabel(filter.topic);
-    if (selectedTopic) {
-      items = items.filter((item) => item.tags.some((tag) => tag.toLocaleLowerCase() === selectedTopic.toLocaleLowerCase()));
-    }
-    if (filter.mode === "featured") items = buildFeaturedFeed(items, { balancePlatforms: !filter.platform });
-    const total = items.length;
-    const start = (page - 1) * READER_PAGE_SIZE;
-    return feedResult({ items: items.slice(start, start + READER_PAGE_SIZE), usingDemo: true, total, page });
+    readerLog.warn("reader.feed.unavailable", { error: err });
+    return feedResult({ items: [], usingDemo: false, unavailable: true, total: 0, page });
   }
+}
+
+export async function loadReaderMonitorFilters(platform?: PlatformType): Promise<Array<{ id: string; name: string }>> {
+  if (!process.env.DATABASE_URL) return [];
+  try { return await getReaderMonitorFilters(platform); }
+  catch (error) { readerLog.warn("reader.monitor_filters.load_failed", { error }); return []; }
 }
 
 export async function loadWechatKeywordRuleFilters(): Promise<ReaderKeywordRuleFilter[]> {

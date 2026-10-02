@@ -1,6 +1,7 @@
 import type { NormalizedItem } from "@/connectors/types";
-import { canonicalizeUrl, contentFingerprint, dedupeKey } from "./deduplicate";
-import { type SummaryRunStats } from "@/lib/summarizer";
+import { documentContentHash } from "./content-revisions";
+import { canonicalizeUrl, dedupeKey } from "./deduplicate";
+import { isSummaryEnabled, type SummaryRunStats } from "@/lib/summarizer";
 import { routeContentItems, CONTENT_ANALYSIS_VERSION } from "@/lib/content-router";
 import { deriveItemClassification } from "@/lib/item-tags";
 import { deriveRetentionDecision, type MonitorRules, deriveMonitorRetention } from "@/lib/content-retention";
@@ -103,8 +104,10 @@ function itemRow(item: NormalizedItem, now: Date): IngestItemRow {
       imageUrls: item.imageUrls ?? [],
       publishedAt: safePublishedAt(item.publishedAt, now),
       fetchedAt: now,
+      contentObservedAt: now,
+      contentOwnerKey: item.contentFetchStatus === "success" || item.sourceProvider === "x_official" ? sourceIdentity(item.platform, sourceProvider(item), item.upstreamId) : null,
       updatedAt: now,
-      contentHash: contentFingerprint(item),
+      contentHash: documentContentHash({ title: item.title, bodyText: item.text, platform: item.platform, contentHtml: item.contentHtml }),
   };
 }
 
@@ -159,10 +162,12 @@ export interface IngestInput {
   runId?: string;
   monitorRules?: MonitorRules;
   signal?: AbortSignal;
+  /** Worker collection commits source input before model processing. */
+  deferAnalysis?: boolean;
 }
 
 /**
- * Fully analysed ingest payload. Creating this value may call the model, but
+ * Normalized ingest payload (analysis may be deferred). Preparing may call the model, but
  * does not mutate the database. It can therefore be prepared before opening a
  * short commit transaction.
  */
@@ -253,6 +258,17 @@ export async function prepareIngest(
     return { input, rows, summary: defaultSummaryStats("not_applicable"), analysisClaims: [] };
   }
 
+  if (input.deferAnalysis) {
+    const enabled = isSummaryEnabled();
+    for (const row of rows) {
+      row.analysisStatus = enabled ? "pending" : "disabled";
+      // Marks newly accepted pending work; unrelated historical empty analyses
+      // are not automatically pulled into the processing loop.
+      row.analysisVersion = CONTENT_ANALYSIS_VERSION;
+    }
+    return { input, rows, summary: defaultSummaryStats(enabled ? "not_applicable" : "disabled"), analysisClaims: [] };
+  }
+
   // Only unseen items enter the model route, preventing repeated API spend.
   // Every new item receives a durable route status, including disabled,
   // skipped and failed outcomes, so later retries can target exact rows.
@@ -311,10 +327,12 @@ export async function prepareIngest(
           row.topicTags = outcome.topicTags;
           row.informationValueScore = outcome.relevanceScore;
           row.editorialReason = outcome.retentionSource === "model" ? outcome.retentionReason : null;
+          row.eventSignal = outcome.eventSignal ?? null;
           row.analysisStatus = outcome.status;
           row.analysisProvider = outcome.provider ?? null;
           row.analysisModel = outcome.model ?? null;
           row.analysisVersion = outcome.version;
+          row.analysisInputHash = row.contentHash;
           row.analysisAttempts = outcome.attempts;
           row.analysisErrorCode = outcome.errorCode ?? null;
           row.analysisErrorMessage = outcome.errorMessage ?? null;

@@ -15,7 +15,6 @@ import type {
   CollectContext,
   WebSearchMonitorConfig,
 } from "@/connectors/types";
-import type { PreparedIngest } from "@/ingestion/ingest-items";
 import { extractMonitorRulesFromConfig } from "@/lib/monitor-rules";
 import { isWechatKeywordRuleConfig } from "@/connectors/types";
 import { createWorkerSourceProvider } from "@/sources/registry";
@@ -48,6 +47,7 @@ import {
   staleRunReaperIntervalMs,
 } from "./stale-run-reaper";
 import { deriveWorkerRuntimeStatus } from "@/lib/system-health";
+import { HISTORY_PRUNE_BATCH_SIZE, pruneOperationalHistory } from "./maintenance";
 
 // Cost per 1000 billable units. Brave's published rate is $3 / 1k queries; X has
 // no stable public rate, so it defaults to 0 and can be overridden.
@@ -66,7 +66,7 @@ const X_OFFICIAL_MAX_BILLABLE_UNITS = 1 + 100 * (
 const MONTHLY_BUDGET_USD = Number(process.env.X_BRAVE_MONTHLY_BUDGET_USD);
 const BUDGET_ENABLED = Number.isFinite(MONTHLY_BUDGET_USD) && MONTHLY_BUDGET_USD > 0;
 const MONITOR_DISABLE_AFTER_FAILURES = Number(process.env.WORKER_DISABLE_MONITOR_AFTER_FAILURES ?? "5") || 0;
-const WORKER_CONCURRENCY = Math.max(1, Number(process.env.WORKER_CONCURRENCY ?? "4") || 0);
+const WORKER_CONCURRENCY = Math.max(1, Number(process.env.WORKER_CONCURRENCY ?? "2") || 0);
 const WORKER_HEARTBEAT_FILE = process.env.WORKER_HEARTBEAT_FILE ?? "/tmp/jianwei-worker-heartbeat";
 const WORKER_DEGRADED_AFTER_POLL_FAILURES = Math.max(
   1,
@@ -210,14 +210,6 @@ function budgetReservationForMonitor(
     };
   }
   return null;
-}
-
-function summaryEstimatedCostUsd(inputTokens = 0, outputTokens = 0): number {
-  const inputPrice = Number(process.env.SUMMARY_INPUT_COST_PER_1M_USD);
-  const outputPrice = Number(process.env.SUMMARY_OUTPUT_COST_PER_1M_USD);
-  const safeInputPrice = Number.isFinite(inputPrice) && inputPrice >= 0 ? inputPrice : 0;
-  const safeOutputPrice = Number.isFinite(outputPrice) && outputPrice >= 0 ? outputPrice : 0;
-  return (inputTokens / 1_000_000) * safeInputPrice + (outputTokens / 1_000_000) * safeOutputPrice;
 }
 
 function usefulWechatName(name: unknown): string | undefined {
@@ -393,7 +385,6 @@ async function runMonitor(
   }
 
   let budgetReservationKey: string | undefined;
-  let preparedForCleanup: PreparedIngest | undefined;
   try {
     runLog.info("collection.started", {
       scheduledFor: claimed.nextRunAt,
@@ -428,24 +419,18 @@ async function runMonitor(
       claimed.platform,
       taskSignal,
     );
-    // Provider and model work stays outside a database transaction. Only the
-    // Connector finished.
-    // Analyse (model calls happen inside prepareIngest).
-    await markRunProgress(runId, attemptToken, "analyzing");
+    // Commit source input first; model processing resumes from durable pending rows.
     const prepared = await prepareIngest(createDrizzleIngestRepository(), {
       items,
       monitorId: claimed.monitorId,
+      deferAnalysis: true,
       matchedQuery: monitorMatchedQuery(claimed),
       runId,
       monitorRules: extractMonitorRulesFromConfig(claimed.config as Record<string, unknown>),
       signal: taskSignal,
     });
-    preparedForCleanup = prepared;
-    const summaryInputTokens = prepared.summary.inputTokens ?? 0;
-    // Analysis complete, ready to commit.
+    // Normalization complete, ready to commit.
     await markRunProgress(runId, attemptToken, "ingesting");
-    const summaryOutputTokens = prepared.summary.outputTokens ?? 0;
-    const summaryCost = summaryEstimatedCostUsd(summaryInputTokens, summaryOutputTokens);
 
     const monitorUpdate: Partial<typeof monitors.$inferInsert> = {
       lastSuccessAt: new Date(),
@@ -495,7 +480,7 @@ async function runMonitor(
       await markRunProgress(runId, attemptToken, "committing", tx);
 
       // Usage rows share the run's idempotency key. A retried commit can never
-      // count the same provider/model metric twice.
+      // count the same provider metric twice. Model usage is recorded by analysis.
       if (claimed.platform === "x") {
         const units = billableUnits ?? 1;
         const grokSubscription = claimed.config.provider === "x_grok";
@@ -522,24 +507,6 @@ async function runMonitor(
         );
         await settleUsageReservation(tx, budgetReservationKey, attemptToken);
       }
-      if (committed.summary.attempted > 0) {
-        await recordUsage(
-          tx,
-          runKey,
-          claimed.connectorId,
-          claimed.monitorId,
-          "model_requests",
-          committed.summary.attempted,
-          summaryCost,
-        );
-        if (summaryInputTokens > 0) {
-          await recordUsage(tx, runKey, claimed.connectorId, claimed.monitorId, "model_input_tokens", summaryInputTokens, 0);
-        }
-        if (summaryOutputTokens > 0) {
-          await recordUsage(tx, runKey, claimed.connectorId, claimed.monitorId, "model_output_tokens", summaryOutputTokens, 0);
-        }
-      }
-
       const [monitorUpdated] = await tx
         .update(monitors)
         .set(monitorUpdate)
@@ -563,7 +530,7 @@ async function runMonitor(
           summaryFailedCount: committed.summary.failed,
           summaryErrorCode: committed.summary.errorCode ?? null,
           summaryErrorMessage: committed.summary.errorMessage ?? null,
-          providerCost: String(summaryCost),
+          providerCost: "0",
         })
         .where(and(eq(collectionRuns.id, runId), eq(collectionRuns.attemptToken, attemptToken)))
         .returning({ id: collectionRuns.id });
@@ -572,9 +539,6 @@ async function runMonitor(
       }
       return committed;
     });
-    // The transaction completed the claim rows atomically with the document
-    // commit. Do not try to release them if a later logging operation fails.
-    preparedForCleanup = undefined;
 
     runLog.info("collection.succeeded", {
       durationMs: Date.now() - startedAt,
@@ -586,25 +550,12 @@ async function runMonitor(
       summaryAttempted: result.summary.attempted,
       summarySucceeded: result.summary.succeeded,
       summaryFailed: result.summary.failed,
-      summaryInputTokens,
-      summaryOutputTokens,
-      summaryEstimatedCostUsd: summaryCost,
       nextRunAt,
     });
     recordCollectionSuccess();
+    await refreshEventProjection().catch(error => workerLog.warn("events.refresh.failed", { error }));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    if (preparedForCleanup?.analysisClaims.length) {
-      try {
-        await createDrizzleIngestRepository().releaseDocumentAnalyses?.(preparedForCleanup.analysisClaims);
-      } catch (releaseError) {
-        workerLog.error("document_analysis.claim_release_failed", {
-          monitorId: claimed.monitorId,
-          error: releaseError,
-        });
-      }
-      preparedForCleanup = undefined;
-    }
     if (globalShutdownSignal?.aborted && !isLeaseLossAbort(taskSignal)) {
       await db.transaction(async (tx) => {
         await releaseUsageReservation(tx, budgetReservationKey, attemptToken);
@@ -802,6 +753,12 @@ async function saveWeRssAuthHealth(
 
 async function maybeGuardWeRssAuthorization(now = Date.now()): Promise<void> {
   if (now - lastWeRssAuthCheckAt < WERSS_AUTH_CHECK_INTERVAL_MS) return;
+  const [subscription] = await db.select({ id: monitors.id }).from(monitors).where(and(
+    eq(monitors.enabled, true), eq(monitors.platform, "wechat"),
+    sql`coalesce(${monitors.config}->>'provider', '') <> 'zlzchat'`,
+    sql`coalesce(${monitors.config}->>'kind', '') <> 'keyword_rule'`,
+  )).limit(1);
+  if (!subscription) return;
   lastWeRssAuthCheckAt = now;
   const connector = createWeRssConnector();
   try {
@@ -860,7 +817,7 @@ async function maybeEnsureWeRssCollectionTask(now = Date.now()): Promise<void> {
     .from(monitors)
     .where(and(eq(monitors.enabled, true), eq(monitors.platform, "wechat")));
   const feeds = rows.flatMap((row) => {
-    if (isWechatKeywordRuleConfig(row.config)) return [];
+    if (isWechatKeywordRuleConfig(row.config) || row.config.provider === "zlzchat") return [];
     const mpId = typeof row.config.mpId === "string" ? row.config.mpId.trim() : "";
     if (!mpId) return [];
     const mpName = typeof row.config.mpName === "string" && row.config.mpName.trim()
@@ -1085,9 +1042,17 @@ export async function runOnce(shutdownSignal?: AbortSignal): Promise<number> {
     }
   }
 
-  if (!shutdownSignal?.aborted) await maybeRetryFailedContentAnalysis();
+  if (!shutdownSignal?.aborted && !analysisTask) {
+    analysisTask = maybeProcessContentAnalysis(shutdownSignal).then(async () => {
+      if (!shutdownSignal?.aborted) await refreshEventProjection().catch(error => workerLog.warn("events.refresh.failed", { error }));
+    }).finally(() => { analysisTask = null; });
+  }
   if (!shutdownSignal?.aborted) {
     await refreshEventProjection().catch((error) => workerLog.warn("events.refresh.failed", { error }));
+    if (Date.now() - lastMaintenanceAt >= 86400000) {
+      const pruned = await pruneOperationalHistory().catch(error => workerLog.warn("history.prune.failed", { error }));
+      if (pruned && pruned.collectionRuns < HISTORY_PRUNE_BATCH_SIZE && pruned.modelAttempts < HISTORY_PRUNE_BATCH_SIZE) lastMaintenanceAt = Date.now();
+    }
   }
   return claimedCount;
 }
@@ -1146,19 +1111,21 @@ const WECHAT_GATHER_TIMEOUT_MS = (Number(process.env.WORKER_WECHAT_GATHER_TIMEOU
 const CONTENT_RETRY_INTERVAL_MS = (Number(process.env.CONTENT_RETRY_INTERVAL_MINUTES) || 15) * 60_000;
 const CONTENT_RETRY_BATCH_SIZE = Math.max(1, Number(process.env.CONTENT_RETRY_BATCH_SIZE) || 5);
 const CONTENT_RETRY_MAX_ATTEMPTS = Math.max(1, Number(process.env.CONTENT_RETRY_MAX_ATTEMPTS) || 5);
-let lastContentRetryAt = 0;
+let lastMaintenanceAt = 0;
+let analysisTask: Promise<void> | null = null;
 
-async function maybeRetryFailedContentAnalysis(now = Date.now()): Promise<void> {
-  if (now - lastContentRetryAt < CONTENT_RETRY_INTERVAL_MS) return;
-  lastContentRetryAt = now;
+export async function waitForContentAnalysis(): Promise<void> {
+  await analysisTask;
+}
+
+async function maybeProcessContentAnalysis(signal?: AbortSignal): Promise<void> {
   try {
-    // Only retry hard failures. Do NOT auto-backfill historical empty summaries —
-    // new rows are analyzed at ingest, and TrendRadar now uses the same gate as
-    // the reader so hidden hotlist noise never enters the model path.
+    // Drain newly deferred work each poll. Failed analyses retain their existing cooldown.
     const result = await backfillMissingSummaries(CONTENT_RETRY_BATCH_SIZE, {
-      scope: "failures",
+      scope: "automatic",
       retryAfterMinutes: CONTENT_RETRY_INTERVAL_MS / 60_000,
       maxAttempts: CONTENT_RETRY_MAX_ATTEMPTS,
+      signal,
     });
     if (result.processed > 0) {
       workerLog.info("analysis.retry.completed", {
@@ -1287,6 +1254,7 @@ async function main(): Promise<void> {
   clearInterval(heartbeatTimer);
   clearInterval(staleReaperTimer);
   await Promise.allSettled([
+    waitForContentAnalysis(),
     ...(heartbeatPromise ? [heartbeatPromise] : []),
     ...(staleReaperPromise ? [staleReaperPromise] : []),
   ]);

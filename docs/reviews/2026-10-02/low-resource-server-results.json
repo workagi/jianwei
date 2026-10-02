@@ -1,0 +1,55 @@
+{
+  "verification": "actual standalone production server, macOS RSS sampling, disposable PostgreSQL 17 (1 CPU / 512MiB cap)",
+  "data": "2000 constructed long articles, 300 existing events, full source text 160.23MiB",
+  "serverHeapLimitMiB": 512,
+  "realModelCalls": 0,
+  "upstreamCalls": 0,
+  "scope": "Short HTTP workload only; no browser JavaScript, long-running stability, Linux host or browser collectors tested",
+  "cases": [
+    {
+      "mode": "idle-before-reader",
+      "rssMiB": 110.59
+    },
+    {
+      "mode": "featured",
+      "concurrency": 1,
+      "responses": [
+        {
+          "status": 200,
+          "elapsedMs": 1812,
+          "htmlBytes": 209464
+        }
+      ],
+      "peakServerRssMiB": 190.78
+    },
+    {
+      "mode": "changes",
+      "concurrency": 1,
+      "responses": [
+        {
+          "status": 200,
+          "elapsedMs": 472,
+          "htmlBytes": 277630
+        }
+      ],
+      "peakServerRssMiB": 180.09
+    },
+    {
+      "mode": "featured-two-concurrent",
+      "concurrency": 2,
+      "responses": [
+        {
+          "status": 200,
+          "elapsedMs": 3217,
+          "htmlBytes": 209464
+        },
+        {
+          "status": 200,
+          "elapsedMs": 3215,
+          "htmlBytes": 209464
+        }
+      ],
+      "peakServerRssMiB": 219.98
+    }
+  ]
+}

@@ -15,6 +15,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { createDrizzleIngestRepository, ingest } from "@/ingestion/ingest-items";
 import type { NormalizedItem } from "@/connectors/types";
 import { countItems, getItems } from "@/db/queries";
+import { documentContentHash } from "@/ingestion/content-revisions";
 
 const describeDatabase = process.env.RUN_DB_INTEGRATION_TESTS === "1" ? describe : describe.skip;
 
@@ -386,7 +387,9 @@ describeDatabase("ingestion merge invariants", () => {
         analysisVersion: "v2",
         analysisAttempts: 1,
         analyzedAt: new Date(),
+        analysisInputHash: documentContentHash({ title: pending.title, bodyText: "A complete canonical document with substantially more verified detail." }),
       };
+      success.contentHash = success.analysisInputHash;
 
       const ordered = successFirst ? [success, pending] : [pending, success];
       await repo.upsertItems([ordered[0]]);

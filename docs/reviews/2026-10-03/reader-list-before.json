@@ -1,0 +1,12 @@
+{
+  "scope": "Isolated PostgreSQL 17, 1 CPU / 512 MiB; constructed repeated materials; no production or upstream access",
+  "label": "before",
+  "materials": 20000,
+  "cards": 1,
+  "elapsedMs": 7621,
+  "sampledWholeProbeRssMiB": 173.84,
+  "selects": 202,
+  "displaySelects": 100,
+  "externalCalls": 0,
+  "note": "RSS includes fixture setup. Before reproduces the old scan without final evidence queries; after includes page hydration/evidence. One run per variant, not HTTP capacity certification."
+}

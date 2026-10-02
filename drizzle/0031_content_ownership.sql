@@ -1,0 +1,1 @@
+ALTER TABLE "items" ADD COLUMN "content_owner_key" text;

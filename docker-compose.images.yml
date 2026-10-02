@@ -1,0 +1,11 @@
+# Use with docker-compose.yml or docker-compose.prod.yml and --no-build.
+# Images become available after the version's release workflow succeeds.
+services:
+  web:
+    image: ghcr.io/workagi/jianwei-web:${JIANWEI_IMAGE_TAG:?set a released image tag}
+  worker:
+    image: ghcr.io/workagi/jianwei-worker:${JIANWEI_IMAGE_TAG:?set a released image tag}
+  migrate:
+    image: ghcr.io/workagi/jianwei-migrate:${JIANWEI_IMAGE_TAG:?set a released image tag}
+  werss:
+    image: ghcr.io/workagi/jianwei-werss:${JIANWEI_IMAGE_TAG:?set a released image tag}

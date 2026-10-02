@@ -1,0 +1,18 @@
+{
+  "verification": "native linux/arm64 Docker worker-runner, disposable PostgreSQL 17, idle core only",
+  "imageTag": "jianwei-worker:resource-review-20261002",
+  "memoryLimitMiB": 256,
+  "cpuLimit": 1,
+  "sampleMemoryMiB": 72.62,
+  "sampleCpuPercent": 0.01,
+  "uid": 1000,
+  "noNodeModules": true,
+  "bundleBytes": 1180878,
+  "heartbeatWritten": true,
+  "completedPolls": 8,
+  "claimedMonitorCount": 0,
+  "realModelCalls": 0,
+  "upstreamCalls": 0,
+  "scope": "Short idle smoke; not collection/analysis peak or sustained capacity verification",
+  "containerStopped": true
+}

@@ -1,0 +1,3 @@
+{"mode":"reader-items","elapsedMs":1946,"documents":2000,"fullTextFixtureMiB":160.23,"returned":2000,"rssBeforeMiB":100.03,"peakRssMiB":120.63,"peakHeapMiB":32.66,"processHighWaterRssMiB":120.69,"provenance":"synthetic","realModelCalls":0,"upstreamCalls":0}
+{"mode":"featured","elapsedMs":1271,"documents":2000,"fullTextFixtureMiB":160.23,"returned":36,"rssBeforeMiB":102.84,"peakRssMiB":180.89,"peakHeapMiB":34.15,"processHighWaterRssMiB":181.02,"provenance":"synthetic","realModelCalls":0,"upstreamCalls":0}
+{"mode":"changes","elapsedMs":480,"documents":2000,"fullTextFixtureMiB":160.23,"returned":50,"rssBeforeMiB":101.73,"peakRssMiB":134.33,"peakHeapMiB":25.11,"processHighWaterRssMiB":134.38,"provenance":"synthetic","realModelCalls":0,"upstreamCalls":0}

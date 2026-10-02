@@ -183,11 +183,6 @@ export function deriveMonitorRetention(monitor: MonitorRules, doc: {
   const matchRatio = keywords.length > 0 ? keywordHits / keywords.length : 0;
   const keywordBonus = Math.round(matchRatio * 20);
 
-  // Exclusion penalty: dead code after Gate — excluded content never reaches
-  // the Rank phase. Kept as a safety net for future configurable Gate levels.
-  const exclusionHits = 0; // eslint-disable-line @typescript-eslint/no-unused-vars -- dead code safety net after Gate
-  const exclusionPenalty = 0;
-
   // Content type match bonus: if the monitor targets specific content types
   // and the document matches, boost relevance.
   const ctFilters = normalizedKeywords(monitor.contentTypeFilters);
@@ -198,7 +193,7 @@ export function deriveMonitorRetention(monitor: MonitorRules, doc: {
   const topicHits = doc.topicTags.filter((t) => topicFilters.includes(t.toLowerCase())).length;
   const topicBonus = Math.min(15, topicHits * 8);
 
-  const score = Math.max(0, Math.min(100, baseScore + keywordBonus - exclusionPenalty + ctBonus + topicBonus));
+  const score = Math.max(0, Math.min(100, baseScore + keywordBonus + ctBonus + topicBonus));
 
   // Build a concrete retention reason. Prefer model-authored reasons over
   // generated ones, but derive one from monitor rules when unavailable.
@@ -213,7 +208,6 @@ export function deriveMonitorRetention(monitor: MonitorRules, doc: {
   if (topicHits > 0) {
     reasonParts.push(`相关主题${topicHits}个`);
   }
-  // exclusionHits is always 0 after Gate — excluded content never reaches here
 
   const reason = reasonParts.length > 0
     ? reasonParts.join("，")

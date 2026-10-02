@@ -214,8 +214,8 @@ export function normalizeContentType(value?: string | null): ContentTypeId | und
   return CONTENT_TYPE_ID_BY_LABEL.get(trimmed);
 }
 
-export function normalizeTopicTags(value: unknown, fallback: string[] = []): string[] {
-  const raw = Array.isArray(value) && value.length > 0 ? value : fallback;
+export function normalizeTopicTags(value: unknown, fallback: string[] | (() => string[]) = []): string[] {
+  const raw = Array.isArray(value) && value.length > 0 ? value : typeof fallback === "function" ? fallback() : fallback;
   const out: string[] = [];
   for (const tag of raw) {
     if (typeof tag !== "string") continue;
@@ -344,7 +344,7 @@ export function itemMatchesTopic(
 ): boolean {
   const selected = normalizeTopicLabel(topic);
   if (!selected) return true;
-  const tags = normalizeTopicTags(item.topicTags, deriveTopicTags(item));
+  const tags = normalizeTopicTags(item.topicTags, () => deriveTopicTags(item));
   return tags.some((tag) => sameTopic(tag, selected));
 }
 

@@ -48,7 +48,7 @@ export function BookmarkButton({ itemId, title, initialBookmarked }: {
         aria-label={`${action} ${title}`}
         aria-pressed={bookmarked}
         disabled={busy}
-        title={error || `${action}这条内容`}
+        title={error || `${action}当前原文；持续跟踪请使用“关注事件”`}
         onClick={() => void toggle()}
       >
         <Bookmark size={15} fill={bookmarked ? "currentColor" : "none"} />

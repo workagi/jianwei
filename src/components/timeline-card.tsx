@@ -2,6 +2,7 @@ import Link from "next/link";
 import Image from "next/image";
 import type { ReaderItem } from "@/lib/reader-data";
 import { BookmarkButton } from "@/components/bookmark-button";
+import { EventControls } from "@/components/event-controls";
 
 function sourceInitial(source: string): string {
   return source.trim().slice(0, 1).toUpperCase() || "·";
@@ -12,7 +13,7 @@ export function TimelineCard({ item, topicHref }: { item: ReaderItem; topicHref?
   const sameAsPrimary = item.excerpt.trim().replace(/\s+/g, " ") === item.title.trim().replace(/\s+/g, " ");
   const hasTopics = item.tags.length > 0 || Boolean(item.match);
   return (
-    <article className="timeline-item" id={`item-${item.id}`}>
+    <article className="timeline-item" id={`item-${item.eventId ?? item.id}`}>
       <time className="timeline-time">{item.time}</time>
       <div className="item-card">
         <div className="item-meta">
@@ -90,7 +91,22 @@ export function TimelineCard({ item, topicHref }: { item: ReaderItem; topicHref?
         ) : (
           <h2>{item.title}</h2>
         )}
+        {item.eventPreferredItemId && item.eventPreferredItemId !== item.id && <p className="event-change-label">当前筛选显示的是早期报道，请结合最新变化的原文证据阅读。</p>}
+        {item.publishedDate && item.publishedDate !== item.date && <p>原文发布于 {new Date(item.publishedDate).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}；列表按事件变化时间排列。</p>}
         {item.excerpt && !sameAsPrimary && <p className="item-excerpt">{item.excerpt}</p>}
+        {item.eventId && Boolean(item.eventRevision) && <>
+          <p className="event-change-label">{(item.readRevision ?? 0) === 0 ? "首次阅读 · " : (item.readRevision ?? 0) < (item.eventRevision ?? 0) ? "相较上次有更新 · " : "已读 · "}{item.eventChange || "事件记录"}</p>
+          {item.developments && item.developments.length > 0 && <details className="event-developments">
+            <summary>查看最近变化与原文证据</summary>
+            {item.developments.map(d => <div key={d.id}>
+              <strong>{d.label}</strong><p>{d.title}</p><blockquote>{d.evidence}</blockquote>
+              {d.url && <a href={d.url} target="_blank" rel="noopener noreferrer">核对原文 ↗</a>}
+            </div>)}
+          </details>}
+          {(item.eventRevision ?? 0) - (item.readRevision ?? 0) > 3 && <p className="event-change-label">另有 {(item.eventRevision ?? 0) - (item.readRevision ?? 0) - 3} 个更早的未读版本。全部标记已读会一并跳过。</p>}
+          <Link className="inline-link" href={`/events/${item.eventId}`}>查看完整变化记录</Link>
+          <EventControls eventId={item.eventId} revision={item.eventRevision ?? 0} readRevision={item.readRevision ?? 0} followed={Boolean(item.followed)} />
+        </>}
         {hasTopics && (
           <div className="item-tags" aria-label="内容标签">
             {item.tags.map((tag) => (

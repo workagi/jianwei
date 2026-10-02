@@ -51,7 +51,8 @@ export function AdminContentPipeline({ view }: { view: ContentPipelineView }) {
         </div>
         <div className="pipeline-stage">
           <span className="pipeline-stage-icon"><Sparkles size={16} aria-hidden="true" /></span>
-          <div><small>3 · 模型理解</small><strong>{view.analysisReady}/{view.total}</strong><p>完成率 {view.analysisPercent}%{view.analysisFailed ? ` · 失败 ${view.analysisFailed}` : ""}</p></div>
+          <div><small>3 · 模型理解</small><strong>{view.analysisReady}/{view.total}</strong><p>自动待处理 {view.analysisPending} 篇 · 24 小时分析完成 {view.analysisProcessed24h} 篇</p>
+            {view.oldestPendingAt && <p>最早待办收录于 {view.oldestPendingAt.toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}</p>}</div>
         </div>
         <div className="pipeline-stage">
           <span className="pipeline-stage-icon"><Tags size={16} aria-hidden="true" /></span>
@@ -74,7 +75,7 @@ export function AdminContentPipeline({ view }: { view: ContentPipelineView }) {
               <div className="pipeline-platform-row" key={platform.id}>
                 <div className="pipeline-platform-name">
                   <strong>{platform.label}</strong>
-                  <span>{platform.total} 条 · 待处理 {platform.analysisPending}{platform.analysisFailed ? ` · 失败 ${platform.analysisFailed}` : ""}</span>
+                  <span>{platform.total} 条 · 自动待处理 {platform.analysisPending} · 未自动排队 {platform.analysisUnqueued}{platform.analysisFailed ? ` · 失败 ${platform.analysisFailed}` : ""} · 变化待处理 {platform.projectionPending}</span>
                 </div>
                 <div className="pipeline-progress-block">
                   <div><span>模型理解</span><strong>{platform.analysisPercent}%</strong></div>
@@ -98,9 +99,6 @@ export function AdminContentPipeline({ view }: { view: ContentPipelineView }) {
             <strong>需要关注</strong>
             <span>
               最近 24 小时运行 {view.recent.runs24h} 次
-              {(view.recent.summaryAttempted24h > 0 || (view.recent.modelEstimatedCost24h ?? 0) > 0)
-                ? ` · 采集链路分析 ${view.recent.summaryAttempted24h} 条（全部调用用量见下方）`
-                : ""}
             </span>
           </div>
           <div className="pipeline-attention-list">

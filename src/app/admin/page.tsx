@@ -7,12 +7,14 @@ import { ADMIN_COOKIE, pageCookieOk } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
-export default async function AdminPage() {
+export default async function AdminPage({ searchParams }: { searchParams: Promise<{ returnTo?: string }> }) {
+  const { returnTo } = await searchParams;
+  const localReturn = returnTo?.startsWith("/") && !returnTo.startsWith("//") && !returnTo.includes("\\") ? returnTo : undefined;
   const token = (await cookies()).get(ADMIN_COOKIE)?.value;
   if (!(await pageCookieOk(token))) {
     return (
       <main className="admin-page">
-        <AdminLogin />
+        <AdminLogin returnTo={localReturn} />
       </main>
     );
   }

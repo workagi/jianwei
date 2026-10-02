@@ -42,6 +42,8 @@ services:
       context: .
       target: tools
     environment:
+      COMPOSE_PROFILES: ${COMPOSE_PROFILES:-}
+      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-4}
       DATABASE_URL: postgres://monitor:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/monitor
     depends_on:
       postgres:
@@ -55,6 +57,7 @@ services:
       context: .
       target: runner
     environment:
+      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-4}
       DATABASE_URL: postgres://monitor:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/monitor
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?set APP_ENCRYPTION_KEY in .env.production}
       MODEL_DAILY_REQUEST_LIMIT: ${MODEL_DAILY_REQUEST_LIMIT:-1000}
@@ -68,7 +71,7 @@ services:
       BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}
       SERPER_API_KEY: ${SERPER_API_KEY:-}
-      WERSS_BASE_URL: http://werss:8001
+      WERSS_BASE_URL: ${WERSS_DOCKER_BASE_URL:-http://werss:8001}
       WERSS_ACCESS_KEY: ${WERSS_ACCESS_KEY:-}
       ZLZCHAT_BASE_URL: ${ZLZCHAT_BASE_URL:-}
       ZLZCHAT_API_KEY: ${ZLZCHAT_API_KEY:-}
@@ -82,10 +85,10 @@ services:
       WECHAT_DIRECT_FALLBACK_ENABLED: ${WECHAT_DIRECT_FALLBACK_ENABLED:-true}
       WECHAT_FALLBACK_BASE_URL: ${WECHAT_FALLBACK_BASE_URL:-}
       WECHAT_FALLBACK_ADMIN_URL: ${WECHAT_FALLBACK_ADMIN_URL:-http://localhost:5055/admin.html}
-      TRENDRADAR_MCP_URL: http://trendradar-mcp:3333/mcp
+      TRENDRADAR_MCP_URL: ${TRENDRADAR_DOCKER_MCP_URL:-http://trendradar-mcp:3333/mcp}
       TRENDRADAR_CONFIG_DIR: /app/trendradar-config
       TRENDRADAR_REFRESH_URL: http://trendradar-refresh:8090/refresh
-      TRENDRADAR_REFRESH_TOKEN: ${TRENDRADAR_REFRESH_TOKEN:?set TRENDRADAR_REFRESH_TOKEN in .env.production}
+      TRENDRADAR_REFRESH_TOKEN: ${TRENDRADAR_REFRESH_TOKEN:-}
       TRENDRADAR_MCP_TIMEOUT_SECONDS: ${TRENDRADAR_MCP_TIMEOUT_SECONDS:-12}
       TRENDRADAR_PUBLIC_CACHE_SECONDS: ${TRENDRADAR_PUBLIC_CACHE_SECONDS:-20}
       TRENDRADAR_PUBLIC_REQUESTS_PER_MINUTE: ${TRENDRADAR_PUBLIC_REQUESTS_PER_MINUTE:-120}
@@ -97,10 +100,13 @@ services:
       migrate:
         condition: service_completed_successfully
       werss:
+        required: false
         condition: service_started
       trendradar-mcp:
+        required: false
         condition: service_started
       trendradar-refresh:
+        required: false
         condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/api/health || exit 1"]
@@ -113,8 +119,13 @@ services:
   worker:
     build:
       context: .
-      target: tools
+      target: worker-runner
     environment:
+      OPERATIONAL_HISTORY_DAYS: ${OPERATIONAL_HISTORY_DAYS:-30}
+      FAILED_HISTORY_DAYS: ${FAILED_HISTORY_DAYS:-90}
+      TRENDRADAR_CONFIG_DIR: /app/trendradar-config
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-4}
       DATABASE_URL: postgres://monitor:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/monitor
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?set APP_ENCRYPTION_KEY in .env.production}
       MODEL_DAILY_REQUEST_LIMIT: ${MODEL_DAILY_REQUEST_LIMIT:-1000}
@@ -123,7 +134,7 @@ services:
       BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}
       SERPER_API_KEY: ${SERPER_API_KEY:-}
-      WERSS_BASE_URL: http://werss:8001
+      WERSS_BASE_URL: ${WERSS_DOCKER_BASE_URL:-http://werss:8001}
       WERSS_ACCESS_KEY: ${WERSS_ACCESS_KEY:-}
       ZLZCHAT_BASE_URL: ${ZLZCHAT_BASE_URL:-}
       ZLZCHAT_API_KEY: ${ZLZCHAT_API_KEY:-}
@@ -138,7 +149,7 @@ services:
       WERSS_AUTH_REFRESH_BEFORE_HOURS: ${WERSS_AUTH_REFRESH_BEFORE_HOURS:-48}
       WECHAT_DIRECT_FALLBACK_ENABLED: ${WECHAT_DIRECT_FALLBACK_ENABLED:-true}
       WECHAT_FALLBACK_BASE_URL: ${WECHAT_FALLBACK_BASE_URL:-}
-      TRENDRADAR_MCP_URL: http://trendradar-mcp:3333/mcp
+      TRENDRADAR_MCP_URL: ${TRENDRADAR_DOCKER_MCP_URL:-http://trendradar-mcp:3333/mcp}
       X_BRAVE_MONTHLY_BUDGET_USD: ${X_BRAVE_MONTHLY_BUDGET_USD:-}
       BUDGET_RESERVATION_TTL_MINUTES: ${BUDGET_RESERVATION_TTL_MINUTES:-60}
       WORKER_POLL_INTERVAL_SECONDS: ${WORKER_POLL_INTERVAL_SECONDS:-60}
@@ -154,7 +165,7 @@ services:
       SUMMARY_SKIP_PLATFORMS: ${SUMMARY_SKIP_PLATFORMS:-wechat}
       SUMMARY_MODEL: ${SUMMARY_MODEL:-}
       SUMMARY_TIMEOUT_SECONDS: ${SUMMARY_TIMEOUT_SECONDS:-45}
-      SUMMARY_MAX_CONCURRENCY: ${SUMMARY_MAX_CONCURRENCY:-4}
+      SUMMARY_MAX_CONCURRENCY: ${SUMMARY_MAX_CONCURRENCY:-2}
       SUMMARY_REQUESTS_PER_MINUTE: ${SUMMARY_REQUESTS_PER_MINUTE:-}
       SUMMARY_RATE_LIMIT_KEY: ${SUMMARY_RATE_LIMIT_KEY:-}
       SUMMARY_MAX_INPUT_CHARS: ${SUMMARY_MAX_INPUT_CHARS:-3000}
@@ -163,8 +174,9 @@ services:
       CONTENT_RETRY_INTERVAL_MINUTES: ${CONTENT_RETRY_INTERVAL_MINUTES:-15}
       CONTENT_RETRY_BATCH_SIZE: ${CONTENT_RETRY_BATCH_SIZE:-5}
       CONTENT_RETRY_MAX_ATTEMPTS: ${CONTENT_RETRY_MAX_ATTEMPTS:-5}
-    command: ["pnpm", "worker"]
     init: true
+    volumes:
+      - ./infra/trendradar/config:/app/trendradar-config:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -184,6 +196,7 @@ services:
 
   # --- Private sidecars -------------------------------------------------
   werss:
+    profiles: ["wechat"]
     image: ${WERSS_IMAGE:-jianwei-werss:local}
     build:
       context: ./infra/werss
@@ -191,6 +204,11 @@ services:
         WERSS_UPSTREAM_IMAGE: ${WERSS_UPSTREAM_IMAGE:-ghcr.io/rachelos/we-mp-rss@sha256:af771f21b3f7958a5dea16911fba050a6d7b92eac2fb2499c467c1b11f07ef34}
     environment:
       - WERSS_AUTH_WEB=True
+      - LOG_LEVEL=${WERSS_LOG_LEVEL:-WARNING}
+      - WERSS_LOG_LEVEL=${WERSS_LOG_LEVEL:-WARNING}
+      - GATHER.CONTENT_AUTO_CHECK=${GATHER_CONTENT_AUTO_CHECK:-True}
+      - GATHER.CONTENT_AUTO_INTERVAL=${GATHER_CONTENT_AUTO_INTERVAL:-59}
+      - GATHER.CONTENT_MODE=${GATHER_CONTENT_MODE:-api}
     volumes:
       - werss-data:/app/data
     mem_limit: ${WERSS_MEM_LIMIT:-2g}
@@ -232,6 +250,7 @@ services:
     restart: unless-stopped
 
   trendradar:
+    profiles: ["trendradar"]
     image: wantcat/trendradar:6.10.0
     environment:
       TZ: Asia/Shanghai
@@ -254,6 +273,7 @@ services:
     restart: unless-stopped
 
   trendradar-mcp:
+    profiles: ["trendradar"]
     image: wantcat/trendradar-mcp:4.1.0
     environment:
       TZ: Asia/Shanghai
@@ -269,11 +289,12 @@ services:
     restart: unless-stopped
 
   trendradar-refresh:
+    profiles: ["trendradar"]
     image: wantcat/trendradar:6.10.0
     environment:
       TZ: Asia/Shanghai
       RUN_MODE: control
-      TREND_REFRESH_TOKEN: ${TRENDRADAR_REFRESH_TOKEN:?set TRENDRADAR_REFRESH_TOKEN in .env.production}
+      TREND_REFRESH_TOKEN: ${TRENDRADAR_REFRESH_TOKEN:-}
       AI_ANALYSIS_ENABLED: ${AI_ANALYSIS_ENABLED:-false}
       AI_API_KEY: ${AI_API_KEY:-}
       AI_MODEL: ${AI_MODEL:-}

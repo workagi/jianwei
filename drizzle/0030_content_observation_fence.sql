@@ -1,0 +1,1 @@
+ALTER TABLE "items" ADD COLUMN "content_observed_at" timestamp with time zone DEFAULT now() NOT NULL;
