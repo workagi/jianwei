@@ -90,6 +90,8 @@
 
 > 如果要同时运行 WeRSS、TrendRadar、全文增强和较高频监控，4GB 是起步值，8GB 更稳。没有 Swap 的 4GB 云主机可以完成小规模冒烟测试，但不建议长期承载大量公众号或全文回填。
 
+WeRSS 当前固定上游包含 x86_64 程序，从 v0.3.1 起只发布 `linux/amd64` 镜像，Compose 明确选择该架构。Apple Silicon 或其他 ARM 主机启用 `wechat` profile 时，需要 Docker 环境支持 amd64 仿真，并承担额外 CPU 和内存开销；不支持仿真的 ARM 服务器可连接外部 amd64 WeRSS，通过 `WERSS_DOCKER_BASE_URL` 指定地址。核心 Web、Worker 和迁移工具仍提供 amd64/arm64 镜像，WeRSS 尚未提供原生 ARM 支持。
+
 ### 准备工作
 
 需要提前安装：
@@ -102,7 +104,7 @@
 > ```
 > WeRSS 基础镜像若无法从 `ghcr.io` 拉取，可通过南京大学镜像中转：
 > ```bash
-> docker pull ghcr.nju.edu.cn/rachelos/we-mp-rss@sha256:af771f21b3f7958a5dea16911fba050a6d7b92eac2fb2499c467c1b11f07ef34
+> docker pull --platform linux/amd64 ghcr.nju.edu.cn/rachelos/we-mp-rss@sha256:af771f21b3f7958a5dea16911fba050a6d7b92eac2fb2499c467c1b11f07ef34
 > docker tag ghcr.nju.edu.cn/rachelos/we-mp-rss@sha256:af771f21b3f7958a5dea16911fba050a6d7b92eac2fb2499c467c1b11f07ef34 jianwei-werss-upstream:pinned
 > ```
 > 然后把 `.env` 中的 `WERSS_UPSTREAM_IMAGE` 改为 `jianwei-werss-upstream:pinned` 再启动。不要改回浮动的 `latest`，否则同一份 Jianwei 代码可能在不同日期构建出不同结果。

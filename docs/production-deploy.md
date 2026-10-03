@@ -15,6 +15,8 @@
 
 默认现在只常驻 `postgres`、`web`、`worker`，生产入口另含 Caddy。核心小规模部署以 1C / 2GB 为优化目标，仍需在实际主机验证系统余量、采集峰值与处理积压；长文阅读实测见 [低资源优化](low-resource-optimization.md)。
 
+启用公众号采集时，当前 WeRSS 使用 `linux/amd64`：固定上游包含 x86_64 程序，尚无原生 ARM 支持。ARM 服务器需要支持 amd64 仿真，仿真会增加资源开销；否则不启用本地 `wechat` profile，改用容器可访问的外部 amd64 WeRSS，并设置 `WERSS_DOCKER_BASE_URL` 和 Access Key。Web、Worker、迁移工具仍提供 amd64/arm64 版本镜像。
+
 服务器只需要放行：
 
 - `80/tcp`

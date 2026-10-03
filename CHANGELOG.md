@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+## [0.3.1]
+
+- WeRSS 版本镜像只发布 `linux/amd64`，本机和生产 Compose 明确使用该架构，修正上游 x86_64 程序被标成 arm64 的发布问题。
+- 说明 ARM 主机运行 WeRSS 需要 amd64 仿真及其资源开销；Web、Worker 和迁移工具继续提供 amd64/arm64 镜像。本次无业务逻辑或数据库迁移变更。
+
 ## [0.3.0]
 
 - 更新 Vitest、js-yaml 与 brace-expansion 的安全补丁及锁文件，依赖审计纳入开发工具。
