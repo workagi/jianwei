@@ -196,6 +196,8 @@ services:
 
   # --- Private sidecars -------------------------------------------------
   werss:
+    # The pinned upstream contains x86_64 binaries; ARM hosts need emulation.
+    platform: linux/amd64
     profiles: ["wechat"]
     image: ${WERSS_IMAGE:-jianwei-werss:local}
     build:

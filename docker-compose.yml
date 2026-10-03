@@ -212,6 +212,8 @@ services:
   # --- WeRSS sidecar (WeChat Official Account RSS) -----------------------
   werss:
     profiles: ["wechat"]
+    # The pinned upstream contains x86_64 binaries; ARM hosts need emulation.
+    platform: linux/amd64
     # Public installs use the official upstream image. Advanced users can
     # override WERSS_IMAGE with a reviewed custom build.
     image: ${WERSS_IMAGE:-jianwei-werss:local}

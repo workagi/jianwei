@@ -12,7 +12,9 @@
    git push origin vX.Y.Z
    ```
 
-5. `Release`工作流核对标签、版本、发布说明、主分支归属和CI结果，再构建并推送 Web、Worker、迁移工具和 WeRSS 的 `linux/amd64` / `linux/arm64` 版本镜像。所有镜像成功后才创建 GitHub Release，核对发布页和镜像标签对应同一提交。
+5. `Release`工作流核对标签、版本、发布说明、主分支归属和CI结果，再构建并推送 Web、Worker、迁移工具的 `linux/amd64` / `linux/arm64` 镜像，以及 WeRSS 的 `linux/amd64` 镜像。所有镜像成功后才创建 GitHub Release，核对发布页和镜像标签对应同一提交。
+
+WeRSS 当前固定上游的两个架构标签均包含 x86_64 程序，因此从 v0.3.1 起仅发布 amd64，Compose 同步指定 `platform: linux/amd64`。ARM 主机需支持 amd64 仿真或连接外部 WeRSS；不能将 v0.3.0 的 WeRSS arm64 标签当成原生 ARM 镜像。其他三个组件继续发布双架构镜像。
 
 镜像名为 `ghcr.io/workagi/jianwei-{web,worker,migrate,werss}:vX.Y.Z`，不使用浮动 `latest`。首次发布时检查 GHCR 四个包的可见性：公共安装需将包设置为 Public；私有安装需授权 `docker login ghcr.io`。首次发布前，仓库存在工作流不代表镜像已经可拉取。
 
