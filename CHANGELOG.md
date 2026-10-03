@@ -6,6 +6,8 @@
 
 ## [0.3.1]
 
+- 将 Next lint 插件唯一的 `fast-glob` 调用替换为已有的 `tinyglobby`，从依赖图移除存在 `CVE-2026-93687` 的 `braces` 链；保留完整安全审计，验证目录匹配与 lint 规则兼容。
+
 - WeRSS 版本镜像只发布 `linux/amd64`，本机和生产 Compose 明确使用该架构，修正上游 x86_64 程序被标成 arm64 的发布问题。
 - 说明 ARM 主机运行 WeRSS 需要 amd64 仿真及其资源开销；Web、Worker 和迁移工具继续提供 amd64/arm64 镜像。本次无业务逻辑或数据库迁移变更。
 

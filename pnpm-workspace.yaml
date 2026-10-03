@@ -6,6 +6,7 @@ ignoredBuiltDependencies:
 # package.json is silently ignored and would reintroduce vulnerable transitive
 # versions on a fresh machine.
 overrides:
+  "@next/eslint-plugin-next@16.3.6>fast-glob": "-"
   "esbuild@<=0.24.2": 0.25.12
   "postcss@<8.5.23": 8.5.23
   "nanoid@<3.3.18": 3.3.18
@@ -15,3 +16,12 @@ overrides:
   "sharp@<0.35.4": 0.35.4
   "browserslist@<4.28.7": 4.28.7
   "baseline-browser-mapping@<2.11.0": 2.11.0
+
+# Replace the plugin's sole globSync call; retain directory matching semantics.
+packageExtensions:
+  "@next/eslint-plugin-next@16.3.6":
+    dependencies:
+      tinyglobby: 0.2.17
+
+patchedDependencies:
+  "@next/eslint-plugin-next@16.3.6": patches/@next__eslint-plugin-next@16.3.6.patch
