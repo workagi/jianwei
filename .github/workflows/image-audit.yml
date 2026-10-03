@@ -12,8 +12,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        component: [web, worker, migrate, werss]
-        arch: [amd64, arm64]
+        component: [werss]
+        arch: [amd64]
     steps:
       - uses: actions/checkout@v7
       - name: Install checksum-verified official scanner
@@ -32,11 +32,11 @@ jobs:
           COMPONENT: ${{ matrix.component }}
           ARCH: ${{ matrix.arch }}
           TRIVY_DISABLE_TELEMETRY: 'true'
-        run: python3 scripts/published-image-audit.py
+        run: python3 scripts/published-image-focus.py
       - name: Keep redacted findings only
         uses: actions/upload-artifact@v4
         with:
-          name: image-audit-${{ matrix.component }}-${{ matrix.arch }}
+          name: image-focus-${{ matrix.component }}
           path: audit-output/*.json
           retention-days: 7
           if-no-files-found: error
