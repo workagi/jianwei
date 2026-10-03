@@ -9,7 +9,9 @@
 
 每天只需打开一个页面，就能看到真正与你有关的新动态。
 
-[快速开始](#快速开始) · [支持的信息源](#支持的信息源) · [它怎样工作](#它怎样工作) · [完整项目手册](docs/project-handbook.md) · [生产部署](docs/production-deploy.md) · [参与贡献](CONTRIBUTING.md)
+首页以**事件的新变化**为阅读入口：把多篇报道归到同一事件，关注后持续跟踪进展；已读的重复报道不再提醒，有新阶段或原文更正时再出现。文章收藏与事件关注分别保存。
+
+[快速开始](#快速开始) · [变化阅读](#变化阅读) · [已有部署升级](#已有部署升级) · [支持的信息源](#支持的信息源) · [完整项目手册](docs/project-handbook.md) · [生产部署](docs/production-deploy.md) · [参与贡献](CONTRIBUTING.md)
 
 > 见微主程序采用 [Apache License 2.0](LICENSE) 开源；第三方采集服务仍适用各自许可证和平台规则。
 
@@ -46,13 +48,14 @@
 
 | 1. 添加来源 | 2. 系统自动处理 | 3. 阅读与管理 |
 | --- | --- | --- |
-| 添加 X 账号、公众号文章链接、关键词、榜单或 RSS | 定时采集与智能错峰，先过滤、清洗和去重，再按需调用模型理解内容 | 在一条中文信息流中按平台、类型和主题筛选，查看摘要、标签与推荐理由 |
+| 添加 X 账号、公众号文章链接、关键词、榜单或 RSS | 定时采集与智能错峰，先过滤、清洗和去重，再按需调用模型理解内容 | 按已有监控组合阅读范围，查看事件变化与原文证据；关注事件、标记已读或收藏文章 |
 
 ## 使用前你可能想知道
 
 | 问题 | 答案 |
 | --- | --- |
 | 数据存在哪里？ | PostgreSQL 和 Docker volumes，默认都在你自己的机器上。 |
+| 适合谁使用？ | 个人或共用一个工作台的团队。事件关注与已读状态在工作台内共享，目前没有多用户独立阅读账户。 |
 | API Key 会显示给前端吗？ | 不会。后台只返回“是否已配置”；密钥使用 `APP_ENCRYPTION_KEY` 加密后保存。 |
 | 一定要配置模型吗？ | 不需要。采集可以独立运行；启用模型后才会生成更好的摘要、中文标题、分类和推荐理由。 |
 | 会不会所有内容都先花钱调用模型？ | 不会。明显无关的内容先经过规则过滤，原稿先保存，模型理解由后台小批量处理。 |
@@ -98,10 +101,14 @@ WeRSS 当前固定上游包含 x86_64 程序，从 v0.3.1 起只发布 `linux/am
 
 - Docker Desktop 或 OrbStack，包含 Docker Compose v2.20.3+。
 
-> **国内服务器部署**：如果 Docker 构建时无法访问 npmjs.org 或 ghcr.io，请使用 `Dockerfile.cn`（内置阿里云 npm 镜像）：
+> **npm 下载受限**：克隆仓库后，可通过主 Dockerfile 的构建参数指定可访问的 npm 镜像，无需替换 Dockerfile：
 > ```bash
-> cp Dockerfile.cn Dockerfile
+> ./start.sh init
+> docker compose build --build-arg NPM_REGISTRY=https://registry.npmmirror.com web worker migrate
+> docker compose up -d --wait
 > ```
+> 镜像站可能滞后；遇到锁文件中的包下载失败时，检查镜像同步情况或恢复官方 registry。此参数只影响 npm 下载，不解决 Docker 基础镜像或 GHCR 的访问问题。
+>
 > WeRSS 基础镜像若无法从 `ghcr.io` 拉取，可通过南京大学镜像中转：
 > ```bash
 > docker pull --platform linux/amd64 ghcr.nju.edu.cn/rachelos/we-mp-rss@sha256:af771f21b3f7958a5dea16911fba050a6d7b92eac2fb2499c467c1b11f07ef34
@@ -141,7 +148,7 @@ cd jianwei
 
 需要公众号时，在 `.env` 设置 `COMPOSE_PROFILES=wechat`；需要榜单/RSS 时设置 `COMPOSE_PROFILES=trendradar`；同时需要则使用 `COMPOSE_PROFILES=wechat,trendradar`，然后再次运行 `./start.sh`。不需要的采集器不会常驻，也不会在新库生成默认热榜监控。升级旧库会保留已有监控；关闭采集器时，先在后台停用对应监控或配置外部服务，再用原 profile 停止对应容器，最后移除 profile。
 
-预构建镜像部署入口已加入：将 `.env` 的 `JIANWEI_IMAGE_TAG` 设置为实际已发布的版本标签后，`./start.sh` 会拉取镜像并跳过本机编译。留空仍从源码构建。版本镜像从 `v0.3.0` 开始由 Release 工作流发布；`v0.2.0` 不提供这些镜像。确认对应发布完成及镜像可拉取后再填写标签；GHCR 访问设置见 [版本发布](docs/release-process.md)。
+预构建镜像可以省去本机编译：确认具有拉取权限后，在 `.env` 设置 `JIANWEI_IMAGE_TAG=v0.3.1`，再次运行 `./start.sh`。**截至 v0.3.1 发布，四个 GHCR 包仍为私有，匿名拉取不可用**；没有权限时保持标签为空，按默认路径从源码构建。源码构建启用采集器时仍需拉取对应上游镜像。版本镜像与权限说明见 [版本发布](docs/release-process.md)。
 
 ### 默认凭据
 
@@ -154,9 +161,9 @@ cd jianwei
 | 见微后台 | `http://localhost:3000/admin` | `admin` | `admin@123` |
 | WeRSS 后台 | `http://localhost:8001` | `admin` | `admin@123` |
 
-`start.sh` 首次运行会自动将密码写入 `.env` 的 `ADMIN_PASSWORD`。登录后请在后台修改为强密码。
+`start.sh` 首次运行会自动将见微初始密码写入 `.env` 的 `ADMIN_PASSWORD`。两个后台的账号设置独立，分别登录修改为强密码；修改见微密码不会同步修改 WeRSS。
 
-### 新手上路（5 分钟搞定第一个监控）
+### 配置第一个监控
 
 第一次打开见微，信息流是空的。别急，按下面步骤来：
 
@@ -169,7 +176,7 @@ cd jianwei
 
 | 我想关注… | 需要配什么 | 怎么配 |
 | --------- | ---------- | ------ |
-| 微信公众号 | WeRSS | 先启用 `wechat` profile，再打开 http://localhost:8001 → admin / admin@123 登录 → 扫码绑定微信 → 创建 Access Key → 把 AK:SK 填到 .env 的 WERSS_ACCESS_KEY= 后面 |
+| 微信公众号 | WeRSS | 先启用 `wechat` profile，再打开 http://localhost:8001 → admin / admin@123 登录 → 扫码绑定微信 → 创建 Access Key → 把 AK:SK 填入 `.env` 的 `WERSS_ACCESS_KEY`，执行 `./start.sh restart` |
 | X（Twitter）博主 | SuperGrok（默认） | 在「平台连接」点击「连接 SuperGrok」完成 xAI 授权；不需要手填 X API Key |
 | 全网关键词搜索 | Brave Search API | 去 brave.com 申请免费 API Key，填到「平台连接」→ Brave Search |
 | 国内热榜、RSS | TrendRadar | 先启用 `trendradar` profile，再在平台连接中选择榜单或添加 RSS |
@@ -187,7 +194,9 @@ cd jianwei
 填好名称，点「添加」。系统会自动开始定时采集。
 
 **第 4 步：等着看结果**  
-添加后 1-2 分钟，刷新首页 http://localhost:3000 ，第一条内容就出现了。每条内容会标注「为什么值得看」——是命中了你的关键词，还是 AI 判断它有信息量。
+在「监控任务」查看最近运行结果，再到首页 http://localhost:3000 阅读命中的内容。出现时间取决于采集调度、上游响应和内容分析队列；没有新内容或没有匹配内容时，首页可能仍为空。启用模型后，首次内容需要等待分析完成才归类；可在「平台连接」查看自动待处理数量与最近完成情况。
+
+如果一直没有结果，先核对监控是否启用、最近运行是否成功和对应平台凭据，再用 `./start.sh status`、`./start.sh logs` 查看服务状态。
 
 > 不熟悉面板？左侧三个菜单：「信息流」看结果、「监控任务」管理关注、「平台连接」配 API/公众号。大部分时间你只需要前两个。
 
@@ -288,7 +297,7 @@ flowchart LR
 
 不配置模型时，见微仍然可以完成采集、去重、关键词 Gate 和信息流汇总；本地内容类型与主题规则是可解释、低成本的兜底，不等于高精度语义模型。`pnpm content:evaluate` 会同时显示当前实测结果、CI 防回归底线（64% accuracy / 63% macro F1）和更高的发布质量目标（80% / 75%）。未达到质量目标时，项目会明确显示 `QUALITY GAP`，不会把“CI 没退步”包装成“分类已经准确”。如果你依赖摘要、中文标题或细分类别，建议在后台启用模型 API。
 
-## 变化阅读（未发布）
+## 变化阅读
 
 首页默认显示最近14天的未读事件变化。选择或组合已有监控，展开卡片查看最近变化与原文证据，并可进入事件详情分页回看完整历史；登录管理后台后，可以关注事件、全部标记已读或只看已关注事件。已读事件仍可在“已关注事件”目录管理。标记已读后，重复报道和代表稿替换不会让事件重新出现；后续阶段变化或原文修订会重新显示。文章右上角的收藏仍保存当前原文。
 
@@ -298,13 +307,24 @@ flowchart LR
 
 带明确发生日期的开放状态支持“开放→暂停→恢复开放”，在同一事件下提醒恢复；同状态确认和迟到的旧状态不再次提醒。无日期或同一天内反复变化仍有识别限制。
 
-## v0.2.0：事件与模型用量
+## 事件与模型用量
 
 Worker在后台保存事件归属，精选页直接读取已保存的事件。不同版本号或明确日期的发布不会仅凭相似标题合并；需要纠错时可用 `pnpm events split <item-id>` 人工拆分。
 
 新分析、补跑和标题翻译共享 `MODEL_DAILY_REQUEST_LIMIT`（默认每日1000次，北京时间零点重置）。已收到的模型响应先保存，重试可复用；结果不明时暂停重复付费，后台会显示请求与费用待确认状态。费用金额仍取决于模型单价和tokens，不由请求上限保证。
 
-正式升级与限制见 [v0.2.0发布说明](docs/releases/v0.2.0.md)，发版步骤见 [版本发布](docs/release-process.md)。
+这部分能力从 v0.2.0 起提供，设计与限制见 [v0.2.0 发布说明](docs/releases/v0.2.0.md)；当前版本升级见下文。
+
+## 已有部署升级
+
+当前发布版本为 [v0.3.1](https://github.com/workagi/jianwei/releases/tag/v0.3.1)。发布新版本不会自动升级正在运行的实例。
+
+1. 保留旧代码、环境配置与原 Compose 项目名，停止旧 Web/Worker 后备份 PostgreSQL、`APP_ENCRYPTION_KEY` 和已启用采集器的数据。不要重新生成加密密钥或删除数据卷。
+2. 从 v0.2.0 升级时，同时阅读 [v0.3.0 升级说明](docs/releases/v0.3.0.md#从-v020-升级)，可直接升级到 v0.3.1，启动时会包含变化阅读迁移；从 v0.3.0 更新到 v0.3.1 没有新增数据库迁移。
+3. 切换到目标版本，并按 [v0.3.1 更新说明](docs/releases/v0.3.1.md#从-v030-更新) 使用原部署参数重建或拉取镜像。保留原有 `COMPOSE_PROFILES`；停用采集器前先处理对应监控。ARM 主机同时核对上面的 WeRSS 仿真条件。
+4. 检查健康状态、后台登录、Worker 心跳和一次真实监控运行，并核对事件关注、已读与公众号订阅是否保留。
+
+完整备份、恢复与服务器升级步骤见 [生产部署说明](docs/production-deploy.md)。
 
 ## 采集频率与智能错峰
 
@@ -382,23 +402,30 @@ docker compose config
 
 ### 临时 HTTP / 内网测试
 
-如果暂时没有域名和证书，可以用开发 Compose 部署到服务器：
+远程临时测试可使用开发 Compose，并通过 SSH 隧道访问本机回环端口。以下使用默认源码构建路径，`.env` 的 `JIANWEI_IMAGE_TAG` 保持为空。在服务器项目目录创建 `docker-compose.override.yml`，将 HTTP 测试设置传入 Web 容器：
+
+```yaml
+services:
+  web:
+    environment:
+      SECURE_COOKIE: "false"
+```
+
+保持各服务的回环绑定，启动服务：
 
 ```bash
-# 1. 编辑 .env，修改以下变量：
-SECURE_COOKIE=false              # HTTP 部署必须设为 false
-WERSS_BIND_HOST=0.0.0.0          # 允许外网访问 WeRSS
-TRENDRADAR_BIND_HOST=0.0.0.0     # 允许外网访问 TrendRadar
-TRENDRADAR_MCP_BIND_HOST=0.0.0.0 # 允许外网访问 TrendRadar MCP
-WERSS_ADMIN_URL=http://<服务器IP>:8001/wechat-status
-
-# 2. 启动
 ./start.sh
 ```
 
-> ⚠️ HTTP 部署仅建议用于测试或内网。生产环境务必配置 HTTPS 和防火墙。
+在自己的电脑建立隧道（替换 SSH 账号和服务器地址；本机对应端口需空闲）：
 
-不要把本地 Compose 的数据库和管理侧车端口直接暴露到公网。
+```bash
+ssh -N -L 3000:127.0.0.1:3000 -L 8001:127.0.0.1:8001 用户名@服务器地址
+```
+
+随后访问 `http://localhost:3000`；启用 WeRSS 后，可通过 `http://localhost:8001` 扫码授权。浏览器到服务器之间的流量经 SSH 隧道传输，无需开放这些端口。只修改 `.env` 的 `SECURE_COOKIE` 不会自动传入当前开发 Compose 的 Web 容器，因此这里使用显式 override。
+
+HTTP 测试配置仅用于临时测试。公网长期部署使用 HTTPS 生产方案，不带入此 override。
 
 完整步骤、HTTPS、备份和升级方式见 [生产部署说明](docs/production-deploy.md)。
 
@@ -420,6 +447,8 @@ WERSS_ADMIN_URL=http://<服务器IP>:8001/wechat-status
 | --- | --- |
 | [项目手册](docs/project-handbook.md) | 产品、架构、数据链路、API、安全、运维与开源准备 |
 | [生产部署](docs/production-deploy.md) | 公网服务器、Caddy、HTTPS、备份与升级 |
+| [v0.3.1 发布说明](docs/releases/v0.3.1.md) | 当前版本、WeRSS 架构修正与更新步骤 |
+| [变化阅读与升级](docs/change-reading.md) | 事件关注、已读语义、原文修订与历史数据库迁移 |
 | [TrendRadar 集成架构](docs/architecture-trendradar.md) | 为什么复用 Sidecar，以及许可证边界 |
 | [ZLZChat 备选通道](docs/zlzchat-integration.md) | 如何连接自建 ZLZChat，以及稳定性和许可证边界 |
 | [第三方声明](THIRD_PARTY_NOTICES.md) | 第三方项目和许可证说明 |
@@ -447,7 +476,7 @@ WERSS_ADMIN_URL=http://<服务器IP>:8001/wechat-status
 
 ## 开源许可与当前状态
 
-当前源码版本：`v0.2.0`
+当前源码版本：`v0.3.1`，见 [发布说明](docs/releases/v0.3.1.md)。
 
 见微主程序按照 [Apache License 2.0](LICENSE) 提供。Hermes Agent 改编代码、WeRSS、TrendRadar 和 wechat-download-api 等第三方组件的归属与边界见 [第三方声明](THIRD_PARTY_NOTICES.md)。
 
