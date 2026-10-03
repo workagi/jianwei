@@ -1,0 +1,42 @@
+name: Published image sensitive-data audit
+on:
+  push:
+    branches: [codex/audit-v030-images-20261003]
+permissions:
+  contents: read
+  packages: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [web, worker, migrate, werss]
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install checksum-verified official scanner
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=https://github.com/aquasecurity/trivy/releases/download/v0.75.0
+          curl --fail --silent --show-error --location "$base/trivy_0.75.0_Linux-64bit.tar.gz" -o trivy_0.75.0_Linux-64bit.tar.gz
+          curl --fail --silent --show-error --location "$base/trivy_0.75.0_checksums.txt" -o checksums.txt
+          grep 'trivy_0.75.0_Linux-64bit.tar.gz$' checksums.txt | sha256sum --check
+          tar -xzf trivy_0.75.0_Linux-64bit.tar.gz trivy
+          ./trivy --version
+      - name: Inspect immutable manifests, configuration and every layer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMPONENT: ${{ matrix.component }}
+          ARCH: ${{ matrix.arch }}
+          TRIVY_DISABLE_TELEMETRY: 'true'
+        run: python3 scripts/published-image-audit.py
+      - name: Keep redacted findings only
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-audit-${{ matrix.component }}-${{ matrix.arch }}
+          path: audit-output/*.json
+          retention-days: 7
+          if-no-files-found: error
